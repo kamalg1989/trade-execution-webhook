@@ -1,29 +1,19 @@
+# ==============================================
+# 🚀 TELEGRAM WEBHOOK → DHAN EXECUTION (STATELESS)
+# ==============================================
+
 import os
-import json
 import requests
 from flask import Flask, request
 
 # ==========================
 # CONFIG
 # ==========================
-STATE_FILE = "trades.json"
-
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
 DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN")
-
-# ==========================
-# STATE
-# ==========================
-def load_state():
-    if os.path.exists(STATE_FILE):
-        return json.load(open(STATE_FILE))
-    return {}
-
-def save_state(data):
-    json.dump(data, open(STATE_FILE, "w"), indent=2)
 
 # ==========================
 # TELEGRAM
@@ -48,7 +38,7 @@ def place_order(stock, qty):
         "exchangeSegment": "NSE_EQ",
         "productType": "CNC",
         "orderType": "MARKET",
-        "securityId": stock.replace(".NS",""),  # ⚠️ may need mapping
+        "securityId": stock.replace(".NS",""),  # ⚠️ may need fix later
         "quantity": qty
     }
 
@@ -57,9 +47,11 @@ def place_order(stock, qty):
         "Content-Type": "application/json"
     }
 
-    r = requests.post(url, json=payload, headers=headers)
-
-    return r.json()
+    try:
+        r = requests.post(url, json=payload, headers=headers)
+        return r.json()
+    except Exception as e:
+        return {"error": str(e)}
 
 # ==========================
 # FLASK
@@ -69,32 +61,29 @@ app = Flask(__name__)
 @app.route("/webhook", methods=["POST"])
 def webhook():
 
-    data = request.json
+    data = request.get_json(silent=True) or {}
+
+    print("Incoming:", data)
 
     if "callback_query" not in data:
         return "OK"
 
     query = data["callback_query"]
-    action, stock = query["data"].split("|")
 
-    state = load_state()
-    trade = state.get(stock)
-
-    if not trade:
-        send_telegram(f"⚠️ Trade not found: {stock}")
+    try:
+        parts = query["data"].split("|")
+        action = parts[0]
+        stock = parts[1]
+        qty = int(parts[2])
+    except:
         return "OK"
 
     if action == "BUY":
 
-        res = place_order(stock, trade["qty"])
+        res = place_order(stock, qty)
 
-        # Basic validation
         if "orderId" in str(res):
-            trade["status"] = "ACTIVE"
-            state[stock] = trade
-            save_state(state)
-
-            send_telegram(f"🟢 ORDER PLACED: {stock}")
+            send_telegram(f"🟢 ORDER PLACED: {stock} | Qty: {qty}")
         else:
             send_telegram(f"❌ ORDER FAILED: {stock}\n{res}")
 
