@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (SINGLE)
+# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (DEBUG)
 # ==============================================
 
 import os
@@ -19,25 +19,40 @@ DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN")
 INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
 
 # ==========================
+# SAFE PRINT
+# ==========================
+def log(*args):
+    print(*args, flush=True)
+
+# ==========================
 # LOAD INSTRUMENTS
 # ==========================
 def load_instruments():
-    df = pd.read_csv(INSTRUMENT_URL, low_memory=False)
+    try:
+        df = pd.read_csv(INSTRUMENT_URL, low_memory=False)
 
-    df = df[
-        (df['SEM_EXM_EXCH_ID'] == 'NSE') &
-        (df['SEM_SEGMENT'] == 'E')
-    ]
+        log("===== CSV LOADED =====")
+        log("Rows:", len(df))
 
-    df['SEM_TRADING_SYMBOL'] = (
-        df['SEM_TRADING_SYMBOL']
-        .astype(str)
-        .str.strip()
-        .str.upper()
-    )
+        df = df[
+            (df['SEM_EXM_EXCH_ID'] == 'NSE') &
+            (df['SEM_SEGMENT'] == 'E')
+        ]
 
-    print("✅ Instruments loaded:", len(df))
-    return df
+        df['SEM_TRADING_SYMBOL'] = (
+            df['SEM_TRADING_SYMBOL']
+            .astype(str)
+            .str.strip()
+            .str.upper()
+        )
+
+        log("Filtered NSE EQ:", len(df))
+
+        return df
+
+    except Exception as e:
+        log("❌ CSV ERROR:", e)
+        return pd.DataFrame()
 
 INSTRUMENT_DF = load_instruments()
 
@@ -47,43 +62,45 @@ INSTRUMENT_DF = load_instruments()
 def get_security_id(stock):
 
     symbol = stock.replace(".NS", "").strip().upper()
+    log("🔍 Mapping:", symbol)
+
+    if INSTRUMENT_DF.empty:
+        log("❌ DF EMPTY")
+        return None
 
     row = INSTRUMENT_DF[
         INSTRUMENT_DF['SEM_TRADING_SYMBOL'] == symbol
     ]
 
     if row.empty:
-        print(f"❌ Mapping failed: {stock}")
+        log("❌ Mapping NOT FOUND:", symbol)
         return None
 
-    return str(row.iloc[0]['SEM_SMST_SECURITY_ID'])
+    sec_id = str(row.iloc[0]['SEM_SMST_SECURITY_ID'])
+    log("✅ Security ID:", sec_id)
+
+    return sec_id
 
 # ==========================
 # TELEGRAM
 # ==========================
-def send_telegram(msg, buttons=None):
+def send_telegram(msg):
+    log("📤 Sending Telegram:", msg)
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": msg,
-        "parse_mode": "Markdown"
-    }
-
-    if buttons:
-        payload["reply_markup"] = {
-            "inline_keyboard": buttons
+    requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        json={
+            "chat_id": CHAT_ID,
+            "text": msg
         }
-
-    requests.post(url, json=payload)
+    )
 
 # ==========================
 # FOREVER ENTRY ORDER
 # ==========================
 def place_forever_entry(stock, qty, entry):
 
-    print("\n🚀 FOREVER ENTRY:", stock, qty, entry)
+    log("🚀 ENTRY START:", stock, qty, entry)
 
     sec_id = get_security_id(stock)
 
@@ -104,102 +121,115 @@ def place_forever_entry(stock, qty, entry):
         "securityId": sec_id,
         "quantity": qty,
 
-        # ENTRY LOGIC
         "price": round(entry * 1.001, 2),
         "triggerPrice": round(entry, 2)
     }
+
+    log("📦 PAYLOAD:", payload)
 
     headers = {
         "access-token": DHAN_ACCESS_TOKEN.strip(),
         "Content-Type": "application/json"
     }
 
-    r = requests.post(
-        "https://api.dhan.co/v2/forever/orders",
-        json=payload,
-        headers=headers
-    )
-
-    print("STATUS:", r.status_code)
-    print("BODY:", r.text)
-
     try:
+        r = requests.post(
+            "https://api.dhan.co/v2/forever/orders",
+            json=payload,
+            headers=headers
+        )
+
+        log("🌐 STATUS:", r.status_code)
+        log("🌐 RESPONSE:", r.text)
+
         return r.json()
-    except:
-        return {"raw": r.text}
+
+    except Exception as e:
+        log("❌ REQUEST ERROR:", e)
+        return {"error": str(e)}
 
 # ==========================
-# ALERT FORMAT (FROM SCANNER)
-# ==========================
-def send_trade_alert(stock, entry, l1, qty):
-
-    msg = f"""
-📈 *TRADE ALERT*
-
-{stock}
-
-Entry (H1): {entry}
-L1: {l1}
-Qty: {qty}
-"""
-
-    buttons = [[
-        {
-            "text": "✅ Confirm Buy",
-            "callback_data": f"BUY|{stock}|{qty}|{entry}|{l1}"
-        }
-    ]]
-
-    send_telegram(msg, buttons)
-
-# ==========================
-# FLASK WEBHOOK
+# FLASK
 # ==========================
 app = Flask(__name__)
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
 
-    data = request.get_json(silent=True) or {}
+    log("\n==============================")
+    log("🔥 WEBHOOK HIT")
+    log("==============================")
 
-    print("\n🔥 WEBHOOK:", data)
+    # RAW BODY
+    raw_body = request.data.decode("utf-8")
+    log("RAW BODY:", raw_body)
 
-    if "callback_query" not in data:
+    # JSON PARSE
+    try:
+        data = request.get_json(force=True)
+    except Exception as e:
+        log("❌ JSON ERROR:", e)
         return "OK"
 
-    raw = data["callback_query"]["data"]
+    log("PARSED JSON:", data)
+
+    if not data:
+        log("❌ EMPTY DATA")
+        return "OK"
+
+    # ==========================
+    # CALLBACK HANDLING
+    # ==========================
+    if "callback_query" not in data:
+        log("❌ NO CALLBACK QUERY")
+        return "OK"
+
+    query = data["callback_query"]
+
+    # ✅ ACKNOWLEDGE BUTTON
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
+            data={"callback_query_id": query["id"]}
+        )
+    except Exception as e:
+        log("❌ CALLBACK ACK FAILED:", e)
+
+    raw = query.get("data", "")
+    log("👉 RAW DATA:", raw)
+
     parts = raw.split("|")
+    log("👉 PARTS:", parts)
 
     if len(parts) < 4:
-        print("❌ Invalid payload:", raw)
+        log("❌ INVALID FORMAT")
         return "OK"
 
     action = parts[0]
     stock = parts[1]
     qty = int(parts[2])
     entry = float(parts[3])
-    l1 = float(parts[4]) if len(parts) > 4 else None
 
-    print("Parsed:", action, stock, qty, entry)
+    log("👉 PARSED:", action, stock, qty, entry)
 
+    # ==========================
+    # EXECUTION
+    # ==========================
     if action == "BUY":
+
+        log("🚀 EXECUTION START")
 
         res = place_forever_entry(stock, qty, entry)
 
+        log("📊 RESULT:", res)
+
         if "orderId" in str(res):
-            send_telegram(
-                f"🟢 ENTRY ORDER PLACED\n{stock}\nQty: {qty}\nEntry: {entry}"
-            )
+            send_telegram(f"🟢 ENTRY ORDER PLACED: {stock}")
         else:
-            send_telegram(
-                f"❌ ENTRY FAILED\n{stock}\n{res}"
-            )
+            send_telegram(f"❌ ORDER FAILED: {stock}\n{res}")
 
     return "OK"
 
-# ==========================
-# HEALTH
-# ==========================
 @app.route("/")
 def home():
     return "Webhook running"
@@ -208,4 +238,5 @@ def home():
 # RUN
 # ==========================
 if __name__ == "__main__":
+    log("🚀 APP STARTED")
     app.run(host="0.0.0.0", port=8000)
