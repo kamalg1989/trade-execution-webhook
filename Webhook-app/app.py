@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (FINAL)
+# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (FINAL FIXED)
 # ==============================================
 
 import os
@@ -107,9 +107,13 @@ def place_forever_entry(stock, qty, entry):
     if not sec_id:
         return {"error": "mapping_failed"}
 
+    # ✅ FIXED correlationId
+    clean_symbol = stock.replace(".NS", "").replace(".", "").upper()
+    correlation_id = f"{clean_symbol}_entry"[:30]
+
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
-        "correlationId": f"{stock}_entry",
+        "correlationId": correlation_id,
 
         "orderFlag": "SINGLE",
         "transactionType": "BUY",
@@ -177,7 +181,7 @@ def webhook():
 
     query = data["callback_query"]
 
-    # ✅ ACK BUTTON CLICK
+    # ✅ ACK callback
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
@@ -222,7 +226,7 @@ def webhook():
     log("👉 PARSED:", action, stock, qty, entry)
 
     # ==========================
-    # EXECUTE
+    # EXECUTION
     # ==========================
     if action == "BUY":
 
