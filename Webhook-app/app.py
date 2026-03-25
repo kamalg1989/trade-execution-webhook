@@ -25,11 +25,19 @@ def load_instruments():
     try:
         df = pd.read_csv(INSTRUMENT_URL)
 
-        # ✅ Correct filters based on your CSV
+        # ✅ Filter NSE Equity
         df = df[
             (df['SEM_EXCH_ID'] == 'NSE') &
             (df['SEM_SEGMENT'] == 'E')
         ]
+
+        # ✅ Normalize once (critical fix)
+        df['SEM_TRADING_SYMBOL'] = (
+            df['SEM_TRADING_SYMBOL']
+            .astype(str)
+            .str.strip()
+            .str.upper()
+        )
 
         print("✅ Instruments loaded:", len(df))
         return df
@@ -48,14 +56,19 @@ def get_security_id(stock):
     if INSTRUMENT_DF.empty:
         return None
 
-    symbol = stock.replace(".NS", "").upper()
+    symbol = stock.replace(".NS", "").strip().upper()
 
     row = INSTRUMENT_DF[
-        INSTRUMENT_DF['SEM_TRADING_SYMBOL'].str.upper() == symbol
+        INSTRUMENT_DF['SEM_TRADING_SYMBOL'] == symbol
     ]
 
     if row.empty:
         print(f"❌ Mapping not found: {stock}")
+
+        # Debug helper
+        sample = INSTRUMENT_DF['SEM_TRADING_SYMBOL'].head(20).tolist()
+        print("Sample symbols:", sample)
+
         return None
 
     sec_id = str(row.iloc[0]['SEM_SMST_SECURITY_ID'])
