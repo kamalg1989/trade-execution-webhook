@@ -4,6 +4,7 @@
 
 import os
 import requests
+import pandas as pd
 from flask import Flask, request
 
 # ==========================
@@ -14,6 +15,53 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
 DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN")
+
+INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
+
+# ==========================
+# LOAD INSTRUMENTS
+# ==========================
+def load_instruments():
+    try:
+        df = pd.read_csv(INSTRUMENT_URL)
+
+        # Filter NSE EQ only
+        df = df[
+            (df['EXCH_ID'] == 'NSE') &
+            (df['SEGMENT'] == 'EQ')
+        ]
+
+        print("✅ Instruments loaded:", len(df))
+        return df
+
+    except Exception as e:
+        print("❌ Instrument load failed:", e)
+        return pd.DataFrame()
+
+INSTRUMENT_DF = load_instruments()
+
+# ==========================
+# SYMBOL → SECURITY_ID
+# ==========================
+def get_security_id(stock):
+
+    if INSTRUMENT_DF.empty:
+        return None
+
+    symbol = stock.replace(".NS", "")
+
+    row = INSTRUMENT_DF[
+        INSTRUMENT_DF['SYMBOL'] == symbol
+    ]
+
+    if row.empty:
+        print(f"❌ Mapping not found: {stock}")
+        return None
+
+    sec_id = str(row.iloc[0]['SECURITY_ID'])
+
+    print(f"Mapping: {stock} → {sec_id}")
+    return sec_id
 
 # ==========================
 # TELEGRAM
@@ -30,6 +78,11 @@ def send_telegram(msg):
 # ==========================
 def place_order(stock, qty):
 
+    security_id = get_security_id(stock)
+
+    if not security_id:
+        return {"error": f"SecurityId not found for {stock}"}
+
     url = "https://api.dhan.co/orders"
 
     payload = {
@@ -38,12 +91,12 @@ def place_order(stock, qty):
         "exchangeSegment": "NSE_EQ",
         "productType": "CNC",
         "orderType": "MARKET",
-        "securityId": stock.replace(".NS",""),  # ⚠️ may need fix later
+        "securityId": security_id,
         "quantity": qty
     }
 
     headers = {
-        "access-token": DHAN_ACCESS_TOKEN,
+        "access-token": DHAN_ACCESS_TOKEN.strip(),
         "Content-Type": "application/json"
     }
 
