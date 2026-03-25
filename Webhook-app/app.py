@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (DEBUG)
+# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (FINAL)
 # ==============================================
 
 import os
@@ -19,7 +19,7 @@ DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN")
 INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
 
 # ==========================
-# SAFE PRINT
+# LOGGER
 # ==========================
 def log(*args):
     print(*args, flush=True)
@@ -85,7 +85,7 @@ def get_security_id(stock):
 # TELEGRAM
 # ==========================
 def send_telegram(msg):
-    log("📤 Sending Telegram:", msg)
+    log("📤 Telegram:", msg)
 
     requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
@@ -100,7 +100,7 @@ def send_telegram(msg):
 # ==========================
 def place_forever_entry(stock, qty, entry):
 
-    log("🚀 ENTRY START:", stock, qty, entry)
+    log("\n🚀 ENTRY START:", stock, qty, entry)
 
     sec_id = get_security_id(stock)
 
@@ -160,11 +160,9 @@ def webhook():
     log("🔥 WEBHOOK HIT")
     log("==============================")
 
-    # RAW BODY
     raw_body = request.data.decode("utf-8")
     log("RAW BODY:", raw_body)
 
-    # JSON PARSE
     try:
         data = request.get_json(force=True)
     except Exception as e:
@@ -173,27 +171,20 @@ def webhook():
 
     log("PARSED JSON:", data)
 
-    if not data:
-        log("❌ EMPTY DATA")
-        return "OK"
-
-    # ==========================
-    # CALLBACK HANDLING
-    # ==========================
-    if "callback_query" not in data:
-        log("❌ NO CALLBACK QUERY")
+    if not data or "callback_query" not in data:
+        log("❌ NO CALLBACK")
         return "OK"
 
     query = data["callback_query"]
 
-    # ✅ ACKNOWLEDGE BUTTON
+    # ✅ ACK BUTTON CLICK
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
             data={"callback_query_id": query["id"]}
         )
     except Exception as e:
-        log("❌ CALLBACK ACK FAILED:", e)
+        log("❌ ACK ERROR:", e)
 
     raw = query.get("data", "")
     log("👉 RAW DATA:", raw)
@@ -201,19 +192,37 @@ def webhook():
     parts = raw.split("|")
     log("👉 PARTS:", parts)
 
-    if len(parts) < 4:
+    if len(parts) < 3:
         log("❌ INVALID FORMAT")
         return "OK"
 
     action = parts[0]
     stock = parts[1]
     qty = int(parts[2])
-    entry = float(parts[3])
+
+    # ==========================
+    # EXTRACT ENTRY FROM MESSAGE
+    # ==========================
+    msg_text = query["message"]["text"]
+    log("📩 MESSAGE TEXT:", msg_text)
+
+    entry = None
+
+    for line in msg_text.split("\n"):
+        if "Entry" in line:
+            try:
+                entry = float(line.split(":")[1].strip())
+            except:
+                pass
+
+    if not entry:
+        log("❌ ENTRY NOT FOUND")
+        return "OK"
 
     log("👉 PARSED:", action, stock, qty, entry)
 
     # ==========================
-    # EXECUTION
+    # EXECUTE
     # ==========================
     if action == "BUY":
 
