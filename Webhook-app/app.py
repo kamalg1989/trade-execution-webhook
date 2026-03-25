@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK → DHAN EXECUTION (STATELESS)
+# 🚀 TELEGRAM WEBHOOK → DHAN EXECUTION (DEBUG MODE)
 # ==============================================
 
 import os
@@ -25,13 +25,21 @@ def load_instruments():
     try:
         df = pd.read_csv(INSTRUMENT_URL)
 
-        # ✅ Filter NSE Equity
+        print("\n===== RAW CSV INFO =====")
+        print("Columns:", df.columns.tolist())
+        print("Total rows:", len(df))
+        print(df.head(5))
+
+        # Apply filter
         df = df[
             (df['SEM_EXCH_ID'] == 'NSE') &
             (df['SEM_SEGMENT'] == 'E')
         ]
 
-        # ✅ Normalize once (critical fix)
+        print("\n===== AFTER FILTER (NSE + EQ) =====")
+        print("Filtered rows:", len(df))
+
+        # Normalize
         df['SEM_TRADING_SYMBOL'] = (
             df['SEM_TRADING_SYMBOL']
             .astype(str)
@@ -39,7 +47,9 @@ def load_instruments():
             .str.upper()
         )
 
-        print("✅ Instruments loaded:", len(df))
+        print("\n===== SAMPLE SYMBOLS =====")
+        print(df['SEM_TRADING_SYMBOL'].head(20).tolist())
+
         return df
 
     except Exception as e:
@@ -54,26 +64,37 @@ INSTRUMENT_DF = load_instruments()
 def get_security_id(stock):
 
     if INSTRUMENT_DF.empty:
+        print("❌ ERROR: Instrument DF is empty")
         return None
 
     symbol = stock.replace(".NS", "").strip().upper()
 
+    print(f"\n🔍 Looking for symbol: '{symbol}'")
+
+    # Exact match
     row = INSTRUMENT_DF[
         INSTRUMENT_DF['SEM_TRADING_SYMBOL'] == symbol
     ]
 
-    if row.empty:
-        print(f"❌ Mapping not found: {stock}")
+    print("Exact match count:", len(row))
 
-        # Debug helper
-        sample = INSTRUMENT_DF['SEM_TRADING_SYMBOL'].head(20).tolist()
-        print("Sample symbols:", sample)
+    if row.empty:
+
+        print("❌ Exact match failed")
+
+        # Show similar entries
+        similar = INSTRUMENT_DF[
+            INSTRUMENT_DF['SEM_TRADING_SYMBOL'].str.contains(symbol[:3], na=False)
+        ][['SEM_TRADING_SYMBOL', 'SEM_SMST_SECURITY_ID']].head(10)
+
+        print("\n🔎 Similar matches:")
+        print(similar)
 
         return None
 
     sec_id = str(row.iloc[0]['SEM_SMST_SECURITY_ID'])
 
-    print(f"Mapping: {stock} → {sec_id}")
+    print(f"✅ Mapping FOUND: {stock} → {sec_id}")
     return sec_id
 
 # ==========================
@@ -91,12 +112,12 @@ def send_telegram(msg):
 # ==========================
 def place_order(stock, qty):
 
+    print(f"\n🚀 Placing order: {stock}, Qty: {qty}")
+
     security_id = get_security_id(stock)
 
     if not security_id:
         return {"error": f"SecurityId not found for {stock}"}
-
-    url = "https://api.dhan.co/orders"
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
@@ -108,15 +129,19 @@ def place_order(stock, qty):
         "quantity": qty
     }
 
+    print("Payload:", payload)
+
     headers = {
         "access-token": DHAN_ACCESS_TOKEN.strip(),
         "Content-Type": "application/json"
     }
 
     try:
-        r = requests.post(url, json=payload, headers=headers)
+        r = requests.post("https://api.dhan.co/orders", json=payload, headers=headers)
+        print("Dhan response:", r.text)
         return r.json()
     except Exception as e:
+        print("❌ Request failed:", e)
         return {"error": str(e)}
 
 # ==========================
@@ -129,7 +154,8 @@ def webhook():
 
     data = request.get_json(silent=True) or {}
 
-    print("Incoming:", data)
+    print("\n===== INCOMING REQUEST =====")
+    print(data)
 
     if "callback_query" not in data:
         return "OK"
@@ -141,7 +167,8 @@ def webhook():
         action = parts[0]
         stock = parts[1]
         qty = int(parts[2])
-    except:
+    except Exception as e:
+        print("❌ Parsing error:", e)
         return "OK"
 
     if action == "BUY":
