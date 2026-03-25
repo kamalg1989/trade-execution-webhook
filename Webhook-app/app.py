@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK → DHAN EXECUTION (FULL DEBUG FINAL)
+# 🚀 TELEGRAM WEBHOOK → DHAN EXECUTION (FINAL DEBUG FIXED)
 # ==============================================
 
 import os
@@ -99,12 +99,17 @@ def send_telegram(msg):
 # ==========================
 def place_order(stock, qty):
 
-    print("\n🚀 ORDER START")
-    print("Stock:", stock, "Qty:", qty)
+    print("\n==============================")
+    print("🚀 ORDER START")
+    print("==============================")
+
+    print("Stock:", stock)
+    print("Qty:", qty)
 
     sec_id = get_security_id(stock)
 
     if not sec_id:
+        print("❌ SECURITY ID FAIL")
         return {"error": "mapping_failed"}
 
     payload = {
@@ -117,7 +122,7 @@ def place_order(stock, qty):
         "quantity": qty
     }
 
-    print("Payload:", payload)
+    print("\n📦 PAYLOAD:", payload)
 
     headers = {
         "access-token": DHAN_ACCESS_TOKEN.strip(),
@@ -133,8 +138,8 @@ def place_order(stock, qty):
             headers=headers
         )
 
-        print("Status:", r.status_code)
-        print("Response:", r.text)
+        print("\n🌐 RESPONSE STATUS:", r.status_code)
+        print("🌐 RESPONSE BODY:", r.text)
 
         try:
             return r.json()
@@ -153,41 +158,50 @@ app = Flask(__name__)
 @app.route("/webhook", methods=["POST"])
 def webhook():
 
-    data = request.get_json(silent=True)
-
     print("\n==============================")
-    print("🔥 INCOMING REQUEST")
+    print("🔥 WEBHOOK HIT")
     print("==============================")
-    print(data)
 
-    if not data:
-        print("❌ EMPTY REQUEST")
+    # ✅ Always capture raw body
+    raw_body = request.data.decode("utf-8")
+    print("RAW BODY:", raw_body)
+
+    # ✅ Force JSON parsing
+    try:
+        data = request.get_json(force=True)
+    except Exception as e:
+        print("❌ JSON PARSE ERROR:", e)
         return "OK"
 
-    raw = None
+    print("PARSED JSON:", data)
 
-    # ✅ CALLBACK BUTTON
+    if not data:
+        print("❌ EMPTY DATA")
+        return "OK"
+
+    # ======================
+    # Detect payload type
+    # ======================
     if "callback_query" in data:
-        print("✅ CALLBACK QUERY")
+        print("✅ CALLBACK QUERY DETECTED")
         raw = data["callback_query"].get("data")
 
-    # ⚠️ NORMAL MESSAGE (fallback)
     elif "message" in data:
-        print("⚠️ NORMAL MESSAGE")
+        print("⚠️ MESSAGE DETECTED")
         raw = data["message"].get("text")
 
     else:
-        print("❌ UNKNOWN FORMAT")
+        print("❌ UNKNOWN PAYLOAD")
         return "OK"
 
-    print("Raw data:", raw)
+    print("RAW FIELD:", raw)
 
     if not raw:
-        print("❌ NO DATA FIELD")
+        print("❌ EMPTY RAW FIELD")
         return "OK"
 
     parts = raw.split("|")
-    print("Parts:", parts)
+    print("PARTS:", parts)
 
     if len(parts) < 2:
         print("❌ INVALID FORMAT")
@@ -197,11 +211,16 @@ def webhook():
     stock = parts[1]
     qty = int(parts[2]) if len(parts) > 2 else 1
 
-    print("Parsed →", action, stock, qty)
+    print("\n===== PARSED =====")
+    print("Action:", action)
+    print("Stock:", stock)
+    print("Qty:", qty)
 
     if action == "BUY":
+        print("🚀 EXECUTING ORDER")
         res = place_order(stock, qty)
-        print("Final result:", res)
+
+        print("\n📊 FINAL RESULT:", res)
 
         if "orderId" in str(res):
             send_telegram(f"🟢 ORDER PLACED: {stock}")
