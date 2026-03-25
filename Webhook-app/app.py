@@ -1,287 +1,255 @@
 # ==============================================
-# 🚀 FINAL SYSTEM (GPT = FULL DECISION ENGINE)
+# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (FINAL FIXED)
 # ==============================================
 
 import os
-import json
 import requests
 import pandas as pd
-import yfinance as yf
-import mplfinance as mpf
-import matplotlib.pyplot as plt
-from datetime import datetime
-from openai import OpenAI
+from flask import Flask, request
 
-from reportlab.platypus import SimpleDocTemplate, Image, Spacer, Paragraph
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet
-
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
+# ==========================
+# CONFIG
+# ==========================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-CAPITAL = 1000000
-RISK_PER_TRADE = 0.01
+DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
+DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN")
+
+INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
+
+# ==========================
+# LOGGER
+# ==========================
+def log(*args):
+    print(*args, flush=True)
+
+# ==========================
+# LOAD INSTRUMENTS
+# ==========================
+def load_instruments():
+    try:
+        df = pd.read_csv(INSTRUMENT_URL, low_memory=False)
+
+        log("===== CSV LOADED =====")
+        log("Rows:", len(df))
+
+        df = df[
+            (df['SEM_EXM_EXCH_ID'] == 'NSE') &
+            (df['SEM_SEGMENT'] == 'E')
+        ]
+
+        df['SEM_TRADING_SYMBOL'] = (
+            df['SEM_TRADING_SYMBOL']
+            .astype(str)
+            .str.strip()
+            .str.upper()
+        )
+
+        log("Filtered NSE EQ:", len(df))
+
+        return df
+
+    except Exception as e:
+        log("❌ CSV ERROR:", e)
+        return pd.DataFrame()
+
+INSTRUMENT_DF = load_instruments()
+
+# ==========================
+# SYMBOL → SECURITY_ID
+# ==========================
+def get_security_id(stock):
+
+    symbol = stock.replace(".NS", "").strip().upper()
+    log("🔍 Mapping:", symbol)
+
+    if INSTRUMENT_DF.empty:
+        log("❌ DF EMPTY")
+        return None
+
+    row = INSTRUMENT_DF[
+        INSTRUMENT_DF['SEM_TRADING_SYMBOL'] == symbol
+    ]
+
+    if row.empty:
+        log("❌ Mapping NOT FOUND:", symbol)
+        return None
+
+    sec_id = str(row.iloc[0]['SEM_SMST_SECURITY_ID'])
+    log("✅ Security ID:", sec_id)
+
+    return sec_id
 
 # ==========================
 # TELEGRAM
 # ==========================
-def send_message(text, buttons=None):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+def send_telegram(msg):
+    log("📤 Telegram:", msg)
 
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
-
-    if buttons:
-        payload["reply_markup"] = json.dumps({"inline_keyboard": buttons})
-
-    requests.post(url, data=payload)
-
-def send_document(file_path, caption=None):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
-
-    with open(file_path, "rb") as f:
-        requests.post(url, files={"document": f},
-                      data={"chat_id": CHAT_ID, "caption": caption or ""})
-
-# ==========================
-# STOCKS
-# ==========================
-def get_stocks():
-    url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20500"
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    try:
-        data = requests.get(url, headers=headers).json()
-        return [x['symbol'] + ".NS" for x in data['data'] if x['symbol'].isalpha()]
-    except:
-        return []
-
-# ==========================
-# DATA
-# ==========================
-def fetch(stock):
-    df = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
-
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    return df[['Open','High','Low','Close','Volume']].dropna()
-
-# ==========================
-# STRICT FILTER ONLY
-# ==========================
-def basic_filter(df):
-
-    if len(df) < 50:
-        return False
-
-    if df['Close'].iloc[-1] < 50:
-        return False
-
-    df['EMA50'] = df['Close'].ewm(span=50).mean()
-    df['EMA200'] = df['Close'].ewm(span=200).mean()
-
-    if not (df.iloc[-1]['Close'] > df.iloc[-1]['EMA50'] > df.iloc[-1]['EMA200']):
-        return False
-
-    return True
-
-# ==========================
-# TRADE
-# ==========================
-def create_trade(df):
-
-    entry = df.iloc[-1]['High']
-    sl = entry * 0.92
-
-    risk = entry - sl
-    qty = int((CAPITAL * RISK_PER_TRADE) / risk)
-
-    return entry, sl, qty
-
-# ==========================
-# CHART
-# ==========================
-def plot_chart(df, path):
-
-    df['EMA10'] = df['Close'].ewm(span=10).mean()
-    df['EMA21'] = df['Close'].ewm(span=21).mean()
-    df['EMA50'] = df['Close'].ewm(span=50).mean()
-    df['EMA200'] = df['Close'].ewm(span=200).mean()
-
-    apds = [
-        mpf.make_addplot(df['EMA10']),
-        mpf.make_addplot(df['EMA21']),
-        mpf.make_addplot(df['EMA50']),
-        mpf.make_addplot(df['EMA200'])
-    ]
-
-    fig, _ = mpf.plot(df, type='candle', volume=True,
-                      addplot=apds, returnfig=True)
-
-    fig.savefig(path)
-    plt.close(fig)
-
-# ==========================
-# GPT VISION (CORE LOGIC)
-# ==========================
-def gpt_decision(pdf_path):
-
-    file = client.files.create(file=open(pdf_path, "rb"), purpose="assistants")
-
-    PROMPT = """
-You are a professional breakout trader.
-
-Follow STRICTLY:
-
-WHAT TO BUY:
-- Stocks where institutional buying is visible (price + volume)
-- Strong demand zones
-- Avoid weak or manipulated structures
-
-WHEN TO BUY:
-- Clear base formation (tight consolidation)
-- Breakout readiness
-- Logical stop loss exists
-- HH-HL structure
-- Accumulation phase preferred
-
-TASK:
-
-1. For EACH stock:
-   - Score (0–10)
-   - Identify base quality
-   - Mention if institutional activity is visible
-
-2. Reject weak setups
-
-3. Give FINAL PICKS:
-   - Only stocks with score ≥ 7
-   - Max 2–3 stocks
-
-OUTPUT FORMAT:
-
-Stock | Score | Verdict
-
-Final Picks:
-- Stock1
-- Stock2
-"""
-
-    response = client.responses.create(
-        model="gpt-4.1-mini",
-        input=[{
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": PROMPT},
-                {"type": "input_file", "file_id": file.id}
-            ]
-        }]
+    requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        json={
+            "chat_id": CHAT_ID,
+            "text": msg
+        }
     )
 
-    return response.output_text
+# ==========================
+# FOREVER ENTRY ORDER
+# ==========================
+def place_forever_entry(stock, qty, entry):
+
+    log("\n🚀 ENTRY START:", stock, qty, entry)
+
+    sec_id = get_security_id(stock)
+
+    if not sec_id:
+        return {"error": "mapping_failed"}
+
+    # ✅ FIXED correlationId
+    clean_symbol = stock.replace(".NS", "").replace(".", "").upper()
+    correlation_id = f"{clean_symbol}_entry"[:30]
+
+    payload = {
+        "dhanClientId": DHAN_CLIENT_ID,
+        "correlationId": correlation_id,
+
+        "orderFlag": "SINGLE",
+        "transactionType": "BUY",
+        "exchangeSegment": "NSE_EQ",
+        "productType": "CNC",
+        "orderType": "LIMIT",
+        "validity": "DAY",
+
+        "securityId": sec_id,
+        "quantity": qty,
+
+        "price": round(entry * 1.001, 2),
+        "triggerPrice": round(entry, 2)
+    }
+
+    log("📦 PAYLOAD:", payload)
+
+    headers = {
+        "access-token": DHAN_ACCESS_TOKEN.strip(),
+        "Content-Type": "application/json"
+    }
+
+    try:
+        r = requests.post(
+            "https://api.dhan.co/v2/forever/orders",
+            json=payload,
+            headers=headers
+        )
+
+        log("🌐 STATUS:", r.status_code)
+        log("🌐 RESPONSE:", r.text)
+
+        return r.json()
+
+    except Exception as e:
+        log("❌ REQUEST ERROR:", e)
+        return {"error": str(e)}
 
 # ==========================
-# PARSE
+# FLASK
 # ==========================
-def extract_picks(text):
+app = Flask(__name__)
 
-    picks = []
+@app.route("/webhook", methods=["POST"])
+def webhook():
 
-    for line in text.split("\n"):
-        if line.startswith("-"):
-            picks.append(line.replace("-", "").strip())
+    log("\n==============================")
+    log("🔥 WEBHOOK HIT")
+    log("==============================")
 
-    return picks
+    raw_body = request.data.decode("utf-8")
+    log("RAW BODY:", raw_body)
 
-# ==========================
-# MAIN
-# ==========================
-def run():
+    try:
+        data = request.get_json(force=True)
+    except Exception as e:
+        log("❌ JSON ERROR:", e)
+        return "OK"
 
-    stocks = get_stocks()
-    shortlisted = []
+    log("PARSED JSON:", data)
 
-    for s in stocks:
-        try:
-            df = fetch(s)
+    if not data or "callback_query" not in data:
+        log("❌ NO CALLBACK")
+        return "OK"
 
-            if basic_filter(df):
-                shortlisted.append(s)
+    query = data["callback_query"]
 
-        except:
-            continue
+    # ✅ ACK callback
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
+            data={"callback_query_id": query["id"]}
+        )
+    except Exception as e:
+        log("❌ ACK ERROR:", e)
 
-    shortlisted = shortlisted[:10]  # TOP 10 to GPT
+    raw = query.get("data", "")
+    log("👉 RAW DATA:", raw)
 
-    folder = f"run_{datetime.now().strftime('%H%M%S')}"
-    os.makedirs(folder, exist_ok=True)
+    parts = raw.split("|")
+    log("👉 PARTS:", parts)
 
-    styles = getSampleStyleSheet()
-    elements = []
+    if len(parts) < 3:
+        log("❌ INVALID FORMAT")
+        return "OK"
 
-    trade_map = {}
+    action = parts[0]
+    stock = parts[1]
+    qty = int(parts[2])
 
-    for s in shortlisted:
+    # ==========================
+    # EXTRACT ENTRY FROM MESSAGE
+    # ==========================
+    msg_text = query["message"]["text"]
+    log("📩 MESSAGE TEXT:", msg_text)
 
-        df = fetch(s)
+    entry = None
 
-        img = f"{folder}/{s}.png"
-        plot_chart(df, img)
+    for line in msg_text.split("\n"):
+        if "Entry" in line:
+            try:
+                entry = float(line.split(":")[1].strip())
+            except:
+                pass
 
-        entry, sl, qty = create_trade(df)
+    if not entry:
+        log("❌ ENTRY NOT FOUND")
+        return "OK"
 
-        trade_map[s] = (entry, sl, qty)
+    log("👉 PARSED:", action, stock, qty, entry)
 
-        elements.append(Paragraph(f"<b>{s}</b>", styles['Heading2']))
-        elements.append(Spacer(1,10))
-        elements.append(Image(img, width=500, height=300))
-        elements.append(Spacer(1,20))
+    # ==========================
+    # EXECUTION
+    # ==========================
+    if action == "BUY":
 
-    pdf_path = f"{folder}/report.pdf"
-    doc = SimpleDocTemplate(pdf_path, pagesize=letter)
-    doc.build(elements)
+        log("🚀 EXECUTION START")
 
-    # SEND PDF (AUDIT)
-    send_document(pdf_path, "📄 Sent to GPT")
+        res = place_forever_entry(stock, qty, entry)
 
-    # GPT DECISION
-    gpt_output = gpt_decision(pdf_path)
+        log("📊 RESULT:", res)
 
-    send_message(f"📊 GPT ANALYSIS\n\n{gpt_output[:3500]}")
+        if "orderId" in str(res):
+            send_telegram(f"🟢 ENTRY ORDER PLACED: {stock}")
+        else:
+            send_telegram(f"❌ ORDER FAILED: {stock}\n{res}")
 
-    picks = extract_picks(gpt_output)
+    return "OK"
 
-    # SEND TRADES
-    for s in picks:
-
-        if s not in trade_map:
-            continue
-
-        entry, sl, qty = trade_map[s]
-
-        msg = f"""
-📈 *FINAL TRADE*
-
-*{s}*
-
-Entry: `{entry}`
-SL: `{sl}`
-Qty: `{qty}`
-"""
-
-        callback = f"BUY|{s}|{qty}"
-        buttons = [[{"text":"✅ Confirm Buy","callback_data":callback}]]
-
-        send_message(msg, buttons)
+@app.route("/")
+def home():
+    return "Webhook running"
 
 # ==========================
 # RUN
 # ==========================
 if __name__ == "__main__":
-    run()
+    log("🚀 APP STARTED")
+    app.run(host="0.0.0.0", port=8000)
