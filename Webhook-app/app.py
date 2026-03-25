@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK → DHAN EXECUTION (DEBUG MODE)
+# 🚀 TELEGRAM WEBHOOK → DHAN EXECUTION (FINAL)
 # ==============================================
 
 import os
@@ -23,23 +23,22 @@ INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
 # ==========================
 def load_instruments():
     try:
-        df = pd.read_csv(INSTRUMENT_URL)
+        df = pd.read_csv(INSTRUMENT_URL, low_memory=False)
 
         print("\n===== RAW CSV INFO =====")
         print("Columns:", df.columns.tolist())
         print("Total rows:", len(df))
-        print(df.head(5))
 
-        # Apply filter
+        # ✅ FIXED COLUMN NAME
         df = df[
-            (df['SEM_EXCH_ID'] == 'NSE') &
+            (df['SEM_EXM_EXCH_ID'] == 'NSE') &
             (df['SEM_SEGMENT'] == 'E')
         ]
 
-        print("\n===== AFTER FILTER (NSE + EQ) =====")
+        print("\n===== AFTER FILTER (NSE EQ) =====")
         print("Filtered rows:", len(df))
 
-        # Normalize
+        # ✅ Normalize symbols
         df['SEM_TRADING_SYMBOL'] = (
             df['SEM_TRADING_SYMBOL']
             .astype(str)
@@ -64,30 +63,28 @@ INSTRUMENT_DF = load_instruments()
 def get_security_id(stock):
 
     if INSTRUMENT_DF.empty:
-        print("❌ ERROR: Instrument DF is empty")
+        print("❌ ERROR: Instrument DF empty")
         return None
 
     symbol = stock.replace(".NS", "").strip().upper()
 
-    print(f"\n🔍 Looking for symbol: '{symbol}'")
+    print(f"\n🔍 Looking for: {symbol}")
 
-    # Exact match
     row = INSTRUMENT_DF[
         INSTRUMENT_DF['SEM_TRADING_SYMBOL'] == symbol
     ]
 
-    print("Exact match count:", len(row))
+    print("Match count:", len(row))
 
     if row.empty:
+        print(f"❌ Mapping not found: {stock}")
 
-        print("❌ Exact match failed")
-
-        # Show similar entries
+        # Debug similar
         similar = INSTRUMENT_DF[
             INSTRUMENT_DF['SEM_TRADING_SYMBOL'].str.contains(symbol[:3], na=False)
         ][['SEM_TRADING_SYMBOL', 'SEM_SMST_SECURITY_ID']].head(10)
 
-        print("\n🔎 Similar matches:")
+        print("Similar matches:")
         print(similar)
 
         return None
