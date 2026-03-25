@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK → DHAN EXECUTION (FINAL DEBUG FIXED)
+# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (SINGLE)
 # ==============================================
 
 import os
@@ -22,32 +22,22 @@ INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
 # LOAD INSTRUMENTS
 # ==========================
 def load_instruments():
-    try:
-        df = pd.read_csv(INSTRUMENT_URL, low_memory=False)
+    df = pd.read_csv(INSTRUMENT_URL, low_memory=False)
 
-        print("\n===== CSV LOADED =====")
-        print("Rows:", len(df))
-        print("Columns:", df.columns.tolist())
+    df = df[
+        (df['SEM_EXM_EXCH_ID'] == 'NSE') &
+        (df['SEM_SEGMENT'] == 'E')
+    ]
 
-        df = df[
-            (df['SEM_EXM_EXCH_ID'] == 'NSE') &
-            (df['SEM_SEGMENT'] == 'E')
-        ]
+    df['SEM_TRADING_SYMBOL'] = (
+        df['SEM_TRADING_SYMBOL']
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
 
-        print("Filtered NSE EQ:", len(df))
-
-        df['SEM_TRADING_SYMBOL'] = (
-            df['SEM_TRADING_SYMBOL']
-            .astype(str)
-            .str.strip()
-            .str.upper()
-        )
-
-        return df
-
-    except Exception as e:
-        print("❌ CSV ERROR:", e)
-        return pd.DataFrame()
+    print("✅ Instruments loaded:", len(df))
+    return df
 
 INSTRUMENT_DF = load_instruments()
 
@@ -58,177 +48,158 @@ def get_security_id(stock):
 
     symbol = stock.replace(".NS", "").strip().upper()
 
-    print("\n🔍 MAPPING:", symbol)
-
-    if INSTRUMENT_DF.empty:
-        print("❌ DF EMPTY")
-        return None
-
     row = INSTRUMENT_DF[
         INSTRUMENT_DF['SEM_TRADING_SYMBOL'] == symbol
     ]
 
-    print("Match count:", len(row))
-
     if row.empty:
-        print("❌ NOT FOUND")
-
-        similar = INSTRUMENT_DF[
-            INSTRUMENT_DF['SEM_TRADING_SYMBOL'].str.contains(symbol[:3], na=False)
-        ][['SEM_TRADING_SYMBOL','SEM_SMST_SECURITY_ID']].head(10)
-
-        print("Similar:", similar)
+        print(f"❌ Mapping failed: {stock}")
         return None
 
-    sec_id = str(row.iloc[0]['SEM_SMST_SECURITY_ID'])
-    print("✅ FOUND:", sec_id)
-
-    return sec_id
+    return str(row.iloc[0]['SEM_SMST_SECURITY_ID'])
 
 # ==========================
 # TELEGRAM
 # ==========================
-def send_telegram(msg):
-    requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": msg}
-    )
+def send_telegram(msg, buttons=None):
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": msg,
+        "parse_mode": "Markdown"
+    }
+
+    if buttons:
+        payload["reply_markup"] = {
+            "inline_keyboard": buttons
+        }
+
+    requests.post(url, json=payload)
 
 # ==========================
-# DHAN ORDER
+# FOREVER ENTRY ORDER
 # ==========================
-def place_order(stock, qty):
+def place_forever_entry(stock, qty, entry):
 
-    print("\n==============================")
-    print("🚀 ORDER START")
-    print("==============================")
-
-    print("Stock:", stock)
-    print("Qty:", qty)
+    print("\n🚀 FOREVER ENTRY:", stock, qty, entry)
 
     sec_id = get_security_id(stock)
 
     if not sec_id:
-        print("❌ SECURITY ID FAIL")
         return {"error": "mapping_failed"}
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
+        "correlationId": f"{stock}_entry",
+
+        "orderFlag": "SINGLE",
         "transactionType": "BUY",
         "exchangeSegment": "NSE_EQ",
         "productType": "CNC",
-        "orderType": "MARKET",
-        "securityId": sec_id,
-        "quantity": qty
-    }
+        "orderType": "LIMIT",
+        "validity": "DAY",
 
-    print("\n📦 PAYLOAD:", payload)
+        "securityId": sec_id,
+        "quantity": qty,
+
+        # ENTRY LOGIC
+        "price": round(entry * 1.001, 2),
+        "triggerPrice": round(entry, 2)
+    }
 
     headers = {
         "access-token": DHAN_ACCESS_TOKEN.strip(),
         "Content-Type": "application/json"
     }
 
-    print("Token length:", len(DHAN_ACCESS_TOKEN.strip()))
+    r = requests.post(
+        "https://api.dhan.co/v2/forever/orders",
+        json=payload,
+        headers=headers
+    )
+
+    print("STATUS:", r.status_code)
+    print("BODY:", r.text)
 
     try:
-        r = requests.post(
-            "https://api.dhan.co/orders",
-            json=payload,
-            headers=headers
-        )
-
-        print("\n🌐 RESPONSE STATUS:", r.status_code)
-        print("🌐 RESPONSE BODY:", r.text)
-
-        try:
-            return r.json()
-        except:
-            return {"raw": r.text}
-
-    except Exception as e:
-        print("❌ REQUEST ERROR:", e)
-        return {"error": str(e)}
+        return r.json()
+    except:
+        return {"raw": r.text}
 
 # ==========================
-# FLASK
+# ALERT FORMAT (FROM SCANNER)
+# ==========================
+def send_trade_alert(stock, entry, l1, qty):
+
+    msg = f"""
+📈 *TRADE ALERT*
+
+{stock}
+
+Entry (H1): {entry}
+L1: {l1}
+Qty: {qty}
+"""
+
+    buttons = [[
+        {
+            "text": "✅ Confirm Buy",
+            "callback_data": f"BUY|{stock}|{qty}|{entry}|{l1}"
+        }
+    ]]
+
+    send_telegram(msg, buttons)
+
+# ==========================
+# FLASK WEBHOOK
 # ==========================
 app = Flask(__name__)
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
 
-    print("\n==============================")
-    print("🔥 WEBHOOK HIT")
-    print("==============================")
+    data = request.get_json(silent=True) or {}
 
-    # ✅ Always capture raw body
-    raw_body = request.data.decode("utf-8")
-    print("RAW BODY:", raw_body)
+    print("\n🔥 WEBHOOK:", data)
 
-    # ✅ Force JSON parsing
-    try:
-        data = request.get_json(force=True)
-    except Exception as e:
-        print("❌ JSON PARSE ERROR:", e)
+    if "callback_query" not in data:
         return "OK"
 
-    print("PARSED JSON:", data)
-
-    if not data:
-        print("❌ EMPTY DATA")
-        return "OK"
-
-    # ======================
-    # Detect payload type
-    # ======================
-    if "callback_query" in data:
-        print("✅ CALLBACK QUERY DETECTED")
-        raw = data["callback_query"].get("data")
-
-    elif "message" in data:
-        print("⚠️ MESSAGE DETECTED")
-        raw = data["message"].get("text")
-
-    else:
-        print("❌ UNKNOWN PAYLOAD")
-        return "OK"
-
-    print("RAW FIELD:", raw)
-
-    if not raw:
-        print("❌ EMPTY RAW FIELD")
-        return "OK"
-
+    raw = data["callback_query"]["data"]
     parts = raw.split("|")
-    print("PARTS:", parts)
 
-    if len(parts) < 2:
-        print("❌ INVALID FORMAT")
+    if len(parts) < 4:
+        print("❌ Invalid payload:", raw)
         return "OK"
 
     action = parts[0]
     stock = parts[1]
-    qty = int(parts[2]) if len(parts) > 2 else 1
+    qty = int(parts[2])
+    entry = float(parts[3])
+    l1 = float(parts[4]) if len(parts) > 4 else None
 
-    print("\n===== PARSED =====")
-    print("Action:", action)
-    print("Stock:", stock)
-    print("Qty:", qty)
+    print("Parsed:", action, stock, qty, entry)
 
     if action == "BUY":
-        print("🚀 EXECUTING ORDER")
-        res = place_order(stock, qty)
 
-        print("\n📊 FINAL RESULT:", res)
+        res = place_forever_entry(stock, qty, entry)
 
         if "orderId" in str(res):
-            send_telegram(f"🟢 ORDER PLACED: {stock}")
+            send_telegram(
+                f"🟢 ENTRY ORDER PLACED\n{stock}\nQty: {qty}\nEntry: {entry}"
+            )
         else:
-            send_telegram(f"❌ ORDER FAILED: {stock}\n{res}")
+            send_telegram(
+                f"❌ ENTRY FAILED\n{stock}\n{res}"
+            )
 
     return "OK"
 
+# ==========================
+# HEALTH
+# ==========================
 @app.route("/")
 def home():
     return "Webhook running"
