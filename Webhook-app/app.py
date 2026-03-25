@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK → DHAN EXECUTION (FINAL)
+# 🚀 TELEGRAM WEBHOOK → DHAN EXECUTION (FULL DEBUG)
 # ==============================================
 
 import os
@@ -7,9 +7,6 @@ import requests
 import pandas as pd
 from flask import Flask, request
 
-# ==========================
-# CONFIG
-# ==========================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -25,20 +22,17 @@ def load_instruments():
     try:
         df = pd.read_csv(INSTRUMENT_URL, low_memory=False)
 
-        print("\n===== RAW CSV INFO =====")
-        print("Columns:", df.columns.tolist())
+        print("\n===== CSV LOADED =====")
         print("Total rows:", len(df))
+        print("Columns:", df.columns.tolist())
 
-        # ✅ FIXED COLUMN NAME
         df = df[
             (df['SEM_EXM_EXCH_ID'] == 'NSE') &
             (df['SEM_SEGMENT'] == 'E')
         ]
 
-        print("\n===== AFTER FILTER (NSE EQ) =====")
-        print("Filtered rows:", len(df))
+        print("Filtered NSE EQ rows:", len(df))
 
-        # ✅ Normalize symbols
         df['SEM_TRADING_SYMBOL'] = (
             df['SEM_TRADING_SYMBOL']
             .astype(str)
@@ -46,76 +40,82 @@ def load_instruments():
             .str.upper()
         )
 
-        print("\n===== SAMPLE SYMBOLS =====")
-        print(df['SEM_TRADING_SYMBOL'].head(20).tolist())
-
         return df
 
     except Exception as e:
-        print("❌ Instrument load failed:", e)
+        print("❌ CSV LOAD ERROR:", e)
         return pd.DataFrame()
 
 INSTRUMENT_DF = load_instruments()
 
 # ==========================
-# SYMBOL → SECURITY_ID
+# MAPPING
 # ==========================
 def get_security_id(stock):
 
-    if INSTRUMENT_DF.empty:
-        print("❌ ERROR: Instrument DF empty")
-        return None
-
     symbol = stock.replace(".NS", "").strip().upper()
 
-    print(f"\n🔍 Looking for: {symbol}")
+    print(f"\n🔍 MAPPING START → {stock}")
+    print("Normalized symbol:", symbol)
+
+    if INSTRUMENT_DF.empty:
+        print("❌ DF EMPTY")
+        return None
 
     row = INSTRUMENT_DF[
         INSTRUMENT_DF['SEM_TRADING_SYMBOL'] == symbol
     ]
 
-    print("Match count:", len(row))
+    print("Exact match rows:", len(row))
 
-    if row.empty:
-        print(f"❌ Mapping not found: {stock}")
+    if not row.empty:
+        sec_id = str(row.iloc[0]['SEM_SMST_SECURITY_ID'])
+        print(f"✅ EXACT MATCH → {symbol} → {sec_id}")
+        return sec_id
 
-        # Debug similar
-        similar = INSTRUMENT_DF[
-            INSTRUMENT_DF['SEM_TRADING_SYMBOL'].str.contains(symbol[:3], na=False)
-        ][['SEM_TRADING_SYMBOL', 'SEM_SMST_SECURITY_ID']].head(10)
+    # fallback debug
+    print("❌ EXACT MATCH FAILED")
 
-        print("Similar matches:")
-        print(similar)
+    similar = INSTRUMENT_DF[
+        INSTRUMENT_DF['SEM_TRADING_SYMBOL'].str.contains(symbol[:3], na=False)
+    ][['SEM_TRADING_SYMBOL','SEM_SMST_SECURITY_ID']].head(10)
 
-        return None
+    print("🔎 SIMILAR MATCHES:")
+    print(similar)
 
-    sec_id = str(row.iloc[0]['SEM_SMST_SECURITY_ID'])
-
-    print(f"✅ Mapping FOUND: {stock} → {sec_id}")
-    return sec_id
+    return None
 
 # ==========================
 # TELEGRAM
 # ==========================
 def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={
-        "chat_id": CHAT_ID,
-        "text": msg
-    })
+    requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        data={"chat_id": CHAT_ID, "text": msg}
+    )
 
 # ==========================
 # DHAN ORDER
 # ==========================
 def place_order(stock, qty):
 
-    print(f"\n🚀 Placing order: {stock}, Qty: {qty}")
+    print("\n==============================")
+    print("🚀 ORDER FLOW START")
+    print("==============================")
 
+    print("Stock:", stock)
+    print("Qty:", qty)
+
+    # Step 1: Mapping
     security_id = get_security_id(stock)
 
     if not security_id:
-        return {"error": f"SecurityId not found for {stock}"}
+        print("❌ SECURITY ID NOT FOUND")
+        return {"error": "mapping_failed"}
 
+    print("Security ID:", security_id)
+
+    # Step 2: Payload
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
         "transactionType": "BUY",
@@ -126,19 +126,38 @@ def place_order(stock, qty):
         "quantity": qty
     }
 
-    print("Payload:", payload)
+    print("\n📦 PAYLOAD:")
+    print(payload)
 
     headers = {
         "access-token": DHAN_ACCESS_TOKEN.strip(),
         "Content-Type": "application/json"
     }
 
+    print("\n🔐 HEADERS CHECK:")
+    print("Token length:", len(DHAN_ACCESS_TOKEN.strip()))
+    print("Client ID:", DHAN_CLIENT_ID)
+
+    # Step 3: API Call
     try:
-        r = requests.post("https://api.dhan.co/orders", json=payload, headers=headers)
-        print("Dhan response:", r.text)
-        return r.json()
+        r = requests.post(
+            "https://api.dhan.co/orders",
+            json=payload,
+            headers=headers
+        )
+
+        print("\n🌐 RESPONSE STATUS:", r.status_code)
+        print("🌐 RESPONSE TEXT:", r.text)
+
+        try:
+            res = r.json()
+        except:
+            res = {"raw": r.text}
+
+        return res
+
     except Exception as e:
-        print("❌ Request failed:", e)
+        print("❌ REQUEST EXCEPTION:", e)
         return {"error": str(e)}
 
 # ==========================
@@ -155,39 +174,34 @@ def webhook():
     print(data)
 
     if "callback_query" not in data:
+        print("No callback_query")
         return "OK"
 
-    query = data["callback_query"]
-
     try:
-        parts = query["data"].split("|")
+        parts = data["callback_query"]["data"].split("|")
         action = parts[0]
         stock = parts[1]
         qty = int(parts[2])
     except Exception as e:
-        print("❌ Parsing error:", e)
+        print("❌ PARSE ERROR:", e)
         return "OK"
 
     if action == "BUY":
 
-        res = place_order(stock, qty)
+        result = place_order(stock, qty)
 
-        if "orderId" in str(res):
-            send_telegram(f"🟢 ORDER PLACED: {stock} | Qty: {qty}")
+        print("\n📊 FINAL RESULT:", result)
+
+        if "orderId" in str(result):
+            send_telegram(f"🟢 ORDER PLACED: {stock}")
         else:
-            send_telegram(f"❌ ORDER FAILED: {stock}\n{res}")
+            send_telegram(f"❌ ORDER FAILED: {stock}\n{result}")
 
     return "OK"
 
-# ==========================
-# HEALTH CHECK
-# ==========================
 @app.route("/")
 def home():
     return "Webhook running"
 
-# ==========================
-# RUN
-# ==========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
