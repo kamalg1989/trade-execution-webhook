@@ -1,12 +1,12 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (FINAL)
+# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (PROD)
 # ==============================================
 
 import os
 import requests
 import pandas as pd
 import pyotp
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from flask import Flask, request
 
 # ==========================
@@ -25,7 +25,7 @@ CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
 
 # ✅ Duplicate protection
-PROCESSED_CALLBACKS = []
+PROCESSED_CALLBACKS = set()
 MAX_CACHE = 500
 
 # ==========================
@@ -51,7 +51,8 @@ def generate_token():
 
         r = requests.post(
             "https://auth.dhan.co/app/generateAccessToken",
-            params=params
+            params=params,
+            timeout=10
         )
 
         data = r.json()
@@ -59,8 +60,8 @@ def generate_token():
         token = data.get("accessToken")
         expiry = data.get("expiryTime")
 
-        if token:
-            TOKEN_EXPIRY = datetime.fromisoformat(expiry)
+        if token and expiry:
+            TOKEN_EXPIRY = datetime.fromisoformat(expiry).replace(tzinfo=timezone.utc)
             log("✅ TOKEN GENERATED")
             return token
 
@@ -76,7 +77,7 @@ def is_token_expired():
     if not TOKEN_EXPIRY:
         return True
 
-    return datetime.now() > (TOKEN_EXPIRY - timedelta(minutes=5))
+    return datetime.now(timezone.utc) > (TOKEN_EXPIRY - timedelta(minutes=5))
 
 
 def get_token():
@@ -85,6 +86,9 @@ def get_token():
     if not CURRENT_TOKEN or is_token_expired():
         log("🔁 Refreshing token...")
         CURRENT_TOKEN = generate_token()
+
+    if not CURRENT_TOKEN:
+        raise Exception("Token generation failed")
 
     return CURRENT_TOKEN
 
@@ -136,10 +140,14 @@ def get_security_id(stock):
 # TELEGRAM
 # ==========================
 def send_telegram(msg):
-    requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        json={"chat_id": CHAT_ID, "text": msg}
-    )
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": CHAT_ID, "text": msg},
+            timeout=10
+        )
+    except Exception as e:
+        log("❌ Telegram Error:", e)
 
 # ==========================
 # FOREVER ENTRY ORDER
@@ -172,15 +180,15 @@ def place_forever_entry(stock, qty, entry):
 
     url = "https://api.dhan.co/v2/forever/orders"
 
-    headers = {
-        "access-token": get_token(),
-        "Content-Type": "application/json"
-    }
-
     try:
-        r = requests.post(url, json=payload, headers=headers)
+        headers = {
+            "access-token": get_token(),
+            "Content-Type": "application/json"
+        }
 
-        # Retry if token expired
+        r = requests.post(url, json=payload, headers=headers, timeout=10)
+
+        # Retry if token expired mid-call
         if r.status_code == 401:
             log("🔁 Token expired → regenerating")
 
@@ -189,7 +197,7 @@ def place_forever_entry(stock, qty, entry):
 
             headers["access-token"] = CURRENT_TOKEN
 
-            r = requests.post(url, json=payload, headers=headers)
+            r = requests.post(url, json=payload, headers=headers, timeout=10)
 
         log("🌐 STATUS:", r.status_code)
         log("🌐 RESPONSE:", r.text)
@@ -216,22 +224,26 @@ def webhook():
     query = data["callback_query"]
     callback_id = query["id"]
 
-    # ✅ DUPLICATE PROTECTION
+    # ✅ Duplicate protection
     if callback_id in PROCESSED_CALLBACKS:
         log("⚠️ Duplicate click ignored:", callback_id)
         return "OK"
 
-    PROCESSED_CALLBACKS.append(callback_id)
+    PROCESSED_CALLBACKS.add(callback_id)
 
-    # Cleanup memory
+    # Cleanup cache
     if len(PROCESSED_CALLBACKS) > MAX_CACHE:
-        PROCESSED_CALLBACKS.pop(0)
+        PROCESSED_CALLBACKS.pop()
 
     # ACK
-    requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
-        data={"callback_query_id": callback_id}
-    )
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
+            data={"callback_query_id": callback_id},
+            timeout=5
+        )
+    except:
+        pass
 
     parts = query.get("data", "").split("|")
 
@@ -240,7 +252,7 @@ def webhook():
 
     action, stock, qty = parts[0], parts[1], int(parts[2])
 
-    msg_text = query["message"]["text"]
+    msg_text = query.get("message", {}).get("text", "")
 
     entry = None
     for line in msg_text.split("\n"):
@@ -251,6 +263,7 @@ def webhook():
                 pass
 
     if not entry:
+        log("❌ Entry not found")
         return "OK"
 
     if action == "BUY":
@@ -268,13 +281,12 @@ def home():
     return "Webhook running"
 
 # ==========================
-# RUN
+# RUN (LOCAL ONLY)
 # ==========================
 if __name__ == "__main__":
     log("🚀 APP STARTED")
 
     CURRENT_TOKEN = generate_token()
 
-    if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
