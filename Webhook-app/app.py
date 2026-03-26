@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (PROD)
+# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (DEDUP FIXED)
 # ==============================================
 
 import os
@@ -8,6 +8,7 @@ import pandas as pd
 import pyotp
 from datetime import datetime, timedelta, timezone
 from flask import Flask, request
+import threading
 
 # ==========================
 # CONFIG
@@ -24,9 +25,13 @@ INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
 
-# ✅ Duplicate protection
+# ✅ Dedup storage
 PROCESSED_CALLBACKS = set()
+PROCESSED_ORDERS = {}
+LOCK = threading.Lock()
+
 MAX_CACHE = 500
+ORDER_WINDOW_SECONDS = 60  # prevent duplicate orders within 1 min
 
 # ==========================
 # LOGGER
@@ -42,7 +47,7 @@ def generate_token():
 
     try:
         totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
-        log("TOTP:", totp)
+
         params = {
             "dhanClientId": DHAN_CLIENT_ID,
             "pin": DHAN_PIN,
@@ -96,27 +101,17 @@ def get_token():
 # LOAD INSTRUMENTS
 # ==========================
 def load_instruments():
-    try:
-        df = pd.read_csv(INSTRUMENT_URL, low_memory=False)
+    df = pd.read_csv(INSTRUMENT_URL, low_memory=False)
 
-        df = df[
-            (df['SEM_EXM_EXCH_ID'] == 'NSE') &
-            (df['SEM_SEGMENT'] == 'E')
-        ]
+    df = df[
+        (df['SEM_EXM_EXCH_ID'] == 'NSE') &
+        (df['SEM_SEGMENT'] == 'E')
+    ]
 
-        df['SEM_TRADING_SYMBOL'] = (
-            df['SEM_TRADING_SYMBOL']
-            .astype(str)
-            .str.strip()
-            .str.upper()
-        )
+    df['SEM_TRADING_SYMBOL'] = df['SEM_TRADING_SYMBOL'].astype(str).str.strip().str.upper()
 
-        log("✅ Instruments Loaded:", len(df))
-        return df
-
-    except Exception as e:
-        log("❌ CSV ERROR:", e)
-        return pd.DataFrame()
+    log("✅ Instruments Loaded:", len(df))
+    return df
 
 INSTRUMENT_DF = load_instruments()
 
@@ -150,22 +145,49 @@ def send_telegram(msg):
         log("❌ Telegram Error:", e)
 
 # ==========================
-# FOREVER ENTRY ORDER
+# ORDER DEDUP CHECK
+# ==========================
+def is_duplicate_order(stock, qty, entry):
+    key = f"{stock}_{qty}_{entry}"
+
+    now = datetime.now()
+
+    with LOCK:
+        if key in PROCESSED_ORDERS:
+            last_time = PROCESSED_ORDERS[key]
+
+            if (now - last_time).seconds < ORDER_WINDOW_SECONDS:
+                log("⚠️ Duplicate ORDER blocked:", key)
+                return True
+
+        PROCESSED_ORDERS[key] = now
+
+        # cleanup
+        if len(PROCESSED_ORDERS) > MAX_CACHE:
+            PROCESSED_ORDERS.clear()
+
+    return False
+
+# ==========================
+# ORDER
 # ==========================
 def place_forever_entry(stock, qty, entry):
+
+    if is_duplicate_order(stock, qty, entry):
+        return {"error": "duplicate_blocked"}
 
     log("\n🚀 ENTRY:", stock, qty, entry)
 
     sec_id = get_security_id(stock)
-
     if not sec_id:
         return {"error": "mapping_failed"}
 
-    correlation_id = f"{stock.replace('.NS','').upper()}_entry"[:30]
+    # ✅ unique correlation id
+    correlation_id = f"{stock.replace('.NS','')}_{int(datetime.now().timestamp())}"
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
-        "correlationId": correlation_id,
+        "correlationId": correlation_id[:30],
         "orderFlag": "SINGLE",
         "transactionType": "BUY",
         "exchangeSegment": "NSE_EQ",
@@ -180,33 +202,25 @@ def place_forever_entry(stock, qty, entry):
 
     url = "https://api.dhan.co/v2/forever/orders"
 
-    try:
-        headers = {
-            "access-token": get_token(),
-            "Content-Type": "application/json"
-        }
+    headers = {
+        "access-token": get_token(),
+        "Content-Type": "application/json"
+    }
 
+    r = requests.post(url, json=payload, headers=headers, timeout=10)
+
+    if r.status_code == 401:
+        log("🔁 Token expired → regenerating")
+        global CURRENT_TOKEN
+        CURRENT_TOKEN = generate_token()
+
+        headers["access-token"] = CURRENT_TOKEN
         r = requests.post(url, json=payload, headers=headers, timeout=10)
 
-        # Retry if token expired mid-call
-        if r.status_code == 401:
-            log("🔁 Token expired → regenerating")
+    log("🌐 STATUS:", r.status_code)
+    log("🌐 RESPONSE:", r.text)
 
-            global CURRENT_TOKEN
-            CURRENT_TOKEN = generate_token()
-
-            headers["access-token"] = CURRENT_TOKEN
-
-            r = requests.post(url, json=payload, headers=headers, timeout=10)
-
-        log("🌐 STATUS:", r.status_code)
-        log("🌐 RESPONSE:", r.text)
-
-        return r.json()
-
-    except Exception as e:
-        log("❌ ORDER ERROR:", e)
-        return {"error": str(e)}
+    return r.json()
 
 # ==========================
 # FLASK
@@ -224,29 +238,13 @@ def webhook():
     query = data["callback_query"]
     callback_id = query["id"]
 
-    # ✅ Duplicate protection
-    if callback_id in PROCESSED_CALLBACKS:
-        log("⚠️ Duplicate click ignored:", callback_id)
-        return "OK"
-
-    PROCESSED_CALLBACKS.add(callback_id)
-
-    # Cleanup cache
-    if len(PROCESSED_CALLBACKS) > MAX_CACHE:
-        PROCESSED_CALLBACKS.pop()
-
-    # ACK
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
-            data={"callback_query_id": callback_id},
-            timeout=5
-        )
-    except:
-        pass
+    # ✅ callback dedup
+    with LOCK:
+        if callback_id in PROCESSED_CALLBACKS:
+            return "OK"
+        PROCESSED_CALLBACKS.add(callback_id)
 
     parts = query.get("data", "").split("|")
-
     if len(parts) < 3:
         return "OK"
 
@@ -263,13 +261,14 @@ def webhook():
                 pass
 
     if not entry:
-        log("❌ Entry not found")
         return "OK"
 
     if action == "BUY":
         res = place_forever_entry(stock, qty, entry)
 
-        if "orderId" in str(res):
+        if res.get("error") == "duplicate_blocked":
+            log("⚠️ Order skipped (duplicate)")
+        elif "orderId" in str(res):
             send_telegram(f"🟢 ENTRY ORDER PLACED: {stock}")
         else:
             send_telegram(f"❌ ORDER FAILED: {stock}\n{res}")
@@ -279,14 +278,3 @@ def webhook():
 @app.route("/")
 def home():
     return "Webhook running"
-
-# ==========================
-# RUN (LOCAL ONLY)
-# ==========================
-if __name__ == "__main__":
-    log("🚀 APP STARTED")
-
-    CURRENT_TOKEN = generate_token()
-
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
