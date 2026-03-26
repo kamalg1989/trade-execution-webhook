@@ -1,368 +1,292 @@
 # ==============================================
-# 🚀 FINAL SYSTEM (INSTITUTIONAL + CLEAN CHARTS)
+# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (PROD)
 # ==============================================
 
 import os
-import json
-import time
 import requests
 import pandas as pd
-import yfinance as yf
-import mplfinance as mpf
-import matplotlib.pyplot as plt
-from datetime import datetime
-from openai import OpenAI
-from matplotlib.patches import Patch
-
-from reportlab.platypus import SimpleDocTemplate, Image, Spacer
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.utils import ImageReader
+import pyotp
+from datetime import datetime, timedelta, timezone
+from flask import Flask, request
 
 # ==========================
 # CONFIG
 # ==========================
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-CAPITAL = 1000000
-RISK_PER_TRADE = 0.01
+DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
+DHAN_PIN = os.getenv("DHAN_PIN")
+DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
+
+INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
+
+CURRENT_TOKEN = None
+TOKEN_EXPIRY = None
+
+# ✅ Duplicate protection
+PROCESSED_CALLBACKS = set()
+MAX_CACHE = 500
+
+# ==========================
+# LOGGER
+# ==========================
+def log(*args):
+    print(*args, flush=True)
+
+# ==========================
+# TOKEN MANAGEMENT
+# ==========================
+def generate_token():
+    global TOKEN_EXPIRY
+
+    try:
+        totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
+
+        params = {
+            "dhanClientId": DHAN_CLIENT_ID,
+            "pin": DHAN_PIN,
+            "totp": totp
+        }
+
+        r = requests.post(
+            "https://auth.dhan.co/app/generateAccessToken",
+            params=params,
+            timeout=10
+        )
+
+        data = r.json()
+
+        token = data.get("accessToken")
+        expiry = data.get("expiryTime")
+
+        if token and expiry:
+            TOKEN_EXPIRY = datetime.fromisoformat(expiry).replace(tzinfo=timezone.utc)
+            log("✅ TOKEN GENERATED")
+            return token
+
+        log("❌ TOKEN FAILED:", data)
+
+    except Exception as e:
+        log("❌ TOKEN ERROR:", e)
+
+    return None
+
+
+def is_token_expired():
+    if not TOKEN_EXPIRY:
+        return True
+
+    return datetime.now(timezone.utc) > (TOKEN_EXPIRY - timedelta(minutes=5))
+
+
+def get_token():
+    global CURRENT_TOKEN
+
+    if not CURRENT_TOKEN or is_token_expired():
+        log("🔁 Refreshing token...")
+        CURRENT_TOKEN = generate_token()
+
+    if not CURRENT_TOKEN:
+        raise Exception("Token generation failed")
+
+    return CURRENT_TOKEN
+
+# ==========================
+# LOAD INSTRUMENTS
+# ==========================
+def load_instruments():
+    try:
+        df = pd.read_csv(INSTRUMENT_URL, low_memory=False)
+
+        df = df[
+            (df['SEM_EXM_EXCH_ID'] == 'NSE') &
+            (df['SEM_SEGMENT'] == 'E')
+        ]
+
+        df['SEM_TRADING_SYMBOL'] = (
+            df['SEM_TRADING_SYMBOL']
+            .astype(str)
+            .str.strip()
+            .str.upper()
+        )
+
+        log("✅ Instruments Loaded:", len(df))
+        return df
+
+    except Exception as e:
+        log("❌ CSV ERROR:", e)
+        return pd.DataFrame()
+
+INSTRUMENT_DF = load_instruments()
+
+# ==========================
+# SYMBOL → SECURITY_ID
+# ==========================
+def get_security_id(stock):
+    symbol = stock.replace(".NS", "").strip().upper()
+
+    row = INSTRUMENT_DF[
+        INSTRUMENT_DF['SEM_TRADING_SYMBOL'] == symbol
+    ]
+
+    if row.empty:
+        log("❌ Mapping NOT FOUND:", symbol)
+        return None
+
+    return str(row.iloc[0]['SEM_SMST_SECURITY_ID'])
 
 # ==========================
 # TELEGRAM
 # ==========================
-def send_message(text, buttons=None):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+def send_telegram(msg):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": CHAT_ID, "text": msg},
+            timeout=10
+        )
+    except Exception as e:
+        log("❌ Telegram Error:", e)
+
+# ==========================
+# FOREVER ENTRY ORDER
+# ==========================
+def place_forever_entry(stock, qty, entry):
+
+    log("\n🚀 ENTRY:", stock, qty, entry)
+
+    sec_id = get_security_id(stock)
+
+    if not sec_id:
+        return {"error": "mapping_failed"}
+
+    correlation_id = f"{stock.replace('.NS','').upper()}_entry"[:30]
 
     payload = {
-        "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown"
+        "dhanClientId": DHAN_CLIENT_ID,
+        "correlationId": correlation_id,
+        "orderFlag": "SINGLE",
+        "transactionType": "BUY",
+        "exchangeSegment": "NSE_EQ",
+        "productType": "CNC",
+        "orderType": "LIMIT",
+        "validity": "DAY",
+        "securityId": sec_id,
+        "quantity": qty,
+        "price": round(entry * 1.001, 2),
+        "triggerPrice": round(entry, 2)
     }
 
-    if buttons:
-        payload["reply_markup"] = json.dumps({"inline_keyboard": buttons})
+    url = "https://api.dhan.co/v2/forever/orders"
 
-    requests.post(url, data=payload)
+    try:
+        headers = {
+            "access-token": get_token(),
+            "Content-Type": "application/json"
+        }
 
+        r = requests.post(url, json=payload, headers=headers, timeout=10)
 
-def send_document(path, caption=None):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
-    with open(path, "rb") as f:
-        requests.post(url, files={"document": f},
-                      data={"chat_id": CHAT_ID, "caption": caption or ""})
+        # Retry if token expired mid-call
+        if r.status_code == 401:
+            log("🔁 Token expired → regenerating")
 
+            global CURRENT_TOKEN
+            CURRENT_TOKEN = generate_token()
 
-# ==========================
-# NSE STOCK FETCH
-# ==========================
-def get_stocks():
-    headers = {"User-Agent": "Mozilla/5.0"}
+            headers["access-token"] = CURRENT_TOKEN
 
-    indices = [
-        "NIFTY 500",
-        "NIFTY MIDCAP 150",
-        "NIFTY SMALLCAP 250"
-    ]
+            r = requests.post(url, json=payload, headers=headers, timeout=10)
 
-    stocks = set()
+        log("🌐 STATUS:", r.status_code)
+        log("🌐 RESPONSE:", r.text)
 
-    for index in indices:
-        try:
-            url = f"https://www.nseindia.com/api/equity-stockIndices?index={index.replace(' ', '%20')}"
-            res = requests.get(url, headers=headers, timeout=10)
-            data = res.json()
+        return r.json()
 
-            for item in data.get("data", []):
-                symbol = item.get("symbol")
-                if symbol and symbol.isalpha():
-                    stocks.add(symbol + ".NS")
-
-            time.sleep(0.5)
-
-        except:
-            continue
-
-    return list(stocks)
-
+    except Exception as e:
+        log("❌ ORDER ERROR:", e)
+        return {"error": str(e)}
 
 # ==========================
-# DATA
+# FLASK
 # ==========================
-def fetch(stock):
-    df = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
+app = Flask(__name__)
 
-    df.index = pd.to_datetime(df.index)
+@app.route("/webhook", methods=["POST"])
+def webhook():
 
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+    data = request.get_json(force=True)
 
-    return df[['Open','High','Low','Close','Volume']].dropna()
+    if not data or "callback_query" not in data:
+        return "OK"
 
+    query = data["callback_query"]
+    callback_id = query["id"]
 
-def to_weekly(df):
-    return df.resample('W').agg({
-        'Open':'first','High':'max','Low':'min',
-        'Close':'last','Volume':'sum'
-    }).dropna()
+    # ✅ Duplicate protection
+    if callback_id in PROCESSED_CALLBACKS:
+        log("⚠️ Duplicate click ignored:", callback_id)
+        return "OK"
 
+    PROCESSED_CALLBACKS.add(callback_id)
 
-# ==========================
-# FILTER
-# ==========================
-def filter_stock(df):
+    # Cleanup cache
+    if len(PROCESSED_CALLBACKS) > MAX_CACHE:
+        PROCESSED_CALLBACKS.pop()
 
-    if len(df) < 50:
-        return False
+    # ACK
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
+            data={"callback_query_id": callback_id},
+            timeout=5
+        )
+    except:
+        pass
 
-    df['EMA50'] = df['Close'].ewm(span=50).mean()
-    df['EMA200'] = df['Close'].ewm(span=200).mean()
+    parts = query.get("data", "").split("|")
 
-    cond1 = df.iloc[-1]['Close'] > df.iloc[-1]['EMA50'] > df.iloc[-1]['EMA200']
+    if len(parts) < 3:
+        return "OK"
 
-    recent = df.tail(20)
-    base_range = (recent['High'].max() - recent['Low'].min()) / recent['Low'].min()
-    cond2 = base_range < 0.15
+    action, stock, qty = parts[0], parts[1], int(parts[2])
 
-    vol_avg = df['Volume'].rolling(20).mean()
-    cond3 = df.iloc[-1]['Volume'] > 0.8 * vol_avg.iloc[-1]
+    msg_text = query.get("message", {}).get("text", "")
 
-    return cond1 and cond2 and cond3
+    entry = None
+    for line in msg_text.split("\n"):
+        if "Entry" in line:
+            try:
+                entry = float(line.split(":")[1].strip())
+            except:
+                pass
 
+    if not entry:
+        log("❌ Entry not found")
+        return "OK"
 
-# ==========================
-# TRADE LOGIC
-# ==========================
-def create_trade(df):
-    entry = df.iloc[-1]['High']
-    sl = entry * 0.92
-    qty = int((CAPITAL * RISK_PER_TRADE) / (entry - sl))
-    return round(entry,2), round(sl,2), qty
+    if action == "BUY":
+        res = place_forever_entry(stock, qty, entry)
 
+        if "orderId" in str(res):
+            send_telegram(f"🟢 ENTRY ORDER PLACED: {stock}")
+        else:
+            send_telegram(f"❌ ORDER FAILED: {stock}\n{res}")
 
-# ==========================
-# CHART ENGINE (FINAL)
-# ==========================
-def plot_chart(stock, save_path):
+    return "OK"
 
-    df = fetch(stock)
-    df_weekly = to_weekly(df.copy())
-
-    for ema in [10,21,50,200]:
-        df[f'EMA{ema}'] = df['Close'].ewm(span=ema).mean()
-        df_weekly[f'EMA{ema}'] = df_weekly['Close'].ewm(span=ema).mean()
-
-    recent = df.tail(20)
-    breakout = recent['High'].max()
-    base_low = recent['Low'].min()
-    base_high = recent['High'].max()
-
-    mc = mpf.make_marketcolors(
-        up='green', down='red',
-        volume={'up':'green','down':'red'}
-    )
-
-    style = mpf.make_mpf_style(base_mpf_style='yahoo', marketcolors=mc)
-
-    apds = [
-        mpf.make_addplot(df['EMA10'], color='black'),
-        mpf.make_addplot(df['EMA21'], color='red'),
-        mpf.make_addplot(df['EMA50'], color='blue'),
-        mpf.make_addplot(df['EMA200'], color='purple'),
-    ]
-
-    apds_w = [
-        mpf.make_addplot(df_weekly['EMA10'], color='black'),
-        mpf.make_addplot(df_weekly['EMA21'], color='red'),
-        mpf.make_addplot(df_weekly['EMA50'], color='blue'),
-        mpf.make_addplot(df_weekly['EMA200'], color='purple'),
-    ]
-
-    legend = [
-        Patch(facecolor='black', label='EMA10'),
-        Patch(facecolor='red', label='EMA21'),
-        Patch(facecolor='blue', label='EMA50'),
-        Patch(facecolor='purple', label='EMA200')
-    ]
-
-    # DAILY
-    fig1, ax1 = mpf.plot(
-        df, type='candle', style=style, addplot=apds,
-        volume=True, returnfig=True,
-        figsize=(12,6), datetime_format='%b-%y', xrotation=15
-    )
-
-    ax1[0].axhline(breakout, linestyle='--', color='green')
-    ax1[0].axhspan(base_low, base_high, alpha=0.1)
-    ax1[0].legend(handles=legend)
-    ax1[0].set_title(f"{stock} (Daily)", fontsize=14, fontweight='bold')
-
-    fig1.savefig("d.png", dpi=200, bbox_inches='tight', pad_inches=0)
-    plt.close(fig1)
-
-    # WEEKLY
-    fig2, ax2 = mpf.plot(
-        df_weekly, type='candle', style=style, addplot=apds_w,
-        volume=True, returnfig=True,
-        figsize=(12,6), datetime_format='%b-%y', xrotation=15
-    )
-
-    ax2[0].legend(handles=legend)
-    ax2[0].set_title(f"{stock} (Weekly)", fontsize=14, fontweight='bold')
-
-    fig2.savefig("w.png", dpi=200, bbox_inches='tight', pad_inches=0)
-    plt.close(fig2)
-
-    # MERGE
-    fig = plt.figure(figsize=(12,9))
-
-    ax1 = fig.add_subplot(2,1,1)
-    ax1.imshow(plt.imread("d.png"))
-    ax1.axis('off')
-
-    ax2 = fig.add_subplot(2,1,2)
-    ax2.imshow(plt.imread("w.png"))
-    ax2.axis('off')
-
-    plt.subplots_adjust(hspace=0.05)
-
-    plt.savefig(save_path, dpi=200, bbox_inches='tight', pad_inches=0)
-    plt.close()
-
+@app.route("/")
+def home():
+    return "Webhook running"
 
 # ==========================
-# PDF BUILDER (KEY FIX)
-# ==========================
-def build_pdf(images, path):
-
-    doc = SimpleDocTemplate(path, pagesize=letter)
-    elements = []
-
-    for img_path in images:
-
-        img = ImageReader(img_path)
-        w, h = img.getSize()
-
-        page_w, page_h = letter
-        scale = min((page_w-20)/w, (page_h-20)/h)
-
-        elements.append(Image(img_path, width=w*scale, height=h*scale))
-        elements.append(Spacer(1,8))
-
-    doc.build(elements)
-
-
-# ==========================
-# GPT
-# ==========================
-def gpt_decision(pdf_path):
-
-    file = client.files.create(file=open(pdf_path,"rb"), purpose="assistants")
-
-    PROMPT = """
-You are an institutional breakout trader.
-
-Analyze charts visually.
-
-Rules:
-- Strong trend (EMA alignment)
-- Tight base
-- Breakout near highs
-- Volume confirmation
-
-Score 0-10
-
-Pick only >=7
-
-Return:
-
-FINAL PICKS:
-- STOCK | Score | Reason
-"""
-
-    res = client.responses.create(
-        model="gpt-4.1-mini",
-        input=[{
-            "role":"user",
-            "content":[
-                {"type":"input_text","text":PROMPT},
-                {"type":"input_file","file_id":file.id}
-            ]
-        }]
-    )
-
-    return res.output_text
-
-
-# ==========================
-# MAIN
-# ==========================
-def run():
-
-    stocks = get_stocks()
-
-    shortlist = []
-    for s in stocks:
-        try:
-            df = fetch(s)
-            if filter_stock(df):
-                shortlist.append(s)
-        except:
-            continue
-
-    shortlist = shortlist[:10]
-
-    folder = f"run_{datetime.now().strftime('%H%M%S')}"
-    os.makedirs(folder, exist_ok=True)
-
-    images = []
-    trade_map = {}
-
-    for s in shortlist:
-
-        img = f"{folder}/{s}.png"
-        plot_chart(s, img)
-        images.append(img)
-
-        df = fetch(s)
-        trade_map[s] = create_trade(df)
-
-    pdf_path = f"{folder}/charts.pdf"
-    build_pdf(images, pdf_path)
-
-    send_document(pdf_path, "📄 Charts sent to GPT")
-
-    output = gpt_decision(pdf_path)
-    send_message(output[:3000])
-
-    # picks
-    picks = [l.split("|")[0].replace("-","").strip()
-             for l in output.split("\n") if l.startswith("-")]
-
-    for s in picks:
-        if s not in trade_map:
-            continue
-
-        entry, sl, qty = trade_map[s]
-
-        msg = f"""
-📈 *FINAL TRADE*
-
-{s}
-
-Entry: `{entry}`
-SL: `{sl}`
-Qty: `{qty}`
-"""
-
-        buttons = [[{"text":"✅ Confirm Buy","callback_data":f"BUY|{s}|{qty}"}]]
-
-        send_message(msg, buttons)
-
-
-# ==========================
-# RUN
+# RUN (LOCAL ONLY)
 # ==========================
 if __name__ == "__main__":
-    run()
+    log("🚀 APP STARTED")
+
+    CURRENT_TOKEN = generate_token()
+
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
