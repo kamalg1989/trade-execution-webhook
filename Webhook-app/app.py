@@ -42,7 +42,7 @@ def generate_token():
 
     try:
         totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
-
+        log("TOTP:", totp)
         params = {
             "dhanClientId": DHAN_CLIENT_ID,
             "pin": DHAN_PIN,
