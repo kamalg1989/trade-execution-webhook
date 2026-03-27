@@ -1,10 +1,11 @@
 # ==============================================
-# 🚀 DHAN SL ENGINE (RUN VIA GITHUB ACTIONS)
+# 🚀 DHAN SL ENGINE (WITH FULL LOGGING)
 # ==============================================
 
 import os
 import requests
 import pyotp
+import uuid
 from datetime import datetime, timedelta, timezone
 
 # ==========================
@@ -19,16 +20,6 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
-
-
-print("SECRET VALUE:", DHAN_TOTP_SECRET)
-print("SECRET PRESENT:", bool(DHAN_TOTP_SECRET))
-
-print("SECRET VALUE:", DHAN_PIN)
-print("SECRET PRESENT:", bool(DHAN_PIN))
-
-print("SECRET VALUE:", DHAN_PIN)
-print("SECRET PRESENT:", bool(DHAN_PIN))
 
 # ==========================
 # LOGGER
@@ -66,7 +57,7 @@ def generate_token():
         log("✅ TOKEN GENERATED")
         return token
 
-    raise Exception("Token generation failed")
+    raise Exception(f"Token failed: {data}")
 
 
 def is_token_expired():
@@ -101,9 +92,9 @@ def calculate_sl(price):
     return round(price * 0.92, 2)
 
 # ==========================
-# CHECK EXISTING SL
+# FETCH ORDERS
 # ==========================
-def has_exit_order(security_id):
+def fetch_orders():
     url = "https://api.dhan.co/v2/orders"
 
     headers = {
@@ -111,14 +102,52 @@ def has_exit_order(security_id):
     }
 
     r = requests.get(url, headers=headers, timeout=10)
-    orders = r.json()
 
+    if r.status_code != 200:
+        log("❌ Orders fetch failed:", r.text)
+        return []
+
+    data = r.json()
+
+    if not isinstance(data, list):
+        log("❌ Invalid orders response:", data)
+        return []
+
+    return data
+
+# ==========================
+# FETCH POSITIONS
+# ==========================
+def fetch_positions():
+    url = "https://api.dhan.co/v2/positions"
+
+    headers = {
+        "access-token": get_token()
+    }
+
+    r = requests.get(url, headers=headers, timeout=10)
+
+    if r.status_code != 200:
+        log("❌ Positions fetch failed:", r.text)
+        return []
+
+    data = r.json()
+
+    if not isinstance(data, list):
+        log("❌ Invalid positions response:", data)
+        return []
+
+    return data
+
+# ==========================
+# CHECK EXISTING SL
+# ==========================
+def has_exit_order(security_id, orders):
     for o in orders:
         if str(o.get("securityId")) == str(security_id):
             if o.get("transactionType") == "SELL":
                 if o.get("orderStatus") in ["PENDING", "TRANSIT"]:
                     return True
-
     return False
 
 # ==========================
@@ -126,9 +155,11 @@ def has_exit_order(security_id):
 # ==========================
 def place_sl(security_id, qty, sl_price):
 
+    correlation_id = str(uuid.uuid4()).replace("-", "")[:20]
+
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
-        "correlationId": f"SL_{security_id}_{int(datetime.now().timestamp())}",
+        "correlationId": correlation_id,
         "transactionType": "SELL",
         "exchangeSegment": "NSE_EQ",
         "productType": "CNC",
@@ -149,23 +180,56 @@ def place_sl(security_id, qty, sl_price):
 
     r = requests.post(url, json=payload, headers=headers, timeout=10)
 
-    log("SL:", r.status_code, r.text)
+    log("📉 SL ORDER:", security_id, "|", r.status_code, r.text)
 
 # ==========================
 # MAIN ENGINE
 # ==========================
 def run():
 
-    log("🚀 SL ENGINE START")
+    log("\n🚀 SL ENGINE START\n")
 
-    url = "https://api.dhan.co/v2/positions"
+    positions = fetch_positions()
+    orders = fetch_orders()
 
-    headers = {
-        "access-token": get_token()
-    }
+    # ==========================
+    # PRINT HOLDINGS
+    # ==========================
+    log("📊 CURRENT HOLDINGS")
+    log("----------------------------------")
 
-    r = requests.get(url, headers=headers, timeout=10)
-    positions = r.json()
+    for pos in positions:
+        qty = int(pos.get("netQty", 0))
+        if qty > 0:
+            log(
+                pos.get("tradingSymbol"),
+                "| Qty:", qty,
+                "| Entry:", pos.get("avgPrice"),
+                "| PnL:", pos.get("unrealizedProfit")
+            )
+
+    # ==========================
+    # PRINT PENDING ORDERS
+    # ==========================
+    log("\n📌 PENDING ORDERS")
+    log("----------------------------------")
+
+    for o in orders:
+        if o.get("orderStatus") in ["PENDING", "TRANSIT"]:
+            log(
+                o.get("tradingSymbol"),
+                "|", o.get("transactionType"),
+                "| Qty:", o.get("quantity"),
+                "| Price:", o.get("price")
+            )
+
+    # ==========================
+    # SL LOGIC
+    # ==========================
+    sl_count = 0
+    skip_count = 0
+
+    log("\n⚙️ PROCESSING SL\n")
 
     for pos in positions:
 
@@ -175,20 +239,41 @@ def run():
 
         security_id = pos.get("securityId")
         entry = float(pos.get("avgPrice", 0))
+        symbol = pos.get("tradingSymbol")
 
         if entry == 0:
             continue
 
-        if has_exit_order(security_id):
+        log(f"➡️ Checking {symbol} | Qty={qty} | Entry={entry}")
+
+        if has_exit_order(security_id, orders):
+            log(f"⏭️ SL exists → Skipping {symbol}")
+            skip_count += 1
             continue
 
         sl_price = calculate_sl(entry)
 
         place_sl(security_id, qty, sl_price)
 
-        send_telegram(f"📉 SL PLACED: {security_id} @ {sl_price}")
+        send_telegram(f"📉 SL PLACED: {symbol} @ {sl_price}")
 
-    log("✅ SL ENGINE DONE")
+        sl_count += 1
+
+    # ==========================
+    # SUMMARY
+    # ==========================
+    log("\n✅ SL ENGINE DONE")
+
+    summary = f"""
+📊 SL ENGINE SUMMARY
+
+Total Positions: {len(positions)}
+SL Placed: {sl_count}
+Skipped: {skip_count}
+"""
+
+    log(summary)
+    send_telegram(summary)
 
 
 if __name__ == "__main__":
