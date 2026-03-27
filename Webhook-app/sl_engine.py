@@ -7,6 +7,7 @@ import requests
 import pyotp
 import uuid
 import time
+import yfinance as yf
 from datetime import datetime, timezone
 
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
@@ -102,6 +103,21 @@ def fetch_orders():
 # ==========================
 def get_ltp(sec_id, pos=None):
 
+    symbol = pos.get("tradingSymbol") + ".NS"
+
+    try:
+        data = yf.Ticker(symbol)
+        price = data.fast_info.get("lastPrice")
+
+        if price:
+            price = round(float(price), 2)
+            log(f"🌐 LTP (Yahoo) → {symbol} = {price}")
+            return price
+
+    except Exception as e:
+        log("❌ Yahoo LTP error:", e)
+
+    # fallback (your existing logic)
     if pos:
         entry = float(pos.get("buyAvg") or 0)
         pnl = float(pos.get("unrealizedProfit") or 0)
@@ -111,8 +127,7 @@ def get_ltp(sec_id, pos=None):
             ltp = entry + (pnl / qty)
             ltp = round(ltp, 2)
 
-            log(f"🧮 LTP fallback → Entry={entry} PnL={pnl} Qty={qty} LTP={ltp}")
-
+            log(f"🧮 LTP fallback → {ltp}")
             return ltp
 
     return None
