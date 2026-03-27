@@ -15,6 +15,7 @@ on:
 
 jobs:
   run-sl:
+    if: github.event_name != 'pull_request'   # 🔥 prevents secret blocking
     runs-on: ubuntu-latest
 
     env:
@@ -38,10 +39,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests pyotp
 
-      - name: Debug env
+      - name: Debug env (safe)
         run: |
-          echo "TOTP present: $DHAN_TOTP_SECRET"
-          echo "PIN present: $DHAN_PIN"
+          echo "TOTP present: $([[ -n \"$DHAN_TOTP_SECRET\" ]] && echo YES || echo NO)"
+          echo "PIN present: $([[ -n \"$DHAN_PIN\" ]] && echo YES || echo NO)"
+
+      - name: Print env keys (debug)
+        run: env | sort
 
       - name: Run SL Engine
         run: python Webhook-app/sl_engine.py
