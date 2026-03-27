@@ -7,9 +7,11 @@ on:
   workflow_dispatch:
 
   push:
-    paths:
-      - 'Webhook-app/sl_engine.py'
-      - '.github/workflows/sl.yml'
+  branches:
+    - main
+  paths:
+    - 'Webhook-app/**'
+    - '.github/workflows/**'
 
 jobs:
   run-sl:
