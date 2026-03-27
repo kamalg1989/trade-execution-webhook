@@ -101,15 +101,19 @@ def fetch_orders():
 # LTP API ✅ FIXED
 # ==========================
 def get_ltp(sec_id, pos=None):
-    if pos:
-        entry = float(pos.get("buyAvg", 0))
-        pnl = float(pos.get("unrealizedProfit", 0))
-        qty = int(pos.get("netQty", 1))
 
-        if qty > 0:
+    if pos:
+        entry = float(pos.get("buyAvg") or 0)
+        pnl = float(pos.get("unrealizedProfit") or 0)
+        qty = max(int(pos.get("netQty", 0)), 1)
+
+        if entry > 0:
             ltp = entry + (pnl / qty)
-            log(f"🧮 LTP fallback → {ltp}")
-            return round(ltp, 2)
+            ltp = round(ltp, 2)
+
+            log(f"🧮 LTP fallback → Entry={entry} PnL={pnl} Qty={qty} LTP={ltp}")
+
+            return ltp
 
     return None
 
