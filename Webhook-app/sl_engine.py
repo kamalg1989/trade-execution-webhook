@@ -177,7 +177,7 @@ def place_sl(security_id, qty, sl_price):
         "transactionType": "SELL",
         "exchangeSegment": "NSE_EQ",
         "productType": "CNC",
-        "orderType": "STOP_LOSS",
+        "orderType": "LIMIT",
         "validity": "DAY",
         "securityId": security_id,
         "quantity": qty,
