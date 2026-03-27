@@ -100,32 +100,18 @@ def fetch_orders():
 # ==========================
 # LTP API ✅ FIXED
 # ==========================
-def get_ltp(sec_id):
+def get_ltp(sec_id, pos=None):
+    if pos:
+        entry = float(pos.get("buyAvg", 0))
+        pnl = float(pos.get("unrealizedProfit", 0))
+        qty = int(pos.get("netQty", 1))
 
-    payload = {
-        "NSE_EQ": [int(sec_id)]
-    }
+        if qty > 0:
+            ltp = entry + (pnl / qty)
+            log(f"🧮 LTP fallback → {ltp}")
+            return round(ltp, 2)
 
-    headers = {
-        "access-token": get_token(),
-        "client-id": DHAN_CLIENT_ID,
-        "Content-Type": "application/json"
-    }
-
-    r = requests.post(
-        "https://api.dhan.co/v2/marketfeed/ltp",
-        json=payload,
-        headers=headers,
-        timeout=10
-    )
-
-    data = r.json()
-    log("📡 LTP RAW:", data)
-
-    try:
-        return float(data["data"]["NSE_EQ"][str(sec_id)]["last_price"])
-    except:
-        return None
+    return None
 
 
 # ==========================
