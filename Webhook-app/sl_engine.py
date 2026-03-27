@@ -102,35 +102,53 @@ def fetch_orders():
 # ==========================
 # LTP API ✅ FIXED
 # ==========================
-
-
 def get_ltp(sec_id, pos=None):
 
-    symbol = pos.get("tradingSymbol")
+    if not pos:
+        log(f"⚠️ Missing position for LTP → {sec_id}")
+        return None
 
+    symbol = (pos.get("tradingSymbol") or "").strip() + ".NS"
+
+    # ===== Yahoo Finance =====
     try:
-        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbol}.NS"
-        r = requests.get(url, timeout=5)
+        data = yf.Ticker(symbol)
 
-        data = r.json()
-        price = data["quoteResponse"]["result"][0]["regularMarketPrice"]
+        price = None
+
+        # fast_info
+        if hasattr(data, "fast_info") and data.fast_info:
+            price = data.fast_info.get("lastPrice")
+
+        # fallback to history
+        if not price:
+            hist = data.history(period="1d", interval="1m")
+            if not hist.empty:
+                price = hist["Close"].iloc[-1]
 
         if price:
-            log(f"🌐 LTP (Direct Yahoo) → {symbol} = {price}")
-            return round(float(price), 2)
+            price = round(float(price), 2)
+            log(f"🌐 LTP (Yahoo) → {symbol} = {price}")
+            return price
 
     except Exception as e:
-        log("❌ Yahoo direct error:", e)
+        log("❌ Yahoo LTP error:", e)
 
-    # fallback
-    if pos:
+    # ===== fallback (PnL based) =====
+    try:
         entry = float(pos.get("buyAvg") or 0)
         pnl = float(pos.get("unrealizedProfit") or 0)
         qty = max(int(pos.get("netQty", 0)), 1)
 
         if entry > 0:
             ltp = entry + (pnl / qty)
-            return round(ltp, 2)
+            ltp = round(ltp, 2)
+
+            log(f"🧮 LTP fallback → {ltp}")
+            return ltp
+
+    except Exception as e:
+        log("❌ Fallback LTP error:", e)
 
     return None
 
