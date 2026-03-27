@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 DHAN TRAILING SL ENGINE (FINAL - TOKEN SAFE)
+# 🚀 DHAN TRAILING SL ENGINE (FINAL + DEBUG)
 # ==============================================
 
 import os
@@ -23,20 +23,15 @@ CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
 
 # ==========================
-# LOGGER
-# ==========================
 def log(*args):
     print(*args, flush=True)
 
 # ==========================
-# TOKEN (RATE LIMIT FIX)
+# TOKEN (STABLE)
 # ==========================
 def generate_token():
 
     clean_secret = (DHAN_TOTP_SECRET or "").strip().replace(" ", "")
-
-    if not clean_secret:
-        raise Exception("❌ Missing TOTP secret")
 
     while True:
         try:
@@ -65,17 +60,14 @@ def generate_token():
                 log("✅ TOKEN GENERATED")
                 return data["accessToken"]
 
-            # 🔥 HANDLE RATE LIMIT
             if "2 minutes" in str(data):
-                log("⏳ Token rate limit hit → waiting 130 sec")
+                log("⏳ Rate limit → wait 130 sec")
                 time.sleep(130)
-                continue
 
         except Exception as e:
             log("⚠️ Token error:", e)
             time.sleep(10)
 
-# ==========================
 def is_token_expired():
     if not TOKEN_EXPIRY:
         return True
@@ -83,10 +75,8 @@ def is_token_expired():
 
 def get_token():
     global CURRENT_TOKEN
-
     if CURRENT_TOKEN and not is_token_expired():
         return CURRENT_TOKEN
-
     CURRENT_TOKEN = generate_token()
     return CURRENT_TOKEN
 
@@ -102,6 +92,37 @@ def send_telegram(msg):
         )
     except:
         pass
+
+# ==========================
+# FETCH LTP (🔥 FIX)
+# ==========================
+def get_ltp(security_id):
+
+    url = "https://api.dhan.co/v2/marketfeed/ltp"
+
+    payload = {
+        "securityId": [security_id],
+        "exchangeSegment": "NSE_EQ"
+    }
+
+    headers = {
+        "access-token": get_token(),
+        "Content-Type": "application/json"
+    }
+
+    try:
+        r = requests.post(url, json=payload, headers=headers, timeout=10)
+        data = r.json()
+
+        log("📡 LTP RESPONSE:", data)
+
+        if isinstance(data, dict):
+            return float(list(data.values())[0].get("lastPrice", 0))
+
+    except Exception as e:
+        log("❌ LTP error:", e)
+
+    return 0
 
 # ==========================
 # TRAILING SL LOGIC
@@ -127,36 +148,6 @@ def calculate_trailing_sl(entry, ltp, prev_sl=None):
     return new_sl
 
 # ==========================
-# FETCH ORDERS
-# ==========================
-def fetch_orders():
-
-    url = "https://api.dhan.co/v2/orders"
-
-    headers = {
-        "access-token": get_token(),
-        "Content-Type": "application/json"
-    }
-
-    try:
-        r = requests.get(url, headers=headers, timeout=15)
-
-        if r.status_code != 200:
-            log("❌ Orders fetch failed:", r.text)
-            return []
-
-        data = r.json()
-
-        if isinstance(data, dict):
-            data = data.get("data", [])
-
-        return data if isinstance(data, list) else []
-
-    except Exception as e:
-        log("❌ Orders error:", e)
-        return []
-
-# ==========================
 # FETCH POSITIONS
 # ==========================
 def fetch_positions():
@@ -165,19 +156,41 @@ def fetch_positions():
 
     headers = {"access-token": get_token()}
 
-    try:
-        r = requests.get(url, headers=headers, timeout=15)
+    r = requests.get(url, headers=headers, timeout=15)
 
-        if r.status_code != 200:
-            log("❌ Positions fetch failed:", r.text)
-            return []
-
-        data = r.json()
-        return data if isinstance(data, list) else []
-
-    except Exception as e:
-        log("❌ Positions error:", e)
+    if r.status_code != 200:
+        log("❌ Positions fetch failed:", r.text)
         return []
+
+    data = r.json()
+
+    log("📊 RAW POSITIONS:", data)
+
+    return data if isinstance(data, list) else []
+
+# ==========================
+# FETCH ORDERS
+# ==========================
+def fetch_orders():
+
+    url = "https://api.dhan.co/v2/orders"
+
+    headers = {"access-token": get_token()}
+
+    r = requests.get(url, headers=headers, timeout=15)
+
+    if r.status_code != 200:
+        log("❌ Orders fetch failed:", r.text)
+        return []
+
+    data = r.json()
+
+    log("📦 RAW ORDERS:", data)
+
+    if isinstance(data, dict):
+        data = data.get("data", [])
+
+    return data if isinstance(data, list) else []
 
 # ==========================
 # EXISTING SL
@@ -259,7 +272,7 @@ def place_sl(security_id, qty, sl):
     return r.status_code == 200
 
 # ==========================
-# MAIN ENGINE
+# MAIN
 # ==========================
 def run():
 
@@ -281,7 +294,9 @@ def run():
         symbol = pos.get("tradingSymbol")
 
         entry = float(pos.get("avgPrice") or 0)
-        ltp = float(pos.get("lastPrice") or 0)
+
+        # 🔥 FIX: fetch LTP separately
+        ltp = get_ltp(security_id)
 
         if entry == 0 or ltp == 0:
             log(f"⚠️ Missing price → {symbol}")
@@ -292,7 +307,7 @@ def run():
 
         new_sl = calculate_trailing_sl(entry, ltp, prev_sl)
 
-        log(f"{symbol} | LTP={ltp} | OLD SL={prev_sl} | NEW SL={new_sl}")
+        log(f"{symbol} | Entry={entry} | LTP={ltp} | OLD SL={prev_sl} | NEW SL={new_sl}")
 
         if prev_sl and new_sl <= prev_sl:
             skipped += 1
@@ -313,6 +328,6 @@ def run():
     log(summary)
     send_telegram(summary)
 
-
+# ==========================
 if __name__ == "__main__":
     run()
