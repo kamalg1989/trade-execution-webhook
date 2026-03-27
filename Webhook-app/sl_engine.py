@@ -166,14 +166,14 @@ def place_sl(security_id, qty, sl_price):
     correlation_id = str(uuid.uuid4()).replace("-", "")[:20]
 
     trigger_price = sl_price
-    limit_price = round(sl_price * 0.995, 2)  # ✅ below trigger
+    limit_price = round(sl_price * 0.995, 2)
 
     log(f"📌 SL CALC → Trigger: {trigger_price} | Limit: {limit_price}")
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
         "correlationId": correlation_id,
-        "orderFlag": "SINGLE",  # ✅ REQUIRED
+        "orderFlag": "SINGLE",
         "transactionType": "SELL",
         "exchangeSegment": "NSE_EQ",
         "productType": "CNC",
@@ -187,7 +187,7 @@ def place_sl(security_id, qty, sl_price):
 
     log("📦 SL PAYLOAD:", payload)
 
-    url = "https://api.dhan.co/v2/forever/orders"  # ✅ FIXED
+    url = "https://api.dhan.co/v2/forever/orders"
 
     headers = {
         "access-token": get_token(),
@@ -210,9 +210,7 @@ def run():
     positions = fetch_positions()
     orders = fetch_orders()
 
-    # ==========================
     # HOLDINGS
-    # ==========================
     log("📊 CURRENT HOLDINGS")
     log("----------------------------------")
 
@@ -224,11 +222,72 @@ def run():
 
             log(pos.get("tradingSymbol"), "| Qty:", qty, "| Entry:", entry, "| PnL:", pnl)
 
-    # ==========================
     # PENDING ORDERS
-    # ==========================
     log("\n📌 PENDING ORDERS")
     log("----------------------------------")
 
     for o in orders:
-        if o.get("order
+        if o.get("orderStatus") in ["PENDING", "TRANSIT"]:
+            log(
+                o.get("tradingSymbol"),
+                "|", o.get("transactionType"),
+                "| Qty:", o.get("quantity"),
+                "| Price:", o.get("price")
+            )
+
+    # SL LOGIC
+    sl_count = 0
+    skip_count = 0
+
+    log("\n⚙️ PROCESSING SL\n")
+
+    for pos in positions:
+
+        qty = int(pos.get("netQty", 0))
+        if qty <= 0:
+            continue
+
+        security_id = pos.get("securityId")
+        symbol = pos.get("tradingSymbol")
+
+        raw_entry = pos.get("avgPrice") or pos.get("buyAvg")
+
+        if raw_entry is None:
+            log(f"⚠️ Missing entry → Skipping {symbol}")
+            continue
+
+        entry = float(raw_entry)
+
+        log(f"➡️ Checking {symbol} | Qty={qty} | Entry={entry}")
+
+        if has_exit_order(security_id, orders):
+            log(f"⏭️ SL exists → Skipping {symbol}")
+            skip_count += 1
+            continue
+
+        sl_price = calculate_sl(entry)
+
+        success = place_sl(security_id, qty, sl_price)
+
+        if success:
+            send_telegram(f"📉 SL PLACED: {symbol} @ {sl_price}")
+            sl_count += 1
+        else:
+            log(f"❌ SL FAILED for {symbol}")
+
+    log("\n✅ SL ENGINE DONE")
+
+    summary = f"""
+📊 SL ENGINE SUMMARY
+
+Total Positions: {len(positions)}
+SL Placed: {sl_count}
+Skipped: {skip_count}
+"""
+
+    log(summary)
+    send_telegram(summary)
+
+
+if __name__ == "__main__":
+    run()
