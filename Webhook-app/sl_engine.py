@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 DHAN TRAILING SL ENGINE (FINAL FIXED)
+# 🚀 DHAN TRAILING SL ENGINE (FINAL WORKING)
 # ==============================================
 
 import os
@@ -7,9 +7,8 @@ import requests
 import pyotp
 import uuid
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
-# CONFIG
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
 DHAN_PIN = os.getenv("DHAN_PIN")
 DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
@@ -17,8 +16,10 @@ DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
 
+
 def log(*args):
     print(*args, flush=True)
+
 
 # ==========================
 # TOKEN
@@ -26,7 +27,7 @@ def log(*args):
 def generate_token():
     global TOKEN_EXPIRY
 
-    for i in range(3):
+    for _ in range(3):
         log("🔐 Generating token...")
 
         totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
@@ -52,40 +53,36 @@ def generate_token():
             log("⏳ Rate limit → waiting 130 sec")
             time.sleep(130)
 
-    raise Exception("❌ Token failed")
+    raise Exception("Token failed")
 
 
 def get_token():
     global CURRENT_TOKEN
-
     if not CURRENT_TOKEN or datetime.now(timezone.utc) > TOKEN_EXPIRY:
         CURRENT_TOKEN = generate_token()
-
     return CURRENT_TOKEN
+
 
 # ==========================
 # FETCH POSITIONS
 # ==========================
 def fetch_positions():
-
     r = requests.get(
         "https://api.dhan.co/v2/positions",
         headers={"access-token": get_token()},
         timeout=10
     )
-
     data = r.json()
     log("📊 POSITIONS:", data)
-
     return data if isinstance(data, list) else []
 
+
 # ==========================
-# FETCH FOREVER ORDERS (FIXED)
+# FETCH FOREVER ORDERS ✅ FIXED
 # ==========================
 def fetch_orders():
-
     r = requests.get(
-        "https://api.dhan.co/v2/forever/all",   # ✅ FIX
+        "https://api.dhan.co/v2/forever/orders",
         headers={"access-token": get_token()},
         timeout=10
     )
@@ -99,27 +96,37 @@ def fetch_orders():
 
     return data if isinstance(data, list) else []
 
+
 # ==========================
-# GET LTP (FIXED)
+# LTP API ✅ FIXED
 # ==========================
 def get_ltp(sec_id):
 
+    payload = {
+        "NSE_EQ": [int(sec_id)]
+    }
+
+    headers = {
+        "access-token": get_token(),
+        "client-id": DHAN_CLIENT_ID,
+        "Content-Type": "application/json"
+    }
+
+    r = requests.post(
+        "https://api.dhan.co/v2/marketfeed/ltp",
+        json=payload,
+        headers=headers,
+        timeout=10
+    )
+
+    data = r.json()
+    log("📡 LTP RAW:", data)
+
     try:
-        r = requests.get(
-            f"https://api.dhan.co/v2/market/quote?securityId={sec_id}",
-            headers={"access-token": get_token()},
-            timeout=10
-        )
-
-        data = r.json()
-        log("📡 LTP RAW:", data)
-
-        # ✅ FIX: use "Data"
-        return float(data["Data"][str(sec_id)]["last_price"])
-
-    except Exception as e:
-        log("❌ LTP error:", e)
+        return float(data["data"]["NSE_EQ"][str(sec_id)]["last_price"])
+    except:
         return None
+
 
 # ==========================
 # SL LOGIC
@@ -141,11 +148,11 @@ def calculate_sl(entry, ltp, prev_sl=None):
 
     return new_sl
 
+
 # ==========================
 # ORDER HELPERS
 # ==========================
 def get_sl_orders(sec_id, orders):
-
     return [
         o for o in orders
         if str(o.get("securityId")) == str(sec_id)
@@ -153,15 +160,15 @@ def get_sl_orders(sec_id, orders):
         and o.get("orderStatus") in ["PENDING", "TRANSIT"]
     ]
 
-def cancel_order(order_id):
 
+def cancel_order(order_id):
     r = requests.delete(
         f"https://api.dhan.co/v2/forever/orders/{order_id}",
         headers={"access-token": get_token()},
         timeout=10
     )
-
     log("🗑️ CANCEL:", order_id, r.status_code, r.text)
+
 
 def cleanup_duplicate_sl(sec_id, orders, ltp):
 
@@ -170,15 +177,15 @@ def cleanup_duplicate_sl(sec_id, orders, ltp):
     if not sl_orders:
         return []
 
-    # remove invalid SL
     valid = []
+
     for o in sl_orders:
         tp = float(o.get("triggerPrice", 0))
 
         if tp < ltp:
             valid.append(o)
         else:
-            log(f"❌ Removing invalid SL (>LTP): {tp}")
+            log("❌ Removing invalid SL:", tp)
             cancel_order(o["orderId"])
 
     if len(valid) <= 1:
@@ -197,9 +204,38 @@ def cleanup_duplicate_sl(sec_id, orders, ltp):
 
     return [keep]
 
+
 # ==========================
-# PLACE / MODIFY
+# MODIFY / PLACE
 # ==========================
+def modify_sl(order_id, qty, trigger):
+
+    payload = {
+        "dhanClientId": DHAN_CLIENT_ID,
+        "orderId": order_id,
+        "orderFlag": "SINGLE",
+        "orderType": "LIMIT",
+        "legName": "STOP_LOSS_LEG",
+        "quantity": qty,
+        "price": round(trigger * 0.995, 2),
+        "triggerPrice": trigger,
+        "validity": "DAY"
+    }
+
+    log("🔄 MODIFY:", payload)
+
+    r = requests.put(
+        f"https://api.dhan.co/v2/forever/orders/{order_id}",
+        json=payload,
+        headers={"access-token": get_token()},
+        timeout=10
+    )
+
+    log("📉 MODIFY:", r.status_code, r.text)
+
+    return r.status_code == 200
+
+
 def place_sl(sec_id, qty, trigger):
 
     payload = {
@@ -230,32 +266,6 @@ def place_sl(sec_id, qty, trigger):
 
     return r.status_code == 200
 
-def modify_sl(order_id, qty, trigger):
-
-    payload = {
-        "dhanClientId": DHAN_CLIENT_ID,
-        "orderId": order_id,
-        "orderFlag": "SINGLE",
-        "orderType": "LIMIT",
-        "legName": "STOP_LOSS_LEG",
-        "quantity": qty,
-        "price": round(trigger * 0.995, 2),
-        "triggerPrice": trigger,
-        "validity": "DAY"
-    }
-
-    log("🔄 MODIFY:", payload)
-
-    r = requests.put(
-        f"https://api.dhan.co/v2/forever/orders/{order_id}",
-        json=payload,
-        headers={"access-token": get_token()},
-        timeout=10
-    )
-
-    log("📉 MODIFY:", r.status_code, r.text)
-
-    return r.status_code == 200
 
 # ==========================
 # MAIN
