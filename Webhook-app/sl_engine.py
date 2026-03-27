@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 DHAN TRAILING SL ENGINE (FINAL WORKING)
+# 🚀 DHAN TRAILING SL ENGINE (FINAL STABLE)
 # ==============================================
 
 import os
@@ -8,7 +8,6 @@ import pyotp
 import uuid
 import time
 import yfinance as yf
-import requests
 from datetime import datetime, timezone
 
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
@@ -17,6 +16,8 @@ DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
 
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
+
+MIN_TRAIL_PCT = 0.005  # 🔥 0.5% minimum move
 
 
 def log(*args):
@@ -66,7 +67,7 @@ def get_token():
 
 
 # ==========================
-# FETCH POSITIONS
+# FETCH
 # ==========================
 def fetch_positions():
     r = requests.get(
@@ -79,9 +80,6 @@ def fetch_positions():
     return data if isinstance(data, list) else []
 
 
-# ==========================
-# FETCH FOREVER ORDERS ✅ FIXED
-# ==========================
 def fetch_orders():
     r = requests.get(
         "https://api.dhan.co/v2/forever/orders",
@@ -95,32 +93,27 @@ def fetch_orders():
 
     data = r.json()
     log("📦 ORDERS:", data)
-
     return data if isinstance(data, list) else []
 
 
 # ==========================
-# LTP API ✅ FIXED
+# LTP
 # ==========================
 def get_ltp(sec_id, pos=None):
 
     if not pos:
-        log(f"⚠️ Missing position for LTP → {sec_id}")
         return None
 
     symbol = (pos.get("tradingSymbol") or "").strip() + ".NS"
 
-    # ===== Yahoo Finance =====
     try:
         data = yf.Ticker(symbol)
 
         price = None
 
-        # fast_info
         if hasattr(data, "fast_info") and data.fast_info:
             price = data.fast_info.get("lastPrice")
 
-        # fallback to history
         if not price:
             hist = data.history(period="1d", interval="1m")
             if not hist.empty:
@@ -128,27 +121,21 @@ def get_ltp(sec_id, pos=None):
 
         if price:
             price = round(float(price), 2)
-            log(f"🌐 LTP (Yahoo) → {symbol} = {price}")
+            log(f"🌐 LTP → {symbol} = {price}")
             return price
 
     except Exception as e:
-        log("❌ Yahoo LTP error:", e)
+        log("❌ Yahoo error:", e)
 
-    # ===== fallback (PnL based) =====
-    try:
-        entry = float(pos.get("buyAvg") or 0)
-        pnl = float(pos.get("unrealizedProfit") or 0)
-        qty = max(int(pos.get("netQty", 0)), 1)
+    # fallback
+    entry = float(pos.get("buyAvg") or 0)
+    pnl = float(pos.get("unrealizedProfit") or 0)
+    qty = max(int(pos.get("netQty", 0)), 1)
 
-        if entry > 0:
-            ltp = entry + (pnl / qty)
-            ltp = round(ltp, 2)
-
-            log(f"🧮 LTP fallback → {ltp}")
-            return ltp
-
-    except Exception as e:
-        log("❌ Fallback LTP error:", e)
+    if entry > 0:
+        ltp = round(entry + (pnl / qty), 2)
+        log(f"🧮 LTP fallback → {ltp}")
+        return ltp
 
     return None
 
@@ -169,9 +156,9 @@ def calculate_sl(entry, ltp, prev_sl=None):
     new_sl = min(new_sl, ltp * 0.995)
 
     if prev_sl:
-        return max(prev_sl, new_sl)
+        new_sl = max(prev_sl, new_sl)
 
-    return new_sl
+    return round(new_sl, 2)
 
 
 # ==========================
@@ -192,15 +179,12 @@ def cancel_order(order_id):
         headers={"access-token": get_token()},
         timeout=10
     )
-    log("🗑️ CANCEL:", order_id, r.status_code, r.text)
+    log("🗑️ CANCEL:", order_id, r.status_code)
 
 
 def cleanup_duplicate_sl(sec_id, orders, ltp):
 
     sl_orders = get_sl_orders(sec_id, orders)
-
-    if not sl_orders:
-        return []
 
     valid = []
 
@@ -216,8 +200,6 @@ def cleanup_duplicate_sl(sec_id, orders, ltp):
     if len(valid) <= 1:
         return valid
 
-    log(f"⚠️ Duplicate SL found ({len(valid)})")
-
     valid.sort(key=lambda x: float(x.get("triggerPrice")), reverse=True)
 
     keep = valid[0]
@@ -226,7 +208,6 @@ def cleanup_duplicate_sl(sec_id, orders, ltp):
         cancel_order(o["orderId"])
 
     log(f"✅ Keeping SL @ {keep.get('triggerPrice')}")
-
     return [keep]
 
 
@@ -256,8 +237,7 @@ def modify_sl(order_id, qty, trigger):
         timeout=10
     )
 
-    log("📉 MODIFY:", r.status_code, r.text)
-
+    log("📉 MODIFY:", r.status_code)
     return r.status_code == 200
 
 
@@ -287,8 +267,7 @@ def place_sl(sec_id, qty, trigger):
         timeout=10
     )
 
-    log("📉 NEW SL:", r.status_code, r.text)
-
+    log("📉 NEW SL:", r.status_code)
     return r.status_code == 200
 
 
@@ -317,7 +296,6 @@ def run():
         ltp = get_ltp(sec_id, pos)
 
         if not ltp:
-            log(f"⚠️ Missing price → {symbol}")
             continue
 
         log(f"\n➡️ {symbol} | Entry={entry} | LTP={ltp}")
@@ -328,15 +306,21 @@ def run():
         order_id = None
 
         if sl_orders:
-            prev_sl = float(sl_orders[0]["triggerPrice"])
+            prev_sl = round(float(sl_orders[0]["triggerPrice"]), 2)
             order_id = sl_orders[0]["orderId"]
 
         new_sl = calculate_sl(entry, ltp, prev_sl)
 
         log(f"SL OLD={prev_sl} → NEW={new_sl}")
 
+        # ✅ RULE 1: only upward move
         if prev_sl and new_sl <= prev_sl:
-            log("⏭️ No update")
+            log("⏭️ No upward move")
+            continue
+
+        # ✅ RULE 2: minimum step filter
+        if prev_sl and ((new_sl - prev_sl) / prev_sl) < MIN_TRAIL_PCT:
+            log("⏭️ Move too small (<0.5%)")
             continue
 
         if order_id:
