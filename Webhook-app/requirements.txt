@@ -3,4 +3,3 @@ requests
 pandas
 pyotp
 gunicorn
-yfinance
