@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 DHAN SL ENGINE (FOREVER SL + FIXED)
+# 🚀 DHAN SL ENGINE (TRAILING + MODIFY SL)
 # ==============================================
 
 import os
@@ -86,10 +86,27 @@ def send_telegram(msg):
         pass
 
 # ==========================
-# SL CALC
+# TRAILING SL LOGIC
 # ==========================
-def calculate_sl(price):
-    return round(price * 0.92, 2)
+def calculate_trailing_sl(entry, ltp, prev_sl=None):
+
+    base_sl = round(entry * 0.92, 2)
+
+    if ltp < entry * 1.02:
+        return base_sl
+
+    new_sl = entry
+
+    if ltp >= entry * 1.03:
+        new_sl = round(ltp * 0.98, 2)
+
+    if ltp >= entry * 1.05:
+        new_sl = round(ltp * 0.99, 2)
+
+    if prev_sl:
+        return max(prev_sl, new_sl)
+
+    return new_sl
 
 # ==========================
 # FETCH ORDERS
@@ -102,23 +119,12 @@ def fetch_orders():
 
     r = requests.get(url, headers=headers, params=params, timeout=10)
 
-    if r.status_code == 401:
-        global CURRENT_TOKEN
-        CURRENT_TOKEN = generate_token()
-        headers["access-token"] = CURRENT_TOKEN
-        r = requests.get(url, headers=headers, params=params, timeout=10)
-
     if r.status_code != 200:
         log("❌ Orders fetch failed:", r.text)
         return []
 
     data = r.json()
-
-    if not isinstance(data, list):
-        log("❌ Invalid orders response:", data)
-        return []
-
-    return data
+    return data if isinstance(data, list) else []
 
 # ==========================
 # FETCH POSITIONS
@@ -130,45 +136,67 @@ def fetch_positions():
 
     r = requests.get(url, headers=headers, timeout=10)
 
-    if r.status_code == 401:
-        global CURRENT_TOKEN
-        CURRENT_TOKEN = generate_token()
-        headers["access-token"] = CURRENT_TOKEN
-        r = requests.get(url, headers=headers, timeout=10)
-
     if r.status_code != 200:
         log("❌ Positions fetch failed:", r.text)
         return []
 
     data = r.json()
-
-    if not isinstance(data, list):
-        log("❌ Invalid positions response:", data)
-        return []
-
-    return data
+    return data if isinstance(data, list) else []
 
 # ==========================
-# CHECK EXISTING SL
+# GET EXISTING SL ORDER
 # ==========================
-def has_exit_order(security_id, orders):
+def get_existing_sl_order(security_id, orders):
+
     for o in orders:
         if str(o.get("securityId")) == str(security_id):
-            if o.get("transactionType") == "SELL" and o.get("orderStatus") in ["PENDING", "TRANSIT"]:
-                return True
-    return False
+            if o.get("transactionType") == "SELL":
+                if o.get("orderStatus") in ["PENDING", "TRANSIT"]:
+                    return {
+                        "orderId": o.get("orderId"),
+                        "triggerPrice": float(o.get("triggerPrice", 0))
+                    }
+
+    return None
 
 # ==========================
-# PLACE FOREVER SL
+# MODIFY SL ORDER
 # ==========================
-def place_sl(security_id, qty, sl_price):
+def modify_sl(order_id, security_id, qty, sl_price):
+
+    trigger_price = sl_price
+    limit_price = round(sl_price * 0.995, 2)
+
+    payload = {
+        "orderId": order_id,
+        "orderType": "LIMIT",
+        "price": limit_price,
+        "triggerPrice": trigger_price,
+        "quantity": qty
+    }
+
+    url = "https://api.dhan.co/v2/orders/modify"
+
+    headers = {
+        "access-token": get_token(),
+        "Content-Type": "application/json"
+    }
+
+    r = requests.put(url, json=payload, headers=headers, timeout=10)
+
+    log("🔁 MODIFY SL RESPONSE:", r.status_code, r.text)
+
+    return r.status_code == 200
+
+# ==========================
+# PLACE NEW SL (FALLBACK)
+# ==========================
+def place_new_sl(security_id, qty, sl_price):
 
     correlation_id = str(uuid.uuid4()).replace("-", "")[:20]
 
     trigger_price = sl_price
     limit_price = round(sl_price * 0.995, 2)
-
-    log(f"📌 SL CALC → Trigger: {trigger_price} | Limit: {limit_price}")
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
@@ -185,8 +213,6 @@ def place_sl(security_id, qty, sl_price):
         "triggerPrice": trigger_price
     }
 
-    log("📦 SL PAYLOAD:", payload)
-
     url = "https://api.dhan.co/v2/forever/orders"
 
     headers = {
@@ -196,7 +222,7 @@ def place_sl(security_id, qty, sl_price):
 
     r = requests.post(url, json=payload, headers=headers, timeout=10)
 
-    log("📉 SL ORDER RESPONSE:", r.status_code, r.text)
+    log("📉 NEW SL RESPONSE:", r.status_code, r.text)
 
     return r.status_code == 200
 
@@ -205,41 +231,13 @@ def place_sl(security_id, qty, sl_price):
 # ==========================
 def run():
 
-    log("\n🚀 SL ENGINE START\n")
+    log("\n🚀 TRAILING SL ENGINE START\n")
 
     positions = fetch_positions()
     orders = fetch_orders()
 
-    # HOLDINGS
-    log("📊 CURRENT HOLDINGS")
-    log("----------------------------------")
-
-    for pos in positions:
-        qty = int(pos.get("netQty", 0))
-        if qty > 0:
-            entry = pos.get("avgPrice") or pos.get("buyAvg")
-            pnl = pos.get("unrealizedProfit") or pos.get("unrealizedPnl")
-
-            log(pos.get("tradingSymbol"), "| Qty:", qty, "| Entry:", entry, "| PnL:", pnl)
-
-    # PENDING ORDERS
-    log("\n📌 PENDING ORDERS")
-    log("----------------------------------")
-
-    for o in orders:
-        if o.get("orderStatus") in ["PENDING", "TRANSIT"]:
-            log(
-                o.get("tradingSymbol"),
-                "|", o.get("transactionType"),
-                "| Qty:", o.get("quantity"),
-                "| Price:", o.get("price")
-            )
-
-    # SL LOGIC
-    sl_count = 0
-    skip_count = 0
-
-    log("\n⚙️ PROCESSING SL\n")
+    sl_updated = 0
+    skipped = 0
 
     for pos in positions:
 
@@ -250,39 +248,43 @@ def run():
         security_id = pos.get("securityId")
         symbol = pos.get("tradingSymbol")
 
-        raw_entry = pos.get("avgPrice") or pos.get("buyAvg")
+        entry = float(pos.get("avgPrice") or 0)
+        ltp = float(pos.get("lastPrice") or pos.get("ltp") or 0)
 
-        if raw_entry is None:
-            log(f"⚠️ Missing entry → Skipping {symbol}")
+        if entry == 0 or ltp == 0:
             continue
 
-        entry = float(raw_entry)
+        existing = get_existing_sl_order(security_id, orders)
 
-        log(f"➡️ Checking {symbol} | Qty={qty} | Entry={entry}")
+        prev_sl = existing["triggerPrice"] if existing else None
 
-        if has_exit_order(security_id, orders):
-            log(f"⏭️ SL exists → Skipping {symbol}")
-            skip_count += 1
+        new_sl = calculate_trailing_sl(entry, ltp, prev_sl)
+
+        log(f"{symbol} | LTP={ltp} | OLD SL={prev_sl} | NEW SL={new_sl}")
+
+        if prev_sl and new_sl <= prev_sl:
+            skipped += 1
             continue
 
-        sl_price = calculate_sl(entry)
-
-        success = place_sl(security_id, qty, sl_price)
+        # ✅ MODIFY instead of new
+        if existing:
+            success = modify_sl(existing["orderId"], security_id, qty, new_sl)
+        else:
+            success = place_new_sl(security_id, qty, new_sl)
 
         if success:
-            send_telegram(f"📉 SL PLACED: {symbol} @ {sl_price}")
-            sl_count += 1
+            send_telegram(f"📈 SL UPDATED: {symbol} → {new_sl}")
+            sl_updated += 1
         else:
             log(f"❌ SL FAILED for {symbol}")
 
-    log("\n✅ SL ENGINE DONE")
+    log("\n✅ ENGINE DONE")
 
     summary = f"""
-📊 SL ENGINE SUMMARY
+📊 TRAILING SL SUMMARY
 
-Total Positions: {len(positions)}
-SL Placed: {sl_count}
-Skipped: {skip_count}
+Updated: {sl_updated}
+Skipped: {skipped}
 """
 
     log(summary)
