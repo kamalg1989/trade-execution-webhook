@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 DHAN TRAILING SL ENGINE (FINAL FIXED)
+# 🚀 DHAN TRAILING SL ENGINE (FINAL - TOKEN SAFE)
 # ==============================================
 
 import os
@@ -21,7 +21,6 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
-LAST_TOKEN_TIME = None
 
 # ==========================
 # LOGGER
@@ -30,23 +29,19 @@ def log(*args):
     print(*args, flush=True)
 
 # ==========================
-# TOKEN (RETRY + SAFE)
+# TOKEN (RATE LIMIT FIX)
 # ==========================
 def generate_token():
-    global TOKEN_EXPIRY, LAST_TOKEN_TIME
 
     clean_secret = (DHAN_TOTP_SECRET or "").strip().replace(" ", "")
+
     if not clean_secret:
-        raise Exception("TOTP SECRET MISSING")
+        raise Exception("❌ Missing TOTP secret")
 
-    for attempt in range(3):
+    while True:
         try:
-            if LAST_TOKEN_TIME and (datetime.now() - LAST_TOKEN_TIME).seconds < 30:
-                log("⏳ Waiting before regenerating token...")
-                time.sleep(30)
-
             totp = pyotp.TOTP(clean_secret).now()
-            log(f"🔐 TOTP generated (attempt {attempt+1})")
+            log("🔐 Generating token...")
 
             r = requests.post(
                 "https://auth.dhan.co/app/generateAccessToken",
@@ -61,24 +56,26 @@ def generate_token():
             data = r.json()
             log("🔍 TOKEN RESPONSE:", data)
 
-            token = data.get("accessToken")
-            expiry = data.get("expiryTime")
+            if data.get("accessToken"):
+                expiry = data.get("expiryTime")
 
-            if token and expiry:
+                global TOKEN_EXPIRY
                 TOKEN_EXPIRY = datetime.fromisoformat(expiry).replace(tzinfo=timezone.utc)
-                LAST_TOKEN_TIME = datetime.now()
+
                 log("✅ TOKEN GENERATED")
-                return token
+                return data["accessToken"]
 
-        except requests.exceptions.ReadTimeout:
-            log(f"⚠️ Timeout attempt {attempt+1}")
+            # 🔥 HANDLE RATE LIMIT
+            if "2 minutes" in str(data):
+                log("⏳ Token rate limit hit → waiting 130 sec")
+                time.sleep(130)
+                continue
+
         except Exception as e:
-            log(f"⚠️ Error attempt {attempt+1}:", e)
+            log("⚠️ Token error:", e)
+            time.sleep(10)
 
-        time.sleep(5)
-
-    raise Exception("❌ Token generation failed")
-
+# ==========================
 def is_token_expired():
     if not TOKEN_EXPIRY:
         return True
@@ -107,7 +104,7 @@ def send_telegram(msg):
         pass
 
 # ==========================
-# TRAILING SL
+# TRAILING SL LOGIC
 # ==========================
 def calculate_trailing_sl(entry, ltp, prev_sl=None):
 
@@ -130,9 +127,10 @@ def calculate_trailing_sl(entry, ltp, prev_sl=None):
     return new_sl
 
 # ==========================
-# FETCH ORDERS (FIXED)
+# FETCH ORDERS
 # ==========================
 def fetch_orders():
+
     url = "https://api.dhan.co/v2/orders"
 
     headers = {
@@ -152,20 +150,17 @@ def fetch_orders():
         if isinstance(data, dict):
             data = data.get("data", [])
 
-        if not isinstance(data, list):
-            log("❌ Invalid orders format:", data)
-            return []
-
-        return data
+        return data if isinstance(data, list) else []
 
     except Exception as e:
-        log("❌ Orders exception:", e)
+        log("❌ Orders error:", e)
         return []
 
 # ==========================
 # FETCH POSITIONS
 # ==========================
 def fetch_positions():
+
     url = "https://api.dhan.co/v2/positions"
 
     headers = {"access-token": get_token()}
@@ -181,33 +176,14 @@ def fetch_positions():
         return data if isinstance(data, list) else []
 
     except Exception as e:
-        log("❌ Positions exception:", e)
+        log("❌ Positions error:", e)
         return []
-
-# ==========================
-# LTP FALLBACK
-# ==========================
-def get_ltp_from_quote(security_id):
-    try:
-        url = f"https://api.dhan.co/v2/marketfeed/ltp?securityId={security_id}"
-
-        headers = {"access-token": get_token()}
-
-        r = requests.get(url, headers=headers, timeout=10)
-
-        if r.status_code == 200:
-            data = r.json()
-            return float(data.get("ltp", 0))
-
-    except:
-        pass
-
-    return 0
 
 # ==========================
 # EXISTING SL
 # ==========================
-def get_existing_sl_order(security_id, orders):
+def get_existing_sl(security_id, orders):
+
     for o in orders:
         if str(o.get("securityId")) == str(security_id):
             if o.get("transactionType") == "SELL" and o.get("orderStatus") in ["PENDING", "TRANSIT"]:
@@ -220,10 +196,10 @@ def get_existing_sl_order(security_id, orders):
 # ==========================
 # MODIFY SL
 # ==========================
-def modify_sl(order_id, qty, sl_price):
+def modify_sl(order_id, qty, sl):
 
-    trigger = sl_price
-    limit = round(sl_price * 0.995, 2)
+    trigger = sl
+    limit = round(sl * 0.995, 2)
 
     payload = {
         "orderId": order_id,
@@ -249,16 +225,14 @@ def modify_sl(order_id, qty, sl_price):
 # ==========================
 # PLACE NEW SL
 # ==========================
-def place_new_sl(security_id, qty, sl_price):
+def place_sl(security_id, qty, sl):
 
-    correlation_id = str(uuid.uuid4()).replace("-", "")[:20]
-
-    trigger = sl_price
-    limit = round(sl_price * 0.995, 2)
+    trigger = sl
+    limit = round(sl * 0.995, 2)
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
-        "correlationId": correlation_id,
+        "correlationId": str(uuid.uuid4()).replace("-", "")[:20],
         "orderFlag": "SINGLE",
         "transactionType": "SELL",
         "exchangeSegment": "NSE_EQ",
@@ -307,22 +281,13 @@ def run():
         symbol = pos.get("tradingSymbol")
 
         entry = float(pos.get("avgPrice") or 0)
-
-        ltp = float(
-            pos.get("lastPrice")
-            or pos.get("ltp")
-            or pos.get("lastTradedPrice")
-            or 0
-        )
-
-        if ltp == 0:
-            ltp = get_ltp_from_quote(security_id)
+        ltp = float(pos.get("lastPrice") or 0)
 
         if entry == 0 or ltp == 0:
-            log(f"⚠️ Missing price data → {symbol}")
+            log(f"⚠️ Missing price → {symbol}")
             continue
 
-        existing = get_existing_sl_order(security_id, orders)
+        existing = get_existing_sl(security_id, orders)
         prev_sl = existing["triggerPrice"] if existing else None
 
         new_sl = calculate_trailing_sl(entry, ltp, prev_sl)
@@ -330,30 +295,21 @@ def run():
         log(f"{symbol} | LTP={ltp} | OLD SL={prev_sl} | NEW SL={new_sl}")
 
         if prev_sl and new_sl <= prev_sl:
-            log(f"⏭️ No update → {symbol}")
             skipped += 1
             continue
 
         if existing:
             success = modify_sl(existing["orderId"], qty, new_sl)
         else:
-            success = place_new_sl(security_id, qty, new_sl)
+            success = place_sl(security_id, qty, new_sl)
 
         if success:
-            send_telegram(f"📈 SL UPDATED: {symbol} → {new_sl}")
             updated += 1
-        else:
-            log(f"❌ SL FAILED → {symbol}")
+            send_telegram(f"📈 SL UPDATED: {symbol} → {new_sl}")
 
     log("\n✅ ENGINE DONE")
 
-    summary = f"""
-📊 TRAILING SL SUMMARY
-
-Updated: {updated}
-Skipped: {skipped}
-"""
-
+    summary = f"Updated: {updated} | Skipped: {skipped}"
     log(summary)
     send_telegram(summary)
 
