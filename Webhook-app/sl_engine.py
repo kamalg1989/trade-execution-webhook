@@ -314,7 +314,7 @@ def run():
         symbol = pos["tradingSymbol"]
         entry = float(pos.get("buyAvg", 0))
 
-        ltp = get_ltp(sec_id)
+        ltp = get_ltp(sec_id, pos)
 
         if not ltp:
             log(f"⚠️ Missing price → {symbol}")
