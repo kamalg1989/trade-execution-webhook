@@ -1,11 +1,12 @@
 # ==============================================
-# 🚀 DHAN SL ENGINE (TRAILING + MODIFY SL)
+# 🚀 DHAN SL ENGINE (FINAL STABLE VERSION)
 # ==============================================
 
 import os
 import requests
 import pyotp
 import uuid
+import time
 from datetime import datetime, timedelta, timezone
 
 # ==========================
@@ -20,6 +21,7 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
+LAST_TOKEN_TIME = None
 
 # ==========================
 # LOGGER
@@ -28,12 +30,24 @@ def log(*args):
     print(*args, flush=True)
 
 # ==========================
-# TOKEN
+# TOKEN (FIXED)
 # ==========================
 def generate_token():
-    global TOKEN_EXPIRY
+    global TOKEN_EXPIRY, LAST_TOKEN_TIME
 
-    totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
+    # 🔥 sanitize secret
+    clean_secret = (DHAN_TOTP_SECRET or "").strip().replace(" ", "")
+
+    if not clean_secret:
+        raise Exception("TOTP SECRET MISSING")
+
+    # 🔥 prevent rapid reuse (important)
+    if LAST_TOKEN_TIME and (datetime.now() - LAST_TOKEN_TIME).seconds < 30:
+        log("⏳ Waiting before regenerating token...")
+        time.sleep(30)
+
+    totp = pyotp.TOTP(clean_secret).now()
+    log("🔐 Generated TOTP")
 
     params = {
         "dhanClientId": DHAN_CLIENT_ID,
@@ -48,12 +62,14 @@ def generate_token():
     )
 
     data = r.json()
+    log("🔍 TOKEN RESPONSE:", data)
 
     token = data.get("accessToken")
     expiry = data.get("expiryTime")
 
     if token and expiry:
         TOKEN_EXPIRY = datetime.fromisoformat(expiry).replace(tzinfo=timezone.utc)
+        LAST_TOKEN_TIME = datetime.now()
         log("✅ TOKEN GENERATED")
         return token
 
@@ -68,8 +84,11 @@ def is_token_expired():
 
 def get_token():
     global CURRENT_TOKEN
-    if not CURRENT_TOKEN or is_token_expired():
-        CURRENT_TOKEN = generate_token()
+
+    if CURRENT_TOKEN and not is_token_expired():
+        return CURRENT_TOKEN
+
+    CURRENT_TOKEN = generate_token()
     return CURRENT_TOKEN
 
 # ==========================
@@ -150,19 +169,18 @@ def get_existing_sl_order(security_id, orders):
 
     for o in orders:
         if str(o.get("securityId")) == str(security_id):
-            if o.get("transactionType") == "SELL":
-                if o.get("orderStatus") in ["PENDING", "TRANSIT"]:
-                    return {
-                        "orderId": o.get("orderId"),
-                        "triggerPrice": float(o.get("triggerPrice", 0))
-                    }
+            if o.get("transactionType") == "SELL" and o.get("orderStatus") in ["PENDING", "TRANSIT"]:
+                return {
+                    "orderId": o.get("orderId"),
+                    "triggerPrice": float(o.get("triggerPrice", 0))
+                }
 
     return None
 
 # ==========================
-# MODIFY SL ORDER
+# MODIFY SL
 # ==========================
-def modify_sl(order_id, security_id, qty, sl_price):
+def modify_sl(order_id, qty, sl_price):
 
     trigger_price = sl_price
     limit_price = round(sl_price * 0.995, 2)
@@ -184,12 +202,12 @@ def modify_sl(order_id, security_id, qty, sl_price):
 
     r = requests.put(url, json=payload, headers=headers, timeout=10)
 
-    log("🔁 MODIFY SL RESPONSE:", r.status_code, r.text)
+    log("🔁 MODIFY RESPONSE:", r.status_code, r.text)
 
     return r.status_code == 200
 
 # ==========================
-# PLACE NEW SL (FALLBACK)
+# PLACE NEW SL
 # ==========================
 def place_new_sl(security_id, qty, sl_price):
 
@@ -236,7 +254,7 @@ def run():
     positions = fetch_positions()
     orders = fetch_orders()
 
-    sl_updated = 0
+    updated = 0
     skipped = 0
 
     for pos in positions:
@@ -252,10 +270,10 @@ def run():
         ltp = float(pos.get("lastPrice") or pos.get("ltp") or 0)
 
         if entry == 0 or ltp == 0:
+            log(f"⚠️ Missing data → {symbol}")
             continue
 
         existing = get_existing_sl_order(security_id, orders)
-
         prev_sl = existing["triggerPrice"] if existing else None
 
         new_sl = calculate_trailing_sl(entry, ltp, prev_sl)
@@ -263,27 +281,27 @@ def run():
         log(f"{symbol} | LTP={ltp} | OLD SL={prev_sl} | NEW SL={new_sl}")
 
         if prev_sl and new_sl <= prev_sl:
+            log(f"⏭️ No change → {symbol}")
             skipped += 1
             continue
 
-        # ✅ MODIFY instead of new
         if existing:
-            success = modify_sl(existing["orderId"], security_id, qty, new_sl)
+            success = modify_sl(existing["orderId"], qty, new_sl)
         else:
             success = place_new_sl(security_id, qty, new_sl)
 
         if success:
             send_telegram(f"📈 SL UPDATED: {symbol} → {new_sl}")
-            sl_updated += 1
+            updated += 1
         else:
-            log(f"❌ SL FAILED for {symbol}")
+            log(f"❌ SL FAILED → {symbol}")
 
     log("\n✅ ENGINE DONE")
 
     summary = f"""
 📊 TRAILING SL SUMMARY
 
-Updated: {sl_updated}
+Updated: {updated}
 Skipped: {skipped}
 """
 
