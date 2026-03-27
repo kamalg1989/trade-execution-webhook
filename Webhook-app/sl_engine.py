@@ -20,6 +20,16 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
 
+
+print("SECRET VALUE:", DHAN_TOTP_SECRET)
+print("SECRET PRESENT:", bool(DHAN_TOTP_SECRET))
+
+print("SECRET VALUE:", DHAN_PIN)
+print("SECRET PRESENT:", bool(DHAN_PIN))
+
+print("SECRET VALUE:", DHAN_PIN)
+print("SECRET PRESENT:", bool(DHAN_PIN))
+
 # ==========================
 # LOGGER
 # ==========================
