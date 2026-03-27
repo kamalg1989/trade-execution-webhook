@@ -1,11 +1,12 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (FINAL FIXED)
+# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (FINAL STABLE)
 # ==============================================
 
 import os
 import requests
 import pandas as pd
 import pyotp
+import uuid
 from datetime import datetime, timedelta, timezone
 from flask import Flask, request
 import threading
@@ -32,8 +33,7 @@ PROCESSED_CALLBACKS = set()
 PROCESSED_ORDERS = {}
 LOCK = threading.Lock()
 
-MAX_CACHE = 500
-ORDER_WINDOW_SECONDS = 300  # 🔥 increased to 5 mins
+ORDER_WINDOW_SECONDS = 300
 
 # ==========================
 # LOGGER
@@ -137,28 +137,30 @@ def send_telegram(msg):
         log("❌ Telegram Error:", e)
 
 # ==========================
-# 🔥 NEW: CHECK PENDING BUY ORDER
+# 🔥 FIXED: CHECK PENDING BUY ORDER
 # ==========================
 def has_pending_buy_order(security_id):
     try:
         url = "https://api.dhan.co/v2/orders"
 
         headers = {
-            "access-token": get_token(),
-            "Content-Type": "application/json"
+            "access-token": get_token()
         }
 
         r = requests.get(url, headers=headers, timeout=10)
 
-        if r.status_code == 401:
-            global CURRENT_TOKEN
-            CURRENT_TOKEN = generate_token()
-            headers["access-token"] = CURRENT_TOKEN
-            r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code != 200:
+            log("❌ Orders API failed:", r.text)
+            return False
 
-        orders = r.json()
+        data = r.json()
 
-        for o in orders:
+        # 🔥 FIX: ensure list
+        if not isinstance(data, list):
+            log("❌ Unexpected orders response:", data)
+            return False
+
+        for o in data:
             if str(o.get("securityId")) == str(security_id):
                 if o.get("transactionType") == "BUY":
                     if o.get("orderStatus") in ["PENDING", "TRANSIT"]:
@@ -184,6 +186,10 @@ def is_already_holding(stock):
 
         r = requests.get(url, headers=headers, timeout=10)
         data = r.json()
+
+        if not isinstance(data, list):
+            log("❌ Unexpected position response:", data)
+            return False
 
         symbol = stock.replace(".NS", "").upper()
 
@@ -228,7 +234,6 @@ def place_forever_entry(stock, qty, entry):
     if not sec_id:
         return {"error": "mapping_failed"}
 
-    # 🔥 MAIN FIX
     if has_pending_buy_order(sec_id):
         return {"error": "pending_order_exists"}
 
@@ -237,11 +242,12 @@ def place_forever_entry(stock, qty, entry):
 
     log("\n🚀 ENTRY:", stock, qty, entry)
 
-    correlation_id = f"{stock}_{int(datetime.now().timestamp())}"
+    # 🔥 FIX: valid correlationId
+    correlation_id = str(uuid.uuid4()).replace("-", "")[:20]
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
-        "correlationId": correlation_id[:30],
+        "correlationId": correlation_id,
         "orderFlag": "SINGLE",
         "transactionType": "BUY",
         "exchangeSegment": "NSE_EQ",
