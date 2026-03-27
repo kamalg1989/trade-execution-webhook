@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (DEDUP FIXED)
+# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (FINAL SAFE)
 # ==============================================
 
 import os
@@ -25,13 +25,15 @@ INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
 
-# ✅ Dedup storage
+# ==========================
+# DEDUP STORAGE
+# ==========================
 PROCESSED_CALLBACKS = set()
 PROCESSED_ORDERS = {}
 LOCK = threading.Lock()
 
 MAX_CACHE = 500
-ORDER_WINDOW_SECONDS = 60  # prevent duplicate orders within 1 min
+ORDER_WINDOW_SECONDS = 60
 
 # ==========================
 # LOGGER
@@ -145,24 +147,60 @@ def send_telegram(msg):
         log("❌ Telegram Error:", e)
 
 # ==========================
+# NEW: POSITION CHECK
+# ==========================
+def is_already_holding(stock):
+    try:
+        url = "https://api.dhan.co/v2/positions"
+
+        headers = {
+            "access-token": get_token(),
+            "Content-Type": "application/json"
+        }
+
+        r = requests.get(url, headers=headers, timeout=10)
+
+        if r.status_code == 401:
+            log("🔁 Token expired (positions)")
+            global CURRENT_TOKEN
+            CURRENT_TOKEN = generate_token()
+
+            headers["access-token"] = CURRENT_TOKEN
+            r = requests.get(url, headers=headers, timeout=10)
+
+        data = r.json()
+
+        symbol = stock.replace(".NS", "").upper()
+
+        for pos in data:
+            if pos.get("tradingSymbol", "").upper() == symbol:
+                qty = int(pos.get("netQty", 0))
+
+                if qty > 0:
+                    log(f"⚠️ Already holding {symbol}, qty={qty}")
+                    return True
+
+        return False
+
+    except Exception as e:
+        log("❌ POSITION CHECK ERROR:", e)
+        return False
+
+# ==========================
 # ORDER DEDUP CHECK
 # ==========================
 def is_duplicate_order(stock, qty, entry):
     key = f"{stock}_{qty}_{entry}"
-
     now = datetime.now()
 
     with LOCK:
         if key in PROCESSED_ORDERS:
-            last_time = PROCESSED_ORDERS[key]
-
-            if (now - last_time).seconds < ORDER_WINDOW_SECONDS:
+            if (now - PROCESSED_ORDERS[key]).seconds < ORDER_WINDOW_SECONDS:
                 log("⚠️ Duplicate ORDER blocked:", key)
                 return True
 
         PROCESSED_ORDERS[key] = now
 
-        # cleanup
         if len(PROCESSED_ORDERS) > MAX_CACHE:
             PROCESSED_ORDERS.clear()
 
@@ -176,13 +214,16 @@ def place_forever_entry(stock, qty, entry):
     if is_duplicate_order(stock, qty, entry):
         return {"error": "duplicate_blocked"}
 
+    # NEW: position check
+    if is_already_holding(stock):
+        return {"error": "already_holding"}
+
     log("\n🚀 ENTRY:", stock, qty, entry)
 
     sec_id = get_security_id(stock)
     if not sec_id:
         return {"error": "mapping_failed"}
 
-    # ✅ unique correlation id
     correlation_id = f"{stock.replace('.NS','')}_{int(datetime.now().timestamp())}"
 
     payload = {
@@ -238,7 +279,6 @@ def webhook():
     query = data["callback_query"]
     callback_id = query["id"]
 
-    # ✅ callback dedup
     with LOCK:
         if callback_id in PROCESSED_CALLBACKS:
             return "OK"
@@ -267,9 +307,14 @@ def webhook():
         res = place_forever_entry(stock, qty, entry)
 
         if res.get("error") == "duplicate_blocked":
-            log("⚠️ Order skipped (duplicate)")
+            log("⚠️ Duplicate blocked")
+
+        elif res.get("error") == "already_holding":
+            send_telegram(f"⚠️ SKIPPED (Already Holding): {stock}")
+
         elif "orderId" in str(res):
             send_telegram(f"🟢 ENTRY ORDER PLACED: {stock}")
+
         else:
             send_telegram(f"❌ ORDER FAILED: {stock}\n{res}")
 
