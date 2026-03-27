@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 DHAN SL ENGINE (WITH FULL LOGGING)
+# 🚀 DHAN SL ENGINE (FIXED + ROBUST)
 # ==============================================
 
 import os
@@ -92,7 +92,7 @@ def calculate_sl(price):
     return round(price * 0.92, 2)
 
 # ==========================
-# FETCH ORDERS
+# FETCH ORDERS (FIXED)
 # ==========================
 def fetch_orders():
     url = "https://api.dhan.co/v2/orders"
@@ -101,7 +101,19 @@ def fetch_orders():
         "access-token": get_token()
     }
 
-    r = requests.get(url, headers=headers, timeout=10)
+    params = {
+        "page": 0,
+        "size": 50
+    }
+
+    r = requests.get(url, headers=headers, params=params, timeout=10)
+
+    # retry on 401
+    if r.status_code == 401:
+        global CURRENT_TOKEN
+        CURRENT_TOKEN = generate_token()
+        headers["access-token"] = CURRENT_TOKEN
+        r = requests.get(url, headers=headers, params=params, timeout=10)
 
     if r.status_code != 200:
         log("❌ Orders fetch failed:", r.text)
@@ -126,6 +138,12 @@ def fetch_positions():
     }
 
     r = requests.get(url, headers=headers, timeout=10)
+
+    if r.status_code == 401:
+        global CURRENT_TOKEN
+        CURRENT_TOKEN = generate_token()
+        headers["access-token"] = CURRENT_TOKEN
+        r = requests.get(url, headers=headers, timeout=10)
 
     if r.status_code != 200:
         log("❌ Positions fetch failed:", r.text)
@@ -200,12 +218,16 @@ def run():
 
     for pos in positions:
         qty = int(pos.get("netQty", 0))
+
         if qty > 0:
+            entry = pos.get("avgPrice") or pos.get("buyAvg")
+            pnl = pos.get("unrealizedProfit") or pos.get("unrealizedPnl")
+
             log(
                 pos.get("tradingSymbol"),
                 "| Qty:", qty,
-                "| Entry:", pos.get("avgPrice"),
-                "| PnL:", pos.get("unrealizedProfit")
+                "| Entry:", entry,
+                "| PnL:", pnl
             )
 
     # ==========================
@@ -238,11 +260,15 @@ def run():
             continue
 
         security_id = pos.get("securityId")
-        entry = float(pos.get("avgPrice", 0))
         symbol = pos.get("tradingSymbol")
 
-        if entry == 0:
+        raw_entry = pos.get("avgPrice") or pos.get("buyAvg")
+
+        if raw_entry is None:
+            log(f"⚠️ Missing entry → Skipping {symbol}")
             continue
+
+        entry = float(raw_entry)
 
         log(f"➡️ Checking {symbol} | Qty={qty} | Entry={entry}")
 
