@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (FINAL SAFE)
+# 🚀 TELEGRAM WEBHOOK → DHAN FOREVER ENTRY (FINAL FIXED)
 # ==============================================
 
 import os
@@ -33,7 +33,7 @@ PROCESSED_ORDERS = {}
 LOCK = threading.Lock()
 
 MAX_CACHE = 500
-ORDER_WINDOW_SECONDS = 60
+ORDER_WINDOW_SECONDS = 300  # 🔥 increased to 5 mins
 
 # ==========================
 # LOGGER
@@ -47,43 +47,36 @@ def log(*args):
 def generate_token():
     global TOKEN_EXPIRY
 
-    try:
-        totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
+    totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
 
-        params = {
-            "dhanClientId": DHAN_CLIENT_ID,
-            "pin": DHAN_PIN,
-            "totp": totp
-        }
+    params = {
+        "dhanClientId": DHAN_CLIENT_ID,
+        "pin": DHAN_PIN,
+        "totp": totp
+    }
 
-        r = requests.post(
-            "https://auth.dhan.co/app/generateAccessToken",
-            params=params,
-            timeout=10
-        )
+    r = requests.post(
+        "https://auth.dhan.co/app/generateAccessToken",
+        params=params,
+        timeout=10
+    )
 
-        data = r.json()
+    data = r.json()
 
-        token = data.get("accessToken")
-        expiry = data.get("expiryTime")
+    token = data.get("accessToken")
+    expiry = data.get("expiryTime")
 
-        if token and expiry:
-            TOKEN_EXPIRY = datetime.fromisoformat(expiry).replace(tzinfo=timezone.utc)
-            log("✅ TOKEN GENERATED")
-            return token
+    if token and expiry:
+        TOKEN_EXPIRY = datetime.fromisoformat(expiry).replace(tzinfo=timezone.utc)
+        log("✅ TOKEN GENERATED")
+        return token
 
-        log("❌ TOKEN FAILED:", data)
-
-    except Exception as e:
-        log("❌ TOKEN ERROR:", e)
-
-    return None
+    raise Exception(f"Token failed: {data}")
 
 
 def is_token_expired():
     if not TOKEN_EXPIRY:
         return True
-
     return datetime.now(timezone.utc) > (TOKEN_EXPIRY - timedelta(minutes=5))
 
 
@@ -93,9 +86,6 @@ def get_token():
     if not CURRENT_TOKEN or is_token_expired():
         log("🔁 Refreshing token...")
         CURRENT_TOKEN = generate_token()
-
-    if not CURRENT_TOKEN:
-        raise Exception("Token generation failed")
 
     return CURRENT_TOKEN
 
@@ -147,11 +137,11 @@ def send_telegram(msg):
         log("❌ Telegram Error:", e)
 
 # ==========================
-# NEW: POSITION CHECK
+# 🔥 NEW: CHECK PENDING BUY ORDER
 # ==========================
-def is_already_holding(stock):
+def has_pending_buy_order(security_id):
     try:
-        url = "https://api.dhan.co/v2/positions"
+        url = "https://api.dhan.co/v2/orders"
 
         headers = {
             "access-token": get_token(),
@@ -161,33 +151,56 @@ def is_already_holding(stock):
         r = requests.get(url, headers=headers, timeout=10)
 
         if r.status_code == 401:
-            log("🔁 Token expired (positions)")
             global CURRENT_TOKEN
             CURRENT_TOKEN = generate_token()
-
             headers["access-token"] = CURRENT_TOKEN
             r = requests.get(url, headers=headers, timeout=10)
 
+        orders = r.json()
+
+        for o in orders:
+            if str(o.get("securityId")) == str(security_id):
+                if o.get("transactionType") == "BUY":
+                    if o.get("orderStatus") in ["PENDING", "TRANSIT"]:
+                        log(f"⚠️ Pending BUY exists: {security_id}")
+                        return True
+
+        return False
+
+    except Exception as e:
+        log("❌ ORDER CHECK ERROR:", e)
+        return False
+
+# ==========================
+# POSITION CHECK
+# ==========================
+def is_already_holding(stock):
+    try:
+        url = "https://api.dhan.co/v2/positions"
+
+        headers = {
+            "access-token": get_token()
+        }
+
+        r = requests.get(url, headers=headers, timeout=10)
         data = r.json()
 
         symbol = stock.replace(".NS", "").upper()
 
         for pos in data:
             if pos.get("tradingSymbol", "").upper() == symbol:
-                qty = int(pos.get("netQty", 0))
-
-                if qty > 0:
-                    log(f"⚠️ Already holding {symbol}, qty={qty}")
+                if int(pos.get("netQty", 0)) > 0:
+                    log(f"⚠️ Already holding {symbol}")
                     return True
 
         return False
 
     except Exception as e:
-        log("❌ POSITION CHECK ERROR:", e)
+        log("❌ POSITION ERROR:", e)
         return False
 
 # ==========================
-# ORDER DEDUP CHECK
+# ORDER DEDUP
 # ==========================
 def is_duplicate_order(stock, qty, entry):
     key = f"{stock}_{qty}_{entry}"
@@ -196,13 +209,10 @@ def is_duplicate_order(stock, qty, entry):
     with LOCK:
         if key in PROCESSED_ORDERS:
             if (now - PROCESSED_ORDERS[key]).seconds < ORDER_WINDOW_SECONDS:
-                log("⚠️ Duplicate ORDER blocked:", key)
+                log("⚠️ Duplicate blocked:", key)
                 return True
 
         PROCESSED_ORDERS[key] = now
-
-        if len(PROCESSED_ORDERS) > MAX_CACHE:
-            PROCESSED_ORDERS.clear()
 
     return False
 
@@ -214,17 +224,20 @@ def place_forever_entry(stock, qty, entry):
     if is_duplicate_order(stock, qty, entry):
         return {"error": "duplicate_blocked"}
 
-    # NEW: position check
+    sec_id = get_security_id(stock)
+    if not sec_id:
+        return {"error": "mapping_failed"}
+
+    # 🔥 MAIN FIX
+    if has_pending_buy_order(sec_id):
+        return {"error": "pending_order_exists"}
+
     if is_already_holding(stock):
         return {"error": "already_holding"}
 
     log("\n🚀 ENTRY:", stock, qty, entry)
 
-    sec_id = get_security_id(stock)
-    if not sec_id:
-        return {"error": "mapping_failed"}
-
-    correlation_id = f"{stock.replace('.NS','')}_{int(datetime.now().timestamp())}"
+    correlation_id = f"{stock}_{int(datetime.now().timestamp())}"
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
@@ -249,14 +262,6 @@ def place_forever_entry(stock, qty, entry):
     }
 
     r = requests.post(url, json=payload, headers=headers, timeout=10)
-
-    if r.status_code == 401:
-        log("🔁 Token expired → regenerating")
-        global CURRENT_TOKEN
-        CURRENT_TOKEN = generate_token()
-
-        headers["access-token"] = CURRENT_TOKEN
-        r = requests.post(url, json=payload, headers=headers, timeout=10)
 
     log("🌐 STATUS:", r.status_code)
     log("🌐 RESPONSE:", r.text)
@@ -308,6 +313,9 @@ def webhook():
 
         if res.get("error") == "duplicate_blocked":
             log("⚠️ Duplicate blocked")
+
+        elif res.get("error") == "pending_order_exists":
+            send_telegram(f"⚠️ SKIPPED (Pending Order Exists): {stock}")
 
         elif res.get("error") == "already_holding":
             send_telegram(f"⚠️ SKIPPED (Already Holding): {stock}")
