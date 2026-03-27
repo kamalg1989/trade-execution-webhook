@@ -1,17 +1,10 @@
 # ==============================================
-# 🚀 DHAN TRAILING SL ENGINE (FINAL STABLE)
+# 🚀 TRAILING SL ENGINE (DEDUP + FIXED)
 # ==============================================
 
-import os
-import requests
-import pyotp
-import uuid
-import time
+import os, requests, pyotp, uuid, time
 from datetime import datetime, timedelta, timezone
 
-# ==========================
-# CONFIG
-# ==========================
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
 DHAN_PIN = os.getenv("DHAN_PIN")
 DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
@@ -19,21 +12,14 @@ DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
 
-# ==========================
-# LOGGER
-# ==========================
 def log(*args):
     print(*args, flush=True)
 
-# ==========================
-# TOKEN (RATE LIMIT SAFE)
-# ==========================
+# ================= TOKEN =================
 def generate_token():
     global TOKEN_EXPIRY
 
-    for i in range(3):
-        log("🔐 Generating token...")
-
+    while True:
         totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
 
         r = requests.post(
@@ -51,14 +37,11 @@ def generate_token():
 
         if "accessToken" in data:
             TOKEN_EXPIRY = datetime.fromisoformat(data["expiryTime"]).replace(tzinfo=timezone.utc)
-            log("✅ TOKEN GENERATED")
             return data["accessToken"]
 
         if "2 minutes" in str(data):
             log("⏳ Waiting due to rate limit...")
             time.sleep(130)
-
-    raise Exception("❌ Token generation failed")
 
 def get_token():
     global CURRENT_TOKEN
@@ -66,53 +49,35 @@ def get_token():
         CURRENT_TOKEN = generate_token()
     return CURRENT_TOKEN
 
-# ==========================
-# FETCH POSITIONS
-# ==========================
+# ================= FETCH =================
 def fetch_positions():
     r = requests.get(
         "https://api.dhan.co/v2/positions",
-        headers={"access-token": get_token()},
-        timeout=10
+        headers={"access-token": get_token()}
     )
-    data = r.json()
-    log("📊 POSITIONS:", data)
-    return data if isinstance(data, list) else []
+    return r.json()
 
-# ==========================
-# FETCH FOREVER ORDERS (FIXED)
-# ==========================
-def fetch_forever_orders():
+def fetch_orders():
     r = requests.get(
-        "https://api.dhan.co/v2/forever/all",
-        headers={"access-token": get_token()},
-        timeout=10
+        "https://api.dhan.co/v2/forever/orders",
+        headers={"access-token": get_token()}
     )
-
-    if r.status_code != 200:
-        log("❌ Orders fetch failed:", r.text)
-        return []
-
     data = r.json()
-    log("📦 FOREVER ORDERS:", data)
-
+    log("📦 ORDERS:", data)
     return data if isinstance(data, list) else []
 
-# ==========================
-# FIND EXISTING SL ORDERS
-# ==========================
-def get_sl_orders(security_id, orders):
+# ================= SL HELPERS =================
+def get_sl_orders(sec_id, orders):
     return [
         o for o in orders
-        if str(o.get("securityId")) == str(security_id)
+        if str(o.get("securityId")) == str(sec_id)
         and o.get("transactionType") == "SELL"
         and o.get("orderStatus") in ["PENDING", "TRANSIT"]
     ]
 
-# ==========================
-# CANCEL ORDER
-# ==========================
+# ================= CANCEL =================
 def cancel_order(order_id):
+
     url = f"https://api.dhan.co/v2/forever/orders/{order_id}"
 
     r = requests.delete(
@@ -121,137 +86,41 @@ def cancel_order(order_id):
         timeout=10
     )
 
-    log("🗑️ CANCEL:", order_id, r.status_code, r.text)
+    log(f"🗑️ CANCELLED: {order_id} | {r.status_code} | {r.text}")
 
-# ==========================
-# MODIFY SL
-# ==========================
-def modify_sl(order, qty, trigger):
+# ================= DEDUP =================
+def cleanup_duplicate_sl(sec_id, orders):
 
-    order_id = order["orderId"]
-    limit = round(trigger * 0.995, 2)
+    sl_orders = get_sl_orders(sec_id, orders)
 
-    payload = {
-        "dhanClientId": DHAN_CLIENT_ID,
-        "orderId": order_id,
-        "orderFlag": "SINGLE",
-        "orderType": "LIMIT",
-        "legName": "TARGET_LEG",
-        "quantity": qty,
-        "price": limit,
-        "triggerPrice": trigger,
-        "validity": "DAY"
-    }
+    if len(sl_orders) <= 1:
+        return sl_orders
 
-    url = f"https://api.dhan.co/v2/forever/orders/{order_id}"
+    log(f"⚠️ Duplicate SL found ({len(sl_orders)}) → cleaning")
 
-    log("🔁 MODIFY SL:", payload)
+    # sort by best SL (highest trigger)
+    sl_orders.sort(key=lambda x: float(x.get("triggerPrice", 0)), reverse=True)
 
-    r = requests.put(
-        url,
-        json=payload,
-        headers={
-            "access-token": get_token(),
-            "Content-Type": "application/json"
-        },
-        timeout=10
-    )
+    keep = sl_orders[0]
 
-    log("📉 MODIFY RESPONSE:", r.status_code, r.text)
+    for o in sl_orders[1:]:
+        cancel_order(o["orderId"])
 
-# ==========================
-# PLACE NEW SL
-# ==========================
-def place_sl(security_id, qty, trigger):
+    log(f"✅ Keeping SL @ {keep.get('triggerPrice')}")
 
-    limit = round(trigger * 0.995, 2)
+    return [keep]
 
-    payload = {
-        "dhanClientId": DHAN_CLIENT_ID,
-        "correlationId": str(uuid.uuid4())[:20],
-        "orderFlag": "SINGLE",
-        "transactionType": "SELL",
-        "exchangeSegment": "NSE_EQ",
-        "productType": "CNC",
-        "orderType": "LIMIT",
-        "validity": "DAY",
-        "securityId": security_id,
-        "quantity": qty,
-        "price": limit,
-        "triggerPrice": trigger
-    }
+# ================= TRAILING =================
+def calculate_sl(entry, ltp, prev_sl=None):
 
-    log("🆕 NEW SL:", payload)
+    base = entry * 0.92
 
-    r = requests.post(
-        "https://api.dhan.co/v2/forever/orders",
-        json=payload,
-        headers={
-            "access-token": get_token(),
-            "Content-Type": "application/json"
-        },
-        timeout=10
-    )
+    if ltp <= entry:
+        return base
 
-    log("📉 NEW SL RESPONSE:", r.status_code, r.text)
+    profit = ltp - entry
 
-# ==========================
-# TRAILING LOGIC
-# ==========================
-def run():
+    new_sl = entry + (profit * 0.5)
 
-    log("\n🚀 TRAILING SL ENGINE START\n")
-
-    positions = fetch_positions()
-    orders = fetch_forever_orders()
-
-    updated = 0
-
-    for pos in positions:
-
-        qty = int(pos.get("netQty", 0))
-        if qty <= 0:
-            continue
-
-        symbol = pos.get("tradingSymbol")
-        sec_id = pos.get("securityId")
-        entry = float(pos.get("buyAvg") or 0)
-
-        pnl = float(pos.get("unrealizedProfit", 0))
-        current = entry + (pnl / qty) if qty else entry
-
-        log(f"\n➡️ {symbol} | Entry={entry} | LTP≈{current}")
-
-        # Trailing SL: 50% lock
-        new_sl = round(entry + (current - entry) * 0.5, 2)
-
-        sl_orders = get_sl_orders(sec_id, orders)
-
-        # cleanup duplicates
-        if len(sl_orders) > 1:
-            log("⚠️ Duplicate SL found → cleaning")
-            for o in sl_orders[1:]:
-                cancel_order(o["orderId"])
-
-        if not sl_orders:
-            place_sl(sec_id, qty, new_sl)
-            updated += 1
-            continue
-
-        existing = float(sl_orders[0].get("triggerPrice", 0))
-
-        log(f"Current SL={existing} → New SL={new_sl}")
-
-        if new_sl > existing:
-            modify_sl(sl_orders[0], qty, new_sl)
-            updated += 1
-        else:
-            log("⏭️ No update needed")
-
-    log(f"\n✅ DONE | Updated: {updated}")
-
-# ==========================
-# RUN
-# ==========================
-if __name__ == "__main__":
-    run()
+    # ensure below LTP
+   
