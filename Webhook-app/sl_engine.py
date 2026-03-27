@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 DHAN TRAILING SL ENGINE (FINAL WORKING)
+# 🚀 DHAN TRAILING SL ENGINE (FINAL STABLE)
 # ==============================================
 
 import os
@@ -16,12 +16,11 @@ DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
 DHAN_PIN = os.getenv("DHAN_PIN")
 DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
 
+# ==========================
+# LOGGER
 # ==========================
 def log(*args):
     print(*args, flush=True)
@@ -30,11 +29,12 @@ def log(*args):
 # TOKEN (RATE LIMIT SAFE)
 # ==========================
 def generate_token():
+    global TOKEN_EXPIRY
 
-    clean_secret = (DHAN_TOTP_SECRET or "").strip().replace(" ", "")
+    for i in range(3):
+        log("🔐 Generating token...")
 
-    while True:
-        totp = pyotp.TOTP(clean_secret).now()
+        totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
 
         r = requests.post(
             "https://auth.dhan.co/app/generateAccessToken",
@@ -43,183 +43,132 @@ def generate_token():
                 "pin": DHAN_PIN,
                 "totp": totp
             },
-            timeout=20
+            timeout=10
         )
 
         data = r.json()
         log("🔍 TOKEN:", data)
 
-        if data.get("accessToken"):
-            global TOKEN_EXPIRY
+        if "accessToken" in data:
             TOKEN_EXPIRY = datetime.fromisoformat(data["expiryTime"]).replace(tzinfo=timezone.utc)
+            log("✅ TOKEN GENERATED")
             return data["accessToken"]
 
         if "2 minutes" in str(data):
-            log("⏳ Waiting 130 sec due to rate limit")
+            log("⏳ Waiting due to rate limit...")
             time.sleep(130)
 
-# ==========================
-def is_token_expired():
-    if not TOKEN_EXPIRY:
-        return True
-    return datetime.now(timezone.utc) > (TOKEN_EXPIRY - timedelta(minutes=5))
+    raise Exception("❌ Token generation failed")
 
 def get_token():
     global CURRENT_TOKEN
-    if CURRENT_TOKEN and not is_token_expired():
-        return CURRENT_TOKEN
-    CURRENT_TOKEN = generate_token()
+    if not CURRENT_TOKEN or datetime.now(timezone.utc) > (TOKEN_EXPIRY - timedelta(minutes=5)):
+        CURRENT_TOKEN = generate_token()
     return CURRENT_TOKEN
-
-# ==========================
-# TELEGRAM
-# ==========================
-def send_telegram(msg):
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": msg},
-            timeout=10
-        )
-    except:
-        pass
-
-# ==========================
-# LTP (FIXED)
-# ==========================
-def get_ltp(security_id):
-
-    url = "https://api.dhan.co/v2/marketfeed/ltp"
-
-    payload = [
-        {
-            "securityId": security_id,
-            "exchangeSegment": "NSE_EQ"
-        }
-    ]
-
-    headers = {
-        "access-token": get_token(),
-        "Content-Type": "application/json"
-    }
-
-    r = requests.post(url, json=payload, headers=headers, timeout=10)
-    data = r.json()
-
-    log("📡 LTP:", data)
-
-    try:
-        return float(list(data["data"].values())[0]["lastPrice"])
-    except:
-        return 0
 
 # ==========================
 # FETCH POSITIONS
 # ==========================
 def fetch_positions():
-
-    url = "https://api.dhan.co/v2/positions"
-
-    headers = {"access-token": get_token()}
-
-    r = requests.get(url, headers=headers, timeout=15)
+    r = requests.get(
+        "https://api.dhan.co/v2/positions",
+        headers={"access-token": get_token()},
+        timeout=10
+    )
     data = r.json()
-
     log("📊 POSITIONS:", data)
-
     return data if isinstance(data, list) else []
 
 # ==========================
 # FETCH FOREVER ORDERS (FIXED)
 # ==========================
-def fetch_orders():
-
-    url = "https://api.dhan.co/v2/forever/orders"
-
-    headers = {"access-token": get_token()}
-
-    r = requests.get(url, headers=headers, timeout=15)
+def fetch_forever_orders():
+    r = requests.get(
+        "https://api.dhan.co/v2/forever/all",
+        headers={"access-token": get_token()},
+        timeout=10
+    )
 
     if r.status_code != 200:
-        log("❌ Orders error:", r.text)
+        log("❌ Orders fetch failed:", r.text)
         return []
 
     data = r.json()
-    log("📦 ORDERS:", data)
+    log("📦 FOREVER ORDERS:", data)
 
     return data if isinstance(data, list) else []
 
 # ==========================
-# EXISTING SL
+# FIND EXISTING SL ORDERS
 # ==========================
-def get_existing_sl(security_id, orders):
-
-    for o in orders:
-        if str(o.get("securityId")) == str(security_id):
-            if o.get("transactionType") == "SELL":
-                return {
-                    "orderId": o.get("orderId"),
-                    "triggerPrice": float(o.get("triggerPrice", 0))
-                }
-    return None
+def get_sl_orders(security_id, orders):
+    return [
+        o for o in orders
+        if str(o.get("securityId")) == str(security_id)
+        and o.get("transactionType") == "SELL"
+        and o.get("orderStatus") in ["PENDING", "TRANSIT"]
+    ]
 
 # ==========================
-# TRAILING LOGIC
+# CANCEL ORDER
 # ==========================
-def calculate_sl(entry, ltp, prev_sl=None):
+def cancel_order(order_id):
+    url = f"https://api.dhan.co/v2/forever/orders/{order_id}"
 
-    base = entry * 0.92
+    r = requests.delete(
+        url,
+        headers={"access-token": get_token()},
+        timeout=10
+    )
 
-    if ltp < entry * 1.02:
-        return base
-
-    sl = entry
-
-    if ltp >= entry * 1.03:
-        sl = ltp * 0.98
-
-    if ltp >= entry * 1.05:
-        sl = ltp * 0.99
-
-    if prev_sl:
-        return max(prev_sl, sl)
-
-    return sl
+    log("🗑️ CANCEL:", order_id, r.status_code, r.text)
 
 # ==========================
 # MODIFY SL
 # ==========================
-def modify_sl(order_id, qty, sl):
+def modify_sl(order, qty, trigger):
+
+    order_id = order["orderId"]
+    limit = round(trigger * 0.995, 2)
 
     payload = {
+        "dhanClientId": DHAN_CLIENT_ID,
         "orderId": order_id,
+        "orderFlag": "SINGLE",
         "orderType": "LIMIT",
-        "price": round(sl * 0.995, 2),
-        "triggerPrice": sl,
-        "quantity": qty
+        "legName": "TARGET_LEG",
+        "quantity": qty,
+        "price": limit,
+        "triggerPrice": trigger,
+        "validity": "DAY"
     }
 
-    url = "https://api.dhan.co/v2/orders/modify"
+    url = f"https://api.dhan.co/v2/forever/orders/{order_id}"
 
-    headers = {
-        "access-token": get_token(),
-        "Content-Type": "application/json"
-    }
+    log("🔁 MODIFY SL:", payload)
 
-    r = requests.put(url, json=payload, headers=headers, timeout=10)
+    r = requests.put(
+        url,
+        json=payload,
+        headers={
+            "access-token": get_token(),
+            "Content-Type": "application/json"
+        },
+        timeout=10
+    )
 
-    log("🔁 MODIFY:", r.status_code, r.text)
-
-    return r.status_code == 200
+    log("📉 MODIFY RESPONSE:", r.status_code, r.text)
 
 # ==========================
 # PLACE NEW SL
 # ==========================
-def place_sl(security_id, qty, sl):
+def place_sl(security_id, qty, trigger):
+
+    limit = round(trigger * 0.995, 2)
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
-        "correlationId": str(uuid.uuid4()).replace("-", "")[:20],
+        "correlationId": str(uuid.uuid4())[:20],
         "orderFlag": "SINGLE",
         "transactionType": "SELL",
         "exchangeSegment": "NSE_EQ",
@@ -228,32 +177,33 @@ def place_sl(security_id, qty, sl):
         "validity": "DAY",
         "securityId": security_id,
         "quantity": qty,
-        "price": round(sl * 0.995, 2),
-        "triggerPrice": sl
+        "price": limit,
+        "triggerPrice": trigger
     }
 
-    url = "https://api.dhan.co/v2/forever/orders"
+    log("🆕 NEW SL:", payload)
 
-    headers = {
-        "access-token": get_token(),
-        "Content-Type": "application/json"
-    }
+    r = requests.post(
+        "https://api.dhan.co/v2/forever/orders",
+        json=payload,
+        headers={
+            "access-token": get_token(),
+            "Content-Type": "application/json"
+        },
+        timeout=10
+    )
 
-    r = requests.post(url, json=payload, headers=headers, timeout=10)
-
-    log("📉 NEW SL:", r.status_code, r.text)
-
-    return r.status_code == 200
+    log("📉 NEW SL RESPONSE:", r.status_code, r.text)
 
 # ==========================
-# MAIN
+# TRAILING LOGIC
 # ==========================
 def run():
 
     log("\n🚀 TRAILING SL ENGINE START\n")
 
     positions = fetch_positions()
-    orders = fetch_orders()
+    orders = fetch_forever_orders()
 
     updated = 0
 
@@ -263,37 +213,45 @@ def run():
         if qty <= 0:
             continue
 
-        sec_id = pos.get("securityId")
         symbol = pos.get("tradingSymbol")
-
+        sec_id = pos.get("securityId")
         entry = float(pos.get("buyAvg") or 0)
-        ltp = get_ltp(sec_id)
 
-        if entry == 0 or ltp == 0:
-            log(f"⚠️ Missing price → {symbol}")
-            continue
+        pnl = float(pos.get("unrealizedProfit", 0))
+        current = entry + (pnl / qty) if qty else entry
 
-        existing = get_existing_sl(sec_id, orders)
-        prev_sl = existing["triggerPrice"] if existing else None
+        log(f"\n➡️ {symbol} | Entry={entry} | LTP≈{current}")
 
-        new_sl = calculate_sl(entry, ltp, prev_sl)
+        # Trailing SL: 50% lock
+        new_sl = round(entry + (current - entry) * 0.5, 2)
 
-        log(f"{symbol} | Entry={entry} | LTP={ltp} | OLD={prev_sl} | NEW={new_sl}")
+        sl_orders = get_sl_orders(sec_id, orders)
 
-        if prev_sl and new_sl <= prev_sl:
-            continue
+        # cleanup duplicates
+        if len(sl_orders) > 1:
+            log("⚠️ Duplicate SL found → cleaning")
+            for o in sl_orders[1:]:
+                cancel_order(o["orderId"])
 
-        if existing:
-            success = modify_sl(existing["orderId"], qty, new_sl)
-        else:
-            success = place_sl(sec_id, qty, new_sl)
-
-        if success:
+        if not sl_orders:
+            place_sl(sec_id, qty, new_sl)
             updated += 1
-            send_telegram(f"📈 SL UPDATED: {symbol} → {round(new_sl,2)}")
+            continue
+
+        existing = float(sl_orders[0].get("triggerPrice", 0))
+
+        log(f"Current SL={existing} → New SL={new_sl}")
+
+        if new_sl > existing:
+            modify_sl(sl_orders[0], qty, new_sl)
+            updated += 1
+        else:
+            log("⏭️ No update needed")
 
     log(f"\n✅ DONE | Updated: {updated}")
 
+# ==========================
+# RUN
 # ==========================
 if __name__ == "__main__":
     run()
