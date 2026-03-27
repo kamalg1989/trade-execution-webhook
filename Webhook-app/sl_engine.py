@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 DHAN SL ENGINE (FINAL STABLE VERSION)
+# 🚀 DHAN TRAILING SL ENGINE (FINAL STABLE)
 # ==============================================
 
 import os
@@ -30,50 +30,59 @@ def log(*args):
     print(*args, flush=True)
 
 # ==========================
-# TOKEN (FIXED)
+# TOKEN (RETRY + FIXED)
 # ==========================
 def generate_token():
     global TOKEN_EXPIRY, LAST_TOKEN_TIME
 
-    # 🔥 sanitize secret
     clean_secret = (DHAN_TOTP_SECRET or "").strip().replace(" ", "")
 
     if not clean_secret:
         raise Exception("TOTP SECRET MISSING")
 
-    # 🔥 prevent rapid reuse (important)
-    if LAST_TOKEN_TIME and (datetime.now() - LAST_TOKEN_TIME).seconds < 30:
-        log("⏳ Waiting before regenerating token...")
-        time.sleep(30)
+    for attempt in range(3):
 
-    totp = pyotp.TOTP(clean_secret).now()
-    log("🔐 Generated TOTP")
+        try:
+            # cooldown to avoid reuse
+            if LAST_TOKEN_TIME and (datetime.now() - LAST_TOKEN_TIME).seconds < 30:
+                log("⏳ Waiting before regenerating token...")
+                time.sleep(30)
 
-    params = {
-        "dhanClientId": DHAN_CLIENT_ID,
-        "pin": DHAN_PIN,
-        "totp": totp
-    }
+            totp = pyotp.TOTP(clean_secret).now()
+            log(f"🔐 TOTP generated (attempt {attempt+1})")
 
-    r = requests.post(
-        "https://auth.dhan.co/app/generateAccessToken",
-        params=params,
-        timeout=10
-    )
+            params = {
+                "dhanClientId": DHAN_CLIENT_ID,
+                "pin": DHAN_PIN,
+                "totp": totp
+            }
 
-    data = r.json()
-    log("🔍 TOKEN RESPONSE:", data)
+            r = requests.post(
+                "https://auth.dhan.co/app/generateAccessToken",
+                params=params,
+                timeout=20
+            )
 
-    token = data.get("accessToken")
-    expiry = data.get("expiryTime")
+            data = r.json()
+            log("🔍 TOKEN RESPONSE:", data)
 
-    if token and expiry:
-        TOKEN_EXPIRY = datetime.fromisoformat(expiry).replace(tzinfo=timezone.utc)
-        LAST_TOKEN_TIME = datetime.now()
-        log("✅ TOKEN GENERATED")
-        return token
+            token = data.get("accessToken")
+            expiry = data.get("expiryTime")
 
-    raise Exception(f"Token failed: {data}")
+            if token and expiry:
+                TOKEN_EXPIRY = datetime.fromisoformat(expiry).replace(tzinfo=timezone.utc)
+                LAST_TOKEN_TIME = datetime.now()
+                log("✅ TOKEN GENERATED")
+                return token
+
+        except requests.exceptions.ReadTimeout:
+            log(f"⚠️ Timeout attempt {attempt+1}")
+        except Exception as e:
+            log(f"⚠️ Error attempt {attempt+1}:", e)
+
+        time.sleep(5)
+
+    raise Exception("❌ Token generation failed after retries")
 
 
 def is_token_expired():
@@ -136,7 +145,7 @@ def fetch_orders():
     headers = {"access-token": get_token()}
     params = {"page": 0, "size": 50}
 
-    r = requests.get(url, headers=headers, params=params, timeout=10)
+    r = requests.get(url, headers=headers, params=params, timeout=15)
 
     if r.status_code != 200:
         log("❌ Orders fetch failed:", r.text)
@@ -153,7 +162,7 @@ def fetch_positions():
 
     headers = {"access-token": get_token()}
 
-    r = requests.get(url, headers=headers, timeout=10)
+    r = requests.get(url, headers=headers, timeout=15)
 
     if r.status_code != 200:
         log("❌ Positions fetch failed:", r.text)
@@ -163,7 +172,7 @@ def fetch_positions():
     return data if isinstance(data, list) else []
 
 # ==========================
-# GET EXISTING SL ORDER
+# EXISTING SL
 # ==========================
 def get_existing_sl_order(security_id, orders):
 
@@ -200,14 +209,14 @@ def modify_sl(order_id, qty, sl_price):
         "Content-Type": "application/json"
     }
 
-    r = requests.put(url, json=payload, headers=headers, timeout=10)
+    r = requests.put(url, json=payload, headers=headers, timeout=15)
 
-    log("🔁 MODIFY RESPONSE:", r.status_code, r.text)
+    log("🔁 MODIFY:", r.status_code, r.text)
 
     return r.status_code == 200
 
 # ==========================
-# PLACE NEW SL
+# NEW SL
 # ==========================
 def place_new_sl(security_id, qty, sl_price):
 
@@ -238,9 +247,9 @@ def place_new_sl(security_id, qty, sl_price):
         "Content-Type": "application/json"
     }
 
-    r = requests.post(url, json=payload, headers=headers, timeout=10)
+    r = requests.post(url, json=payload, headers=headers, timeout=15)
 
-    log("📉 NEW SL RESPONSE:", r.status_code, r.text)
+    log("📉 NEW SL:", r.status_code, r.text)
 
     return r.status_code == 200
 
@@ -281,7 +290,7 @@ def run():
         log(f"{symbol} | LTP={ltp} | OLD SL={prev_sl} | NEW SL={new_sl}")
 
         if prev_sl and new_sl <= prev_sl:
-            log(f"⏭️ No change → {symbol}")
+            log(f"⏭️ No update → {symbol}")
             skipped += 1
             continue
 
