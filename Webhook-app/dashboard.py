@@ -7,7 +7,7 @@ import sqlite3
 import pandas as pd
 
 import os
-DB = os.path.join(os.path.dirname(__file__), "trades.db")
+DB = "Webhook-app/trades.db"
 
 # ==========================
 # LOAD DATA
