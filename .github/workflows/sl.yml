@@ -37,7 +37,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests pyotp yfinance
+          pip install requests pyotp yfinance streamlit pandas
 
       - name: Debug env (safe)
         run: |
