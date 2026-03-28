@@ -14,12 +14,36 @@ DB = "trades.db"
 # ==========================
 def load_data():
     conn = sqlite3.connect(DB)
-    df = pd.read_sql("SELECT * FROM trades", conn)
+    c = conn.cursor()
+
+    # ✅ Ensure table exists
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol TEXT,
+        qty INTEGER,
+        entry_price REAL,
+        exit_price REAL,
+        entry_time TEXT,
+        exit_time TEXT,
+        pnl REAL,
+        pnl_pct REAL
+    )
+    """)
+
+    conn.commit()
+
+    try:
+        df = pd.read_sql("SELECT * FROM trades", conn)
+    except Exception as e:
+        print("DB READ ERROR:", e)
+        df = pd.DataFrame()
+
     conn.close()
 
     if not df.empty:
-        df["entry_time"] = pd.to_datetime(df["entry_time"])
-        df["exit_time"] = pd.to_datetime(df["exit_time"])
+        df["entry_time"] = pd.to_datetime(df["entry_time"], errors="coerce")
+        df["exit_time"] = pd.to_datetime(df["exit_time"], errors="coerce")
 
     return df
 
