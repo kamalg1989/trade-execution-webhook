@@ -15,7 +15,7 @@ DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
 DHAN_PIN = os.getenv("DHAN_PIN")
 DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
 
-DB_FILE = "trades.db"
+DB_FILE = "Webhook-app/trades.db"
 
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
@@ -28,6 +28,28 @@ def log(*args):
 # ==========================
 # DB
 # ==========================
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol TEXT,
+        security_id TEXT,
+        qty INTEGER,
+        entry_price REAL,
+        planned_exit REAL,
+        trailing_sl REAL,
+        order_id TEXT,
+        status TEXT,
+        entry_time TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
 def get_open_trades():
     conn = sqlite3.connect(DB_FILE)
     rows = conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
@@ -131,7 +153,7 @@ def modify_sl(order_id, qty, trigger):
 def run():
 
     log("\n🚀 TRAILING SL ENGINE START\n")
-
+    init_db() 
     trades = get_open_trades()
     updated = 0
 
