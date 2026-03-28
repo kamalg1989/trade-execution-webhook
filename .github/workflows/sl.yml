@@ -46,8 +46,15 @@ jobs:
 
       - name: Run SL Engine
         run: python Webhook-app/sl_engine.py
+        
       - name: Run Trade Journal
         run: python Webhook-app/trade_journal.py
+  
+      - name: Ensure DB exists
+        run: |
+          mkdir -p Webhook-app
+          touch Webhook-app/trades.db
+          
       - name: Commit DB
         run: |
           git config user.name "bot"
