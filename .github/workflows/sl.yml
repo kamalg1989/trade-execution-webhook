@@ -15,7 +15,7 @@ on:
 
 permissions:
   contents: write
-  
+
 jobs:
   run-sl:
     if: github.event_name != 'pull_request'
@@ -48,6 +48,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests pyotp yfinance pandas
 
+      # ✅ FIXED (separate step)
+      - name: Set remote with token
+        run: |
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+
+      # ✅ FIXED (separate step)
       - name: Debug env
         run: |
           echo "TOTP present: $([[ -n \"$DHAN_TOTP_SECRET\" ]] && echo YES || echo NO)"
@@ -56,7 +62,6 @@ jobs:
       - name: Run SL Engine
         run: python Webhook-app/sl_engine.py
 
-      # ✅ Pull before push (avoids conflicts)
       - name: Commit DB
         run: |
           git config user.name "bot"
