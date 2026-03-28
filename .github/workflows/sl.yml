@@ -46,3 +46,11 @@ jobs:
 
       - name: Run SL Engine
         run: python Webhook-app/sl_engine.py
+
+      - name: Commit DB
+        run: |
+          git config user.name "bot"
+          git config user.email "bot@github.com"
+          git add Webhook-app/trades.db
+          git commit -m "update trades db" || echo "no changes"
+          git push
