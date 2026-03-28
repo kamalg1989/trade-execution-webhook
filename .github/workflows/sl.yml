@@ -29,6 +29,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
+      # ✅ Ensure DB exists BEFORE scripts
+      - name: Prepare DB
+        run: |
+          mkdir -p Webhook-app
+          touch Webhook-app/trades.db
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -37,28 +43,24 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests pyotp yfinance streamlit pandas
+          pip install requests pyotp yfinance pandas
 
-      - name: Debug env (safe)
+      - name: Debug env
         run: |
           echo "TOTP present: $([[ -n \"$DHAN_TOTP_SECRET\" ]] && echo YES || echo NO)"
           echo "PIN present: $([[ -n \"$DHAN_PIN\" ]] && echo YES || echo NO)"
 
       - name: Run SL Engine
         run: python Webhook-app/sl_engine.py
-        
-      - name: Run Trade Journal
-        run: python Webhook-app/trade_journal.py
-  
-      - name: Ensure DB exists
-        run: |
-          mkdir -p Webhook-app
-          touch Webhook-app/trades.db
-          
+
+      # ✅ Pull before push (avoids conflicts)
       - name: Commit DB
         run: |
           git config user.name "bot"
           git config user.email "bot@github.com"
+
+          git pull origin main --rebase || true
+
           git add Webhook-app/trades.db
           git commit -m "update trades db" || echo "no changes"
           git push
