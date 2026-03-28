@@ -1,10 +1,11 @@
 # ==============================================
-# 🚀 DHAN TRAILING SL ENGINE (FINAL STABLE)
+# 🚀 TRAILING SL ENGINE (DB BASED)
 # ==============================================
 
 import os
 import requests
 import pyotp
+import sqlite3
 import uuid
 import time
 import yfinance as yf
@@ -14,15 +15,30 @@ DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
 DHAN_PIN = os.getenv("DHAN_PIN")
 DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
 
+DB_FILE = "trades.db"
+
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
-
-MIN_TRAIL_PCT = 0.005  # 🔥 0.5% minimum move
+MIN_TRAIL_PCT = 0.005
 
 
 def log(*args):
     print(*args, flush=True)
 
+# ==========================
+# DB
+# ==========================
+def get_open_trades():
+    conn = sqlite3.connect(DB_FILE)
+    rows = conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
+    conn.close()
+    return rows
+
+def update_sl(trade_id, sl):
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("UPDATE trades SET trailing_sl=? WHERE id=?", (sl, trade_id))
+    conn.commit()
+    conn.close()
 
 # ==========================
 # TOKEN
@@ -30,34 +46,24 @@ def log(*args):
 def generate_token():
     global TOKEN_EXPIRY
 
-    for _ in range(3):
-        log("🔐 Generating token...")
+    totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
 
-        totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
+    r = requests.post(
+        "https://auth.dhan.co/app/generateAccessToken",
+        params={
+            "dhanClientId": DHAN_CLIENT_ID,
+            "pin": DHAN_PIN,
+            "totp": totp
+        }
+    )
 
-        r = requests.post(
-            "https://auth.dhan.co/app/generateAccessToken",
-            params={
-                "dhanClientId": DHAN_CLIENT_ID,
-                "pin": DHAN_PIN,
-                "totp": totp
-            },
-            timeout=10
-        )
+    data = r.json()
 
-        data = r.json()
-        log("🔍 TOKEN:", data)
-
-        if "accessToken" in data:
-            TOKEN_EXPIRY = datetime.fromisoformat(data["expiryTime"]).replace(tzinfo=timezone.utc)
-            return data["accessToken"]
-
-        if "2 minutes" in str(data):
-            log("⏳ Rate limit → waiting 130 sec")
-            time.sleep(130)
+    if "accessToken" in data:
+        TOKEN_EXPIRY = datetime.fromisoformat(data["expiryTime"]).replace(tzinfo=timezone.utc)
+        return data["accessToken"]
 
     raise Exception("Token failed")
-
 
 def get_token():
     global CURRENT_TOKEN
@@ -65,85 +71,23 @@ def get_token():
         CURRENT_TOKEN = generate_token()
     return CURRENT_TOKEN
 
-
-# ==========================
-# FETCH
-# ==========================
-def fetch_positions():
-    r = requests.get(
-        "https://api.dhan.co/v2/positions",
-        headers={"access-token": get_token()},
-        timeout=10
-    )
-    data = r.json()
-    log("📊 POSITIONS:", data)
-    return data if isinstance(data, list) else []
-
-
-def fetch_orders():
-    r = requests.get(
-        "https://api.dhan.co/v2/forever/orders",
-        headers={"access-token": get_token()},
-        timeout=10
-    )
-
-    if r.status_code != 200:
-        log("❌ Orders fetch failed:", r.text)
-        return []
-
-    data = r.json()
-    log("📦 ORDERS:", data)
-    return data if isinstance(data, list) else []
-
-
 # ==========================
 # LTP
 # ==========================
-def get_ltp(sec_id, pos=None):
-
-    if not pos:
-        return None
-
-    symbol = (pos.get("tradingSymbol") or "").strip() + ".NS"
-
+def get_ltp(symbol):
     try:
-        data = yf.Ticker(symbol)
-
-        price = None
-
-        if hasattr(data, "fast_info") and data.fast_info:
-            price = data.fast_info.get("lastPrice")
-
-        if not price:
-            hist = data.history(period="1d", interval="1m")
-            if not hist.empty:
-                price = hist["Close"].iloc[-1]
-
+        data = yf.Ticker(symbol + ".NS")
+        price = data.fast_info.get("lastPrice")
         if price:
-            price = round(float(price), 2)
-            log(f"🌐 LTP → {symbol} = {price}")
-            return price
-
-    except Exception as e:
-        log("❌ Yahoo error:", e)
-
-    # fallback
-    entry = float(pos.get("buyAvg") or 0)
-    pnl = float(pos.get("unrealizedProfit") or 0)
-    qty = max(int(pos.get("netQty", 0)), 1)
-
-    if entry > 0:
-        ltp = round(entry + (pnl / qty), 2)
-        log(f"🧮 LTP fallback → {ltp}")
-        return ltp
-
+            return round(float(price), 2)
+    except:
+        pass
     return None
-
 
 # ==========================
 # SL LOGIC
 # ==========================
-def calculate_sl(entry, ltp, prev_sl=None):
+def calculate_sl(entry, ltp, prev_sl):
 
     base = entry * 0.92
 
@@ -151,68 +95,13 @@ def calculate_sl(entry, ltp, prev_sl=None):
         return base
 
     profit = ltp - entry
-    new_sl = entry + (profit * 0.5)
-
+    new_sl = entry + profit * 0.5
     new_sl = min(new_sl, ltp * 0.995)
 
-    if prev_sl:
-        new_sl = max(prev_sl, new_sl)
-
-    return round(new_sl, 2)
-
+    return max(prev_sl, new_sl)
 
 # ==========================
-# ORDER HELPERS
-# ==========================
-def get_sl_orders(sec_id, orders):
-    return [
-        o for o in orders
-        if str(o.get("securityId")) == str(sec_id)
-        and o.get("transactionType") == "SELL"
-        and o.get("orderStatus") in ["PENDING", "TRANSIT"]
-    ]
-
-
-def cancel_order(order_id):
-    r = requests.delete(
-        f"https://api.dhan.co/v2/forever/orders/{order_id}",
-        headers={"access-token": get_token()},
-        timeout=10
-    )
-    log("🗑️ CANCEL:", order_id, r.status_code)
-
-
-def cleanup_duplicate_sl(sec_id, orders, ltp):
-
-    sl_orders = get_sl_orders(sec_id, orders)
-
-    valid = []
-
-    for o in sl_orders:
-        tp = float(o.get("triggerPrice", 0))
-
-        if tp < ltp:
-            valid.append(o)
-        else:
-            log("❌ Removing invalid SL:", tp)
-            cancel_order(o["orderId"])
-
-    if len(valid) <= 1:
-        return valid
-
-    valid.sort(key=lambda x: float(x.get("triggerPrice")), reverse=True)
-
-    keep = valid[0]
-
-    for o in valid[1:]:
-        cancel_order(o["orderId"])
-
-    log(f"✅ Keeping SL @ {keep.get('triggerPrice')}")
-    return [keep]
-
-
-# ==========================
-# MODIFY / PLACE
+# ORDER
 # ==========================
 def modify_sl(order_id, qty, trigger):
 
@@ -228,48 +117,13 @@ def modify_sl(order_id, qty, trigger):
         "validity": "DAY"
     }
 
-    log("🔄 MODIFY:", payload)
-
     r = requests.put(
         f"https://api.dhan.co/v2/forever/orders/{order_id}",
         json=payload,
-        headers={"access-token": get_token()},
-        timeout=10
+        headers={"access-token": get_token()}
     )
 
-    log("📉 MODIFY:", r.status_code)
     return r.status_code == 200
-
-
-def place_sl(sec_id, qty, trigger):
-
-    payload = {
-        "dhanClientId": DHAN_CLIENT_ID,
-        "correlationId": str(uuid.uuid4())[:20],
-        "orderFlag": "SINGLE",
-        "transactionType": "SELL",
-        "exchangeSegment": "NSE_EQ",
-        "productType": "CNC",
-        "orderType": "LIMIT",
-        "validity": "DAY",
-        "securityId": sec_id,
-        "quantity": qty,
-        "price": round(trigger * 0.995, 2),
-        "triggerPrice": trigger
-    }
-
-    log("🆕 NEW SL:", payload)
-
-    r = requests.post(
-        "https://api.dhan.co/v2/forever/orders",
-        json=payload,
-        headers={"access-token": get_token()},
-        timeout=10
-    )
-
-    log("📉 NEW SL:", r.status_code)
-    return r.status_code == 200
-
 
 # ==========================
 # MAIN
@@ -278,57 +132,35 @@ def run():
 
     log("\n🚀 TRAILING SL ENGINE START\n")
 
-    positions = fetch_positions()
-    orders = fetch_orders()
-
+    trades = get_open_trades()
     updated = 0
 
-    for pos in positions:
+    for t in trades:
 
-        qty = int(pos.get("netQty", 0))
-        if qty <= 0:
-            continue
+        trade_id, symbol, sec_id, qty, entry, exit_price, prev_sl, order_id, status, _ = t
 
-        sec_id = pos["securityId"]
-        symbol = pos["tradingSymbol"]
-        entry = float(pos.get("buyAvg", 0))
-
-        ltp = get_ltp(sec_id, pos)
+        ltp = get_ltp(symbol)
 
         if not ltp:
             continue
 
-        log(f"\n➡️ {symbol} | Entry={entry} | LTP={ltp}")
+        log(f"{symbol} | Entry={entry} | LTP={ltp}")
 
-        sl_orders = cleanup_duplicate_sl(sec_id, orders, ltp)
-
-        prev_sl = None
-        order_id = None
-
-        if sl_orders:
-            prev_sl = round(float(sl_orders[0]["triggerPrice"]), 2)
-            order_id = sl_orders[0]["orderId"]
-
-        new_sl = calculate_sl(entry, ltp, prev_sl)
-
-        log(f"SL OLD={prev_sl} → NEW={new_sl}")
-
-        # ✅ RULE 1: only upward move
-        if prev_sl and new_sl <= prev_sl:
-            log("⏭️ No upward move")
-            continue
-
-        # ✅ RULE 2: minimum step filter
-        if prev_sl and ((new_sl - prev_sl) / prev_sl) < MIN_TRAIL_PCT:
-            log("⏭️ Move too small (<0.5%)")
-            continue
-
-        if order_id:
-            if modify_sl(order_id, qty, new_sl):
-                updated += 1
+        # EXIT override
+        if exit_price and ltp < exit_price:
+            new_sl = exit_price
         else:
-            if place_sl(sec_id, qty, new_sl):
-                updated += 1
+            new_sl = calculate_sl(entry, ltp, prev_sl)
+
+        if new_sl <= prev_sl:
+            continue
+
+        if ((new_sl - prev_sl) / prev_sl) < MIN_TRAIL_PCT:
+            continue
+
+        if order_id and modify_sl(order_id, qty, new_sl):
+            update_sl(trade_id, new_sl)
+            updated += 1
 
     log(f"\n✅ DONE | Updated: {updated}")
 
