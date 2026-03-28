@@ -13,6 +13,9 @@ on:
       - 'Webhook-app/**'
       - '.github/workflows/**'
 
+permissions:
+  contents: write
+  
 jobs:
   run-sl:
     if: github.event_name != 'pull_request'
