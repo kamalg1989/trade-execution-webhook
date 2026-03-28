@@ -6,8 +6,8 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 
-DB = "trades.db"
-
+import os
+DB = os.path.join(os.path.dirname(__file__), "trades.db")
 
 # ==========================
 # LOAD DATA
