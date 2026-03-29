@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK → GITHUB ENTRY ENGINE
+# 🚀 TELEGRAM WEBHOOK → GITHUB ENTRY ENGINE (FINAL)
 # ==============================================
 
 import os
@@ -9,11 +9,13 @@ from flask import Flask, request
 import threading
 import time
 
-
+# ==========================
+# GLOBAL DEDUP STORAGE
+# ==========================
 PROCESSED_CALLBACKS = set()
-LOCK = threading.Lock()
-
 PROCESSED_ORDERS = {}
+
+LOCK = threading.Lock()
 ORDER_WINDOW = 300  # 5 minutes
 
 # ==========================
@@ -22,7 +24,7 @@ ORDER_WINDOW = 300  # 5 minutes
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-GITHUB_REPO = os.getenv("GITHUB_REPO")  # e.g. kamalg1989/repo
+GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN_CUSTOM")
 
 INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
@@ -52,7 +54,7 @@ def load_instruments():
 INSTRUMENT_DF = load_instruments()
 
 # ==========================
-# SYMBOL → SECURITY_ID
+# SYMBOL → SECURITY_ID (optional)
 # ==========================
 def get_security_id(stock):
     symbol = stock.replace(".NS", "").strip().upper()
@@ -124,7 +126,7 @@ def webhook():
     query = data["callback_query"]
     callback_id = query["id"]
 
-    # ✅ DEDUP FIX
+    # ✅ CALLBACK DEDUP (Telegram duplicate protection)
     with LOCK:
         if callback_id in PROCESSED_CALLBACKS:
             return "OK"
@@ -161,25 +163,19 @@ def webhook():
 
     if action == "BUY":
 
-        # ✅ ORDER DEDUP (prevents multiple GitHub triggers)
-        key = f"{stock}_{qty}_{entry}"
+        key = f"{stock}_{qty}_{entry}_{exit_price}"
         now = time.time()
-    
-        if key in PROCESSED_ORDERS:
-            if (now - PROCESSED_ORDERS[key]) < ORDER_WINDOW:
-                log("⚠️ Duplicate order blocked:", key)
-                return "OK"
-    
-        PROCESSED_ORDERS[key] = now
-    
-        # 🚀 trigger GitHub
-        success = trigger_github_trade(stock, qty, entry, exit_price)
-    
-        if success:
-            send_telegram(f"🟢 SENT TO EXECUTION: {stock}")
-        else:
-            send_telegram(f"❌ GITHUB TRIGGER FAILED: {stock}")
 
+        # ✅ ORDER DEDUP (GitHub trigger protection)
+        with LOCK:
+            if key in PROCESSED_ORDERS:
+                if (now - PROCESSED_ORDERS[key]) < ORDER_WINDOW:
+                    log("⚠️ Duplicate order blocked:", key)
+                    return "OK"
+
+            PROCESSED_ORDERS[key] = now
+
+        # 🚀 SINGLE trigger (FIXED)
         success = trigger_github_trade(stock, qty, entry, exit_price)
 
         if success:
