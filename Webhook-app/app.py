@@ -6,6 +6,15 @@ import os
 import requests
 import pandas as pd
 from flask import Flask, request
+import threading
+import time
+
+
+PROCESSED_CALLBACKS = set()
+LOCK = threading.Lock()
+
+PROCESSED_ORDERS = {}
+ORDER_WINDOW = 300  # 5 minutes
 
 # ==========================
 # CONFIG
@@ -113,6 +122,13 @@ def webhook():
         return "OK"
 
     query = data["callback_query"]
+    callback_id = query["id"]
+
+    # ✅ DEDUP FIX
+    with LOCK:
+        if callback_id in PROCESSED_CALLBACKS:
+            return "OK"
+        PROCESSED_CALLBACKS.add(callback_id)
 
     parts = query.get("data", "").split("|")
 
@@ -144,6 +160,25 @@ def webhook():
         return "OK"
 
     if action == "BUY":
+
+        # ✅ ORDER DEDUP (prevents multiple GitHub triggers)
+        key = f"{stock}_{qty}_{entry}"
+        now = time.time()
+    
+        if key in PROCESSED_ORDERS:
+            if (now - PROCESSED_ORDERS[key]) < ORDER_WINDOW:
+                log("⚠️ Duplicate order blocked:", key)
+                return "OK"
+    
+        PROCESSED_ORDERS[key] = now
+    
+        # 🚀 trigger GitHub
+        success = trigger_github_trade(stock, qty, entry, exit_price)
+    
+        if success:
+            send_telegram(f"🟢 SENT TO EXECUTION: {stock}")
+        else:
+            send_telegram(f"❌ GITHUB TRIGGER FAILED: {stock}")
 
         success = trigger_github_trade(stock, qty, entry, exit_price)
 
