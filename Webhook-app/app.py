@@ -80,7 +80,7 @@ def trigger_github_trade(stock, qty, entry, exit_price):
 
     headers = {
         "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {GITHUB_TOKEN}"
+        "Authorization": f"token {GITHUB_TOKEN}"
     }
 
     payload = {
