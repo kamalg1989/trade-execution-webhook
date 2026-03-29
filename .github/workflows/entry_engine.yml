@@ -2,7 +2,7 @@ name: Entry Engine
 
 on:
   repository_dispatch:
-    types: [new_trade]
+    types: [trade_entry]
 
 permissions:
   contents: write
