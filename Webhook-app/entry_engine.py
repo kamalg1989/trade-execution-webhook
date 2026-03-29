@@ -151,6 +151,11 @@ def run():
     # NOTE: securityId must be mapped (simplified here)
     sec_id = symbol  # replace with mapping if needed
 
+    sec_id = get_security_id(symbol)
+
+    if not sec_id:
+        print(f"❌ Security ID not found for {symbol}")
+        return
     res = place_order(sec_id, qty, entry)
 
     if "orderId" in str(res):
