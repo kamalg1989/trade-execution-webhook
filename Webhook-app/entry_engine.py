@@ -178,7 +178,7 @@ def place_order(sec_id, qty, entry):
         "transactionType": "BUY",
         "exchangeSegment": "NSE_EQ",
         "productType": "CNC",
-        "orderType": "STOP_LOSS",   # ✅ IMPORTANT
+        "orderType": "LIMIT",   # ✅ ONLY VALID TYPE
         "validity": "DAY",
         "securityId": sec_id,
         "quantity": qty,
@@ -189,16 +189,15 @@ def place_order(sec_id, qty, entry):
     r = requests.post(
         "https://api.dhan.co/v2/forever/orders",
         json=payload,
-        headers={"access-token": get_token()}
+        headers={
+            "access-token": get_token(),
+            "Content-Type": "application/json"
+        }
     )
 
     log("📉 ORDER:", r.text)
 
-    try:
-        return r.json()
-    except:
-        return {}
-
+    return r.json()
 
 # ==========================
 # MAIN
