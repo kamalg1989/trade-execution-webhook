@@ -1,21 +1,19 @@
 # ==============================================
-# 🚀 ENTRY ENGINE (GITHUB SIDE)
+# 🚀 ENTRY ENGINE (GITHUB SIDE - FINAL STABLE)
 # ==============================================
 
 import os
 import requests
 import pyotp
 import sqlite3
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 import time
 import pandas as pd
 
+# ==========================
+# CONFIG
+# ==========================
 INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
-
-
-
-INSTRUMENT_DF = load_instruments()
 DB_FILE = "Webhook-app/trades.db"
 
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
@@ -23,8 +21,18 @@ DHAN_PIN = os.getenv("DHAN_PIN")
 DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
 
 CURRENT_TOKEN = None
-TOKEN_EXPIRY = None
 
+
+# ==========================
+# LOGGER
+# ==========================
+def log(*args):
+    print(*args, flush=True)
+
+
+# ==========================
+# LOAD INSTRUMENTS
+# ==========================
 def load_instruments():
     df = pd.read_csv(INSTRUMENT_URL, low_memory=False)
 
@@ -35,9 +43,16 @@ def load_instruments():
 
     df['SEM_TRADING_SYMBOL'] = df['SEM_TRADING_SYMBOL'].astype(str).str.strip().str.upper()
 
-    print("✅ Instruments Loaded:", len(df))
+    log("✅ Instruments Loaded:", len(df))
     return df
 
+
+INSTRUMENT_DF = load_instruments()
+
+
+# ==========================
+# SYMBOL → SECURITY_ID
+# ==========================
 def get_security_id(stock):
     symbol = stock.replace(".NS", "").strip().upper()
 
@@ -46,15 +61,12 @@ def get_security_id(stock):
     ]
 
     if row.empty:
-        print(f"❌ Mapping NOT FOUND: {symbol}")
+        log(f"❌ Mapping NOT FOUND: {symbol}")
         return None
 
     sec_id = str(row.iloc[0]['SEM_SMST_SECURITY_ID'])
-    print(f"✅ MAPPED: {symbol} → {sec_id}")
+    log(f"✅ MAPPED: {symbol} → {sec_id}")
     return sec_id
-
-def log(*args):
-    print(*args, flush=True)
 
 
 # ==========================
@@ -101,13 +113,25 @@ def insert_trade(symbol, sec_id, qty, entry, exit_price, order_id):
     conn.close()
 
 
+def is_duplicate_trade(symbol, entry):
+    conn = sqlite3.connect(DB_FILE)
+
+    row = conn.execute("""
+        SELECT id FROM trades 
+        WHERE symbol=? AND entry_price=? AND status='OPEN'
+    """, (symbol, entry)).fetchone()
+
+    conn.close()
+    return row is not None
+
+
 # ==========================
 # TOKEN
 # ==========================
 def generate_token():
     totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
 
-    print("🔐 TOTP:", totp)
+    log("🔐 TOTP:", totp)
 
     r = requests.post(
         "https://auth.dhan.co/app/generateAccessToken",
@@ -119,7 +143,7 @@ def generate_token():
         timeout=10
     )
 
-    print("🔍 RAW RESPONSE:", r.text)
+    log("🔍 RAW RESPONSE:", r.text)
 
     data = r.json()
 
@@ -142,18 +166,17 @@ def get_token():
 def place_order(sec_id, qty, entry):
 
     payload = {
-    "dhanClientId": DHAN_CLIENT_ID,
-    "correlationId": str(int(time.time())),
-    "orderFlag": "SINGLE",
-    "transactionType": "BUY",
-    "exchangeSegment": "NSE_EQ",
-    "productType": "CNC",
-    "orderType": "STOP_LOSS",   # ✅ FIX
-    "validity": "DAY",
-    "securityId": sec_id,
-    "quantity": qty,
-    "price": round(entry * 1.002, 2),   # limit price ABOVE trigger
-    "triggerPrice": round(entry, 2)
+        "dhanClientId": DHAN_CLIENT_ID,
+        "correlationId": str(int(time.time())),
+        "orderFlag": "SINGLE",
+        "transactionType": "BUY",
+        "exchangeSegment": "NSE_EQ",
+        "productType": "CNC",
+        "orderType": "LIMIT",   # ✅ Correct
+        "validity": "DAY",
+        "securityId": sec_id,
+        "quantity": qty,
+        "price": round(entry * 1.002, 2)
     }
 
     r = requests.post(
@@ -179,20 +202,28 @@ def run():
     entry = float(os.getenv("ENTRY"))
     exit_price = float(os.getenv("EXIT"))
 
+    # ✅ validation
+    if not symbol or not qty or not entry:
+        log("❌ Missing input values")
+        return
+
+    # ✅ duplicate protection
+    if is_duplicate_trade(symbol, entry):
+        log("⚠️ Duplicate trade blocked")
+        return
+
     log(symbol, qty, entry, exit_price)
 
-    
-
-    sec_id = get_security_id(symbol)
-
+    # ✅ mapping
     sec_id = get_security_id(symbol)
 
     if not sec_id:
-        print(f"❌ Security ID not found for {symbol}")
+        log(f"❌ Security ID not found for {symbol}")
         return
-    
-    print("DEBUG →", symbol, sec_id, qty, entry)
-    
+
+    log("DEBUG →", symbol, sec_id, qty, entry)
+
+    # ✅ place order
     res = place_order(sec_id, qty, entry)
 
     if "orderId" in str(res):
