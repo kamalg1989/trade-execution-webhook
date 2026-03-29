@@ -1,0 +1,49 @@
+name: Entry Engine
+
+on:
+  repository_dispatch:
+    types: [new_trade]
+
+permissions:
+  contents: write
+
+jobs:
+  run-entry:
+    runs-on: ubuntu-latest
+
+    env:
+      DHAN_CLIENT_ID: ${{ secrets.DHAN_CLIENT_ID }}
+      DHAN_PIN: ${{ secrets.DHAN_PIN }}
+      DHAN_TOTP_SECRET: ${{ secrets.DHAN_TOTP_SECRET }}
+
+      SYMBOL: ${{ github.event.client_payload.symbol }}
+      QTY: ${{ github.event.client_payload.qty }}
+      ENTRY: ${{ github.event.client_payload.entry }}
+      EXIT: ${{ github.event.client_payload.exit }}
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Prepare DB
+        run: |
+          mkdir -p Webhook-app
+          touch Webhook-app/trades.db
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - run: pip install requests pyotp
+
+      - run: python Webhook-app/entry_engine.py
+
+      - name: Commit DB
+        run: |
+          git config user.name "bot"
+          git config user.email "bot@github.com"
+
+          git pull origin main --rebase || true
+
+          git add Webhook-app/trades.db
+          git commit -m "entry added" || echo "no changes"
+          git push
