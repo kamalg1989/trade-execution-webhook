@@ -71,9 +71,9 @@ def insert_trade(symbol, sec_id, qty, entry, exit_price, order_id):
 # TOKEN
 # ==========================
 def generate_token():
-    global TOKEN_EXPIRY
-
     totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
+
+    print("🔐 TOTP:", totp)
 
     r = requests.post(
         "https://auth.dhan.co/app/generateAccessToken",
@@ -81,16 +81,18 @@ def generate_token():
             "dhanClientId": DHAN_CLIENT_ID,
             "pin": DHAN_PIN,
             "totp": totp
-        }
+        },
+        timeout=10
     )
+
+    print("🔍 RAW RESPONSE:", r.text)
 
     data = r.json()
 
     if "accessToken" in data:
-        TOKEN_EXPIRY = datetime.fromisoformat(data["expiryTime"]).replace(tzinfo=timezone.utc)
         return data["accessToken"]
 
-    raise Exception("Token failed")
+    raise Exception(f"Token failed → {data}")
 
 
 def get_token():
