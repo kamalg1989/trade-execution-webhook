@@ -129,9 +129,10 @@ def is_duplicate_trade(symbol, entry):
 # TOKEN (RETRY ADDED)
 # ==========================
 def generate_token():
-    for _ in range(3):
-        totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
 
+    for i in range(3):
+
+        totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
         log("🔐 TOTP:", totp)
 
         r = requests.post(
@@ -151,7 +152,8 @@ def generate_token():
         if "accessToken" in data:
             return data["accessToken"]
 
-        time.sleep(2)
+        # wait for next TOTP window
+        time.sleep(35)
 
     raise Exception("Token failed after retries")
 
