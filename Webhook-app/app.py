@@ -1,16 +1,11 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK + ENTRY + DB
+# 🚀 TELEGRAM WEBHOOK → GITHUB ENTRY ENGINE
 # ==============================================
 
 import os
 import requests
 import pandas as pd
-import pyotp
-import uuid
-import sqlite3
-from datetime import datetime, timedelta, timezone
 from flask import Flask, request
-import threading
 
 # ==========================
 # CONFIG
@@ -18,59 +13,10 @@ import threading
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
-DHAN_PIN = os.getenv("DHAN_PIN")
-DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
+GITHUB_REPO = os.getenv("GITHUB_REPO")  # e.g. kamalg1989/repo
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN_CUSTOM")
 
 INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
-
-CURRENT_TOKEN = None
-TOKEN_EXPIRY = None
-
-# ==========================
-# DB
-# ==========================
-DB_FILE = "trades.db"
-
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS trades (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        symbol TEXT,
-        security_id TEXT,
-        qty INTEGER,
-        entry_price REAL,
-        planned_exit REAL,
-        trailing_sl REAL,
-        order_id TEXT,
-        status TEXT,
-        entry_time TEXT
-    )
-    """)
-    conn.commit()
-    conn.close()
-
-def insert_trade(symbol, sec_id, qty, entry, exit_price):
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("""
-    INSERT INTO trades 
-    (symbol, security_id, qty, entry_price, planned_exit, trailing_sl, status, entry_time)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        symbol,
-        sec_id,
-        qty,
-        entry,
-        exit_price,
-        entry * 0.92,
-        "OPEN",
-        datetime.now().isoformat()
-    ))
-    conn.commit()
-    conn.close()
-
-init_db()
 
 # ==========================
 # LOGGER
@@ -79,53 +25,37 @@ def log(*args):
     print(*args, flush=True)
 
 # ==========================
-# TOKEN
-# ==========================
-def generate_token():
-    global TOKEN_EXPIRY
-
-    totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
-
-    r = requests.post(
-        "https://auth.dhan.co/app/generateAccessToken",
-        params={
-            "dhanClientId": DHAN_CLIENT_ID,
-            "pin": DHAN_PIN,
-            "totp": totp
-        },
-        timeout=10
-    )
-
-    data = r.json()
-
-    if "accessToken" in data:
-        TOKEN_EXPIRY = datetime.fromisoformat(data["expiryTime"]).replace(tzinfo=timezone.utc)
-        return data["accessToken"]
-
-    raise Exception(f"Token failed: {data}")
-
-def get_token():
-    global CURRENT_TOKEN
-    if not CURRENT_TOKEN or datetime.now(timezone.utc) > TOKEN_EXPIRY:
-        CURRENT_TOKEN = generate_token()
-    return CURRENT_TOKEN
-
-# ==========================
-# INSTRUMENTS
+# LOAD INSTRUMENTS
 # ==========================
 def load_instruments():
     df = pd.read_csv(INSTRUMENT_URL, low_memory=False)
-    df = df[(df['SEM_EXM_EXCH_ID'] == 'NSE') & (df['SEM_SEGMENT'] == 'E')]
+
+    df = df[
+        (df['SEM_EXM_EXCH_ID'] == 'NSE') &
+        (df['SEM_SEGMENT'] == 'E')
+    ]
+
     df['SEM_TRADING_SYMBOL'] = df['SEM_TRADING_SYMBOL'].astype(str).str.strip().str.upper()
+
+    log("✅ Instruments Loaded:", len(df))
     return df
 
 INSTRUMENT_DF = load_instruments()
 
+# ==========================
+# SYMBOL → SECURITY_ID
+# ==========================
 def get_security_id(stock):
-    symbol = stock.replace(".NS", "").upper()
-    row = INSTRUMENT_DF[INSTRUMENT_DF['SEM_TRADING_SYMBOL'] == symbol]
+    symbol = stock.replace(".NS", "").strip().upper()
+
+    row = INSTRUMENT_DF[
+        INSTRUMENT_DF['SEM_TRADING_SYMBOL'] == symbol
+    ]
+
     if row.empty:
+        log("❌ Mapping NOT FOUND:", symbol)
         return None
+
     return str(row.iloc[0]['SEM_SMST_SECURITY_ID'])
 
 # ==========================
@@ -135,42 +65,39 @@ def send_telegram(msg):
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": msg}
+            json={"chat_id": CHAT_ID, "text": msg},
+            timeout=10
         )
-    except:
-        pass
+    except Exception as e:
+        log("❌ Telegram Error:", e)
 
 # ==========================
-# ORDER
+# 🚀 GITHUB TRIGGER
 # ==========================
-def place_forever_entry(stock, qty, entry):
+def trigger_github_trade(stock, qty, entry, exit_price):
 
-    sec_id = get_security_id(stock)
-    if not sec_id:
-        return {"error": "mapping_failed"}
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/dispatches"
 
-    payload = {
-        "dhanClientId": DHAN_CLIENT_ID,
-        "correlationId": str(uuid.uuid4())[:20],
-        "orderFlag": "SINGLE",
-        "transactionType": "BUY",
-        "exchangeSegment": "NSE_EQ",
-        "productType": "CNC",
-        "orderType": "LIMIT",
-        "validity": "DAY",
-        "securityId": sec_id,
-        "quantity": qty,
-        "price": round(entry * 1.001, 2),
-        "triggerPrice": round(entry, 2)
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {GITHUB_TOKEN}"
     }
 
-    r = requests.post(
-        "https://api.dhan.co/v2/forever/orders",
-        json=payload,
-        headers={"access-token": get_token()}
-    )
+    payload = {
+        "event_type": "new_trade",
+        "client_payload": {
+            "symbol": stock.replace(".NS", ""),
+            "qty": qty,
+            "entry": entry,
+            "exit": exit_price
+        }
+    }
 
-    return r.json(), sec_id
+    r = requests.post(url, json=payload, headers=headers)
+
+    log("🚀 GITHUB TRIGGER:", r.status_code, r.text)
+
+    return r.status_code == 204
 
 # ==========================
 # FLASK
@@ -181,7 +108,12 @@ app = Flask(__name__)
 def webhook():
 
     data = request.get_json(force=True)
-    query = data.get("callback_query", {})
+
+    if not data or "callback_query" not in data:
+        return "OK"
+
+    query = data["callback_query"]
+
     parts = query.get("data", "").split("|")
 
     if len(parts) < 3:
@@ -196,17 +128,32 @@ def webhook():
 
     for line in msg_text.split("\n"):
         if "Entry" in line:
-            entry = float(line.split(":")[1])
+            try:
+                entry = float(line.split(":")[1].strip())
+            except:
+                pass
+
         if "Exit" in line:
-            exit_price = float(line.split(":")[1])
+            try:
+                exit_price = float(line.split(":")[1].strip())
+            except:
+                pass
+
+    if not entry:
+        send_telegram(f"❌ Missing Entry: {stock}")
+        return "OK"
 
     if action == "BUY":
-        res, sec_id = place_forever_entry(stock, qty, entry)
 
-        if "orderId" in str(res):
-            insert_trade(stock.replace(".NS",""), sec_id, qty, entry, exit_price)
-            send_telegram(f"🟢 ENTRY + DB: {stock}")
+        success = trigger_github_trade(stock, qty, entry, exit_price)
+
+        if success:
+            send_telegram(f"🟢 SENT TO EXECUTION: {stock}")
         else:
-            send_telegram(f"❌ FAILED: {stock}")
+            send_telegram(f"❌ GITHUB TRIGGER FAILED: {stock}")
 
     return "OK"
+
+@app.route("/")
+def home():
+    return "Webhook running"
