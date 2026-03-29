@@ -168,6 +168,9 @@ def get_token():
 # ==========================
 def place_order(sec_id, qty, entry):
 
+    trigger = round(entry, 2)
+    price = round(entry * 1.002, 2)  # must be > trigger
+
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
         "correlationId": str(int(time.time())),
@@ -175,11 +178,12 @@ def place_order(sec_id, qty, entry):
         "transactionType": "BUY",
         "exchangeSegment": "NSE_EQ",
         "productType": "CNC",
-        "orderType": "LIMIT",
+        "orderType": "STOP_LOSS",   # ✅ IMPORTANT
         "validity": "DAY",
         "securityId": sec_id,
         "quantity": qty,
-        "price": round(entry * 1.002, 2)
+        "price": price,
+        "triggerPrice": trigger
     }
 
     r = requests.post(
