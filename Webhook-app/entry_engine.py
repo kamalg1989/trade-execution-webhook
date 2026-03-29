@@ -9,7 +9,13 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 import time
+import pandas as pd
 
+INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
+
+
+
+INSTRUMENT_DF = load_instruments()
 DB_FILE = "Webhook-app/trades.db"
 
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
@@ -19,6 +25,33 @@ DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
 
+def load_instruments():
+    df = pd.read_csv(INSTRUMENT_URL, low_memory=False)
+
+    df = df[
+        (df['SEM_EXM_EXCH_ID'] == 'NSE') &
+        (df['SEM_SEGMENT'] == 'E')
+    ]
+
+    df['SEM_TRADING_SYMBOL'] = df['SEM_TRADING_SYMBOL'].astype(str).str.strip().str.upper()
+
+    print("✅ Instruments Loaded:", len(df))
+    return df
+
+def get_security_id(stock):
+    symbol = stock.replace(".NS", "").strip().upper()
+
+    row = INSTRUMENT_DF[
+        INSTRUMENT_DF['SEM_TRADING_SYMBOL'] == symbol
+    ]
+
+    if row.empty:
+        print(f"❌ Mapping NOT FOUND: {symbol}")
+        return None
+
+    sec_id = str(row.iloc[0]['SEM_SMST_SECURITY_ID'])
+    print(f"✅ MAPPED: {symbol} → {sec_id}")
+    return sec_id
 
 def log(*args):
     print(*args, flush=True)
@@ -106,7 +139,7 @@ def get_token():
 # ==========================
 # PLACE ORDER
 # ==========================
-def place_order(symbol, qty, entry):
+def place_order(sec_id, qty, entry):
 
     payload = {
     "dhanClientId": DHAN_CLIENT_ID,
@@ -148,14 +181,18 @@ def run():
 
     log(symbol, qty, entry, exit_price)
 
-    # NOTE: securityId must be mapped (simplified here)
-    sec_id = symbol  # replace with mapping if needed
+    
+
+    sec_id = get_security_id(symbol)
 
     sec_id = get_security_id(symbol)
 
     if not sec_id:
         print(f"❌ Security ID not found for {symbol}")
         return
+    
+    print("DEBUG →", symbol, sec_id, qty, entry)
+    
     res = place_order(sec_id, qty, entry)
 
     if "orderId" in str(res):
