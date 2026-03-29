@@ -126,31 +126,34 @@ def is_duplicate_trade(symbol, entry):
 
 
 # ==========================
-# TOKEN
+# TOKEN (RETRY ADDED)
 # ==========================
 def generate_token():
-    totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
+    for _ in range(3):
+        totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
 
-    log("🔐 TOTP:", totp)
+        log("🔐 TOTP:", totp)
 
-    r = requests.post(
-        "https://auth.dhan.co/app/generateAccessToken",
-        params={
-            "dhanClientId": DHAN_CLIENT_ID,
-            "pin": DHAN_PIN,
-            "totp": totp
-        },
-        timeout=10
-    )
+        r = requests.post(
+            "https://auth.dhan.co/app/generateAccessToken",
+            params={
+                "dhanClientId": DHAN_CLIENT_ID,
+                "pin": DHAN_PIN,
+                "totp": totp
+            },
+            timeout=10
+        )
 
-    log("🔍 RAW RESPONSE:", r.text)
+        log("🔍 RAW RESPONSE:", r.text)
 
-    data = r.json()
+        data = r.json()
 
-    if "accessToken" in data:
-        return data["accessToken"]
+        if "accessToken" in data:
+            return data["accessToken"]
 
-    raise Exception(f"Token failed → {data}")
+        time.sleep(2)
+
+    raise Exception("Token failed after retries")
 
 
 def get_token():
@@ -172,7 +175,7 @@ def place_order(sec_id, qty, entry):
         "transactionType": "BUY",
         "exchangeSegment": "NSE_EQ",
         "productType": "CNC",
-        "orderType": "LIMIT",   # ✅ Correct
+        "orderType": "LIMIT",
         "validity": "DAY",
         "securityId": sec_id,
         "quantity": qty,
@@ -187,7 +190,10 @@ def place_order(sec_id, qty, entry):
 
     log("📉 ORDER:", r.text)
 
-    return r.json()
+    try:
+        return r.json()
+    except:
+        return {}
 
 
 # ==========================
@@ -198,13 +204,13 @@ def run():
     init_db()
 
     symbol = os.getenv("SYMBOL")
-    qty = int(os.getenv("QTY"))
-    entry = float(os.getenv("ENTRY"))
-    exit_price = float(os.getenv("EXIT"))
+    qty = int(os.getenv("QTY", 0))
+    entry = float(os.getenv("ENTRY", 0))
+    exit_price = float(os.getenv("EXIT", 0))
 
     # ✅ validation
-    if not symbol or not qty or not entry:
-        log("❌ Missing input values")
+    if not symbol or qty <= 0 or entry <= 0:
+        log("❌ Invalid input values")
         return
 
     # ✅ duplicate protection
@@ -226,11 +232,12 @@ def run():
     # ✅ place order
     res = place_order(sec_id, qty, entry)
 
-    if "orderId" in str(res):
-        insert_trade(symbol, sec_id, qty, entry, exit_price, res.get("orderId"))
+    # ✅ strict success check
+    if isinstance(res, dict) and res.get("orderId"):
+        insert_trade(symbol, sec_id, qty, entry, exit_price, res["orderId"])
         log("✅ TRADE SAVED")
     else:
-        log("❌ ORDER FAILED")
+        log("❌ ORDER FAILED", res)
 
 
 if __name__ == "__main__":
