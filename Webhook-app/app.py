@@ -139,8 +139,8 @@ def webhook():
             except:
                 pass
 
-    if not entry:
-        send_telegram(f"❌ Missing Entry: {stock}")
+    if not entry or not exit_price:
+        send_telegram(f"❌ Missing Entry/Exit: {stock}")
         return "OK"
 
     if action == "BUY":
