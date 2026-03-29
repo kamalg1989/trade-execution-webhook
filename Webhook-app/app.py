@@ -84,7 +84,7 @@ def trigger_github_trade(stock, qty, entry, exit_price):
     }
 
     payload = {
-        "event_type": "new_trade",
+        "event_type": "trade_entry",
         "client_payload": {
             "symbol": stock.replace(".NS", ""),
             "qty": qty,
