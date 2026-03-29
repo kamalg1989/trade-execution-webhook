@@ -38,6 +38,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests pyotp pandas
 
+      - name: Sync time
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ntpdate
+          sudo ntpdate time.google.com || true
+
+      - name: Debug env
+        run: |
+          echo "SYMBOL=$SYMBOL"
+          echo "QTY=$QTY"
+          echo "ENTRY=$ENTRY"
+          echo "EXIT=$EXIT"
+          echo "TOTP present: $([[ -n \"$DHAN_TOTP_SECRET\" ]] && echo YES || echo NO)"
+
       - name: Run Entry Engine
         run: python Webhook-app/entry_engine.py
 
@@ -53,5 +67,5 @@ jobs:
           git pull origin main --rebase || true
 
           git add Webhook-app/trades.db
-          git commit -m "entry added" || echo "no changes"
+          git diff --cached --quiet || git commit -m "entry added"
           git push
