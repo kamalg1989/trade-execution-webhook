@@ -174,7 +174,6 @@ def fetch_forever_orders():
 # RECONCILE DHAN FOREVER ORDERS (SOURCE OF TRUTH)
 # ==========================
 def reconcile_forever_orders():
-
     orders = fetch_forever_orders()
 
     if not isinstance(orders, list):
@@ -183,7 +182,36 @@ def reconcile_forever_orders():
 
     log(f"📦 FOREVER ORDERS COUNT: {len(orders)}")
 
-    # group by symbol
+    # ===== STEP 1: Build valid symbols from positions + holdings =====
+    positions = fetch_positions()
+    holdings = fetch_holdings()
+
+    valid_symbols = set()
+
+    for p in positions:
+        if int(p.get("netQty", 0)) > 0:
+            valid_symbols.add(p.get("tradingSymbol"))
+
+    for h in holdings:
+        if int(h.get("totalQty", 0)) > 0:
+            valid_symbols.add(h.get("tradingSymbol"))
+
+    log(f"✅ VALID SYMBOLS (positions/holdings): {valid_symbols}")
+
+    # ===== STEP 2: Remove ORPHAN SL (no position/holding) =====
+    for o in orders:
+        if o.get("transactionType") != "SELL":
+            continue
+
+        sym = o.get("tradingSymbol")
+        oid = o.get("orderId")
+        tp = o.get("triggerPrice")
+
+        if sym not in valid_symbols:
+            log(f"❌ ORPHAN SL → {sym} @ {tp} ({oid}) → CANCEL")
+            cancel_order(oid)
+
+    # ===== STEP 3: Remove DUPLICATES (only for valid symbols) =====
     symbol_map = {}
 
     for o in orders:
@@ -191,6 +219,11 @@ def reconcile_forever_orders():
             continue
 
         sym = o.get("tradingSymbol")
+
+        # skip already invalid/orphan symbols
+        if sym not in valid_symbols:
+            continue
+
         symbol_map.setdefault(sym, []).append(o)
 
     for sym, group in symbol_map.items():
