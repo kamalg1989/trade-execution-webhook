@@ -81,8 +81,12 @@ def init_db():
         security_id TEXT,
         qty INTEGER,
         entry_price REAL,
-        planned_exit REAL,
-        trailing_sl REAL,
+        sl_price REAL,
+        target_price REAL,
+        strategy TEXT,
+        timeframe TEXT,
+        score REAL,
+        setup_id TEXT,
         order_id TEXT,
         status TEXT,
         entry_time TEXT
@@ -92,19 +96,23 @@ def init_db():
     conn.close()
 
 
-def insert_trade(symbol, sec_id, qty, entry, exit_price, order_id):
+def insert_trade(symbol, sec_id, qty, entry, sl, target, strategy, timeframe, score, setup_id, order_id):
     conn = sqlite3.connect(DB_FILE)
     conn.execute("""
     INSERT INTO trades 
-    (symbol, security_id, qty, entry_price, planned_exit, trailing_sl, order_id, status, entry_time)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (symbol, security_id, qty, entry_price, sl_price, target_price, strategy, timeframe, score, setup_id, order_id, status, entry_time)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         symbol,
         sec_id,
         qty,
         entry,
-        exit_price,
-        entry * 0.92,
+        sl,
+        target,
+        strategy,
+        timeframe,
+        score,
+        setup_id,
         order_id,
         "OPEN",
         datetime.now().isoformat()
@@ -113,13 +121,13 @@ def insert_trade(symbol, sec_id, qty, entry, exit_price, order_id):
     conn.close()
 
 
-def is_duplicate_trade(symbol, entry):
+def is_duplicate_trade(setup_id):
     conn = sqlite3.connect(DB_FILE)
 
     row = conn.execute("""
         SELECT id FROM trades 
-        WHERE symbol=? AND entry_price=? AND status='OPEN'
-    """, (symbol, entry)).fetchone()
+        WHERE setup_id=?
+    """, (setup_id,)).fetchone()
 
     conn.close()
     return row is not None
@@ -211,19 +219,24 @@ def run():
     symbol = os.getenv("SYMBOL")
     qty = int(os.getenv("QTY", 0))
     entry = float(os.getenv("ENTRY", 0))
-    exit_price = float(os.getenv("EXIT", 0))
+    sl = float(os.getenv("SL", 0))
+    target = float(os.getenv("TARGET", 0))
+    strategy = os.getenv("STRATEGY", "")
+    timeframe = os.getenv("TIMEFRAME", "")
+    score = float(os.getenv("SCORE", 0))
+    setup_id = os.getenv("SETUP_ID", "")
 
     # ✅ validation
-    if not symbol or qty <= 0 or entry <= 0:
+    if not symbol or qty <= 0 or entry <= 0 or sl <= 0:
         log("❌ Invalid input values")
         return
 
     # ✅ duplicate protection
-    if is_duplicate_trade(symbol, entry):
+    if is_duplicate_trade(setup_id):
         log("⚠️ Duplicate trade blocked")
         return
 
-    log(symbol, qty, entry, exit_price)
+    log(symbol, qty, entry, sl, target, strategy, timeframe, score)
 
     # ✅ mapping
     sec_id = get_security_id(symbol)
@@ -239,7 +252,11 @@ def run():
 
     # ✅ strict success check
     if isinstance(res, dict) and res.get("orderId"):
-        insert_trade(symbol, sec_id, qty, entry, exit_price, res["orderId"])
+        insert_trade(
+            symbol, sec_id, qty, entry, sl, target,
+            strategy, timeframe, score, setup_id,
+            res["orderId"]
+        )
         log("✅ TRADE SAVED")
     else:
         log("❌ ORDER FAILED", res)
