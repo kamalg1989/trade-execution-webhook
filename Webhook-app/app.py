@@ -85,7 +85,7 @@ def send_telegram(msg):
 # ==========================
 # 🚀 GITHUB TRIGGER
 # ==========================
-def trigger_github_trade(stock, qty, entry, exit_price):
+def trigger_github_trade(stock, qty, entry, sl, target, strategy, timeframe, score, setup_id):
 
     url = f"https://api.github.com/repos/{GITHUB_REPO}/dispatches"
 
@@ -100,7 +100,12 @@ def trigger_github_trade(stock, qty, entry, exit_price):
             "symbol": stock.replace(".NS", ""),
             "qty": qty,
             "entry": entry,
-            "exit": exit_price
+            "sl": sl,
+            "target": target,
+            "strategy": strategy,
+            "timeframe": timeframe,
+            "score": score,
+            "setup_id": setup_id
         }
     }
 
@@ -134,36 +139,24 @@ def webhook():
 
     parts = query.get("data", "").split("|")
 
-    if len(parts) < 3:
+    if len(parts) < 10:
+        send_telegram("❌ Invalid payload")
         return "OK"
 
-    action, stock, qty = parts[0], parts[1], int(parts[2])
-
-    msg_text = query.get("message", {}).get("text", "")
-
-    entry = None
-    exit_price = None
-
-    for line in msg_text.split("\n"):
-        if "Entry" in line:
-            try:
-                entry = float(line.split(":")[1].strip())
-            except:
-                pass
-
-        if "Exit" in line:
-            try:
-                exit_price = float(line.split(":")[1].strip())
-            except:
-                pass
-
-    if not entry or not exit_price:
-        send_telegram(f"❌ Missing Entry/Exit: {stock}")
-        return "OK"
+    action = parts[0]
+    stock = parts[1]
+    qty = int(parts[2])
+    entry = float(parts[3])
+    sl = float(parts[4])
+    target = float(parts[5])
+    strategy = parts[6]
+    timeframe = parts[7]
+    score = float(parts[8])
+    setup_id = parts[9]
 
     if action == "BUY":
 
-        key = f"{stock}_{qty}_{entry}_{exit_price}"
+        key = f"{setup_id}_{stock}_{qty}"
         now = time.time()
 
         # ✅ ORDER DEDUP (GitHub trigger protection)
@@ -176,10 +169,13 @@ def webhook():
             PROCESSED_ORDERS[key] = now
 
         # 🚀 SINGLE trigger (FIXED)
-        success = trigger_github_trade(stock, qty, entry, exit_price)
+        success = trigger_github_trade(
+            stock, qty, entry, sl, target,
+            strategy, timeframe, score, setup_id
+        )
 
         if success:
-            send_telegram(f"🟢 SENT TO EXECUTION: {stock}")
+            send_telegram(f"🟢 SENT: {stock} | SL={sl} | TGT={target}")
         else:
             send_telegram(f"❌ GITHUB TRIGGER FAILED: {stock}")
 
