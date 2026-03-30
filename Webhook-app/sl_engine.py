@@ -171,6 +171,51 @@ def fetch_forever_orders():
 
 
 # ==========================
+# RECONCILE DHAN FOREVER ORDERS (SOURCE OF TRUTH)
+# ==========================
+def reconcile_forever_orders():
+
+    orders = fetch_forever_orders()
+
+    if not isinstance(orders, list):
+        log("⚠️ No forever orders fetched")
+        return
+
+    log(f"📦 FOREVER ORDERS COUNT: {len(orders)}")
+
+    # group by symbol
+    symbol_map = {}
+
+    for o in orders:
+        if o.get("transactionType") != "SELL":
+            continue
+
+        sym = o.get("tradingSymbol")
+        symbol_map.setdefault(sym, []).append(o)
+
+    for sym, group in symbol_map.items():
+
+        if len(group) <= 1:
+            continue
+
+        log(f"⚠️ DUPLICATES IN DHAN → {sym} ({len(group)})")
+
+        # keep highest trigger price
+        group_sorted = sorted(group, key=lambda x: float(x.get("triggerPrice", 0)), reverse=True)
+
+        keep = group_sorted[0]
+        keep_id = keep["orderId"]
+        keep_tp = keep.get("triggerPrice")
+
+        log(f"✅ KEEPING → {sym} @ {keep_tp} ({keep_id})")
+
+        for o in group_sorted[1:]:
+            oid = o["orderId"]
+            log(f"❌ CANCEL (DHAN DUP) → {sym} {oid}")
+            cancel_order(oid)
+
+
+# ==========================
 # LTP
 # ==========================
 def get_ltp(symbol):
@@ -389,6 +434,9 @@ def run():
     positions = fetch_positions()
     holdings = fetch_holdings()
 
+    # STEP 0: Clean duplicates directly in Dhan
+    reconcile_forever_orders()
+
     sync_trades(positions, holdings)
 
     trades = get_open_trades()
@@ -406,23 +454,27 @@ def run():
         orders = get_trade_orders(trade_id)
 
         # ==========================
-        # HANDLE DUPLICATE SL ORDERS
+        # HANDLE DUPLICATE SL (DB LEVEL)
         # ==========================
         if orders:
-            # keep highest SL, cancel rest
+
+            log(f"📊 DB ORDERS → {symbol}: {len(orders)}")
+
             orders_sorted = sorted(orders, key=lambda x: x[5] or 0, reverse=True)
 
             keep_order = orders_sorted[0]
             keep_order_id = keep_order[2]
             keep_sl = keep_order[5]
 
-            # cancel duplicates in Dhan
+            log(f"✅ KEEP DB SL → {keep_sl} ({keep_order_id})")
+
             for o in orders_sorted[1:]:
                 dup_id = o[2]
-                log(f"❌ Cancel duplicate SL → {dup_id}")
+                dup_sl = o[5]
+
+                log(f"❌ REMOVE DB DUP → {symbol} {dup_id} @ {dup_sl}")
                 cancel_order(dup_id)
 
-            # clean DB duplicates
             conn = sqlite3.connect(DB_FILE)
             conn.execute("""
                 DELETE FROM orders 
@@ -432,6 +484,7 @@ def run():
             conn.close()
 
         else:
+            log(f"⚠️ NO SL FOUND IN DB → {symbol}")
             keep_order_id = None
             keep_sl = None
 
@@ -440,6 +493,8 @@ def run():
         # ==========================
         if not keep_order_id:
             sl = entry * BASE_SL_PCT
+
+            log(f"🆕 PLACING INITIAL SL → {symbol} @ {sl}")
 
             oid = place_sl(sec_id, qty, sl)
 
@@ -453,8 +508,13 @@ def run():
         # ==========================
         new_sl = calculate_sl(entry, ltp, keep_sl)
 
+        log(f"SL CHECK → OLD={keep_sl} NEW={new_sl}")
+
         if new_sl > keep_sl:
+            log(f"🔄 TRAIL SL → {symbol} {keep_sl} → {new_sl}")
             modify_sl(keep_order_id, qty, new_sl)
+        else:
+            log(f"⏭️ NO TRAIL → {symbol}")
 
     log("\n✅ DONE\n")
 
