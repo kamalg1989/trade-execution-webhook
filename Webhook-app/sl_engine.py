@@ -341,6 +341,15 @@ def place_sl(sec_id, qty, trigger):
     return None
 
 
+def cancel_order(order_id):
+    r = requests.delete(
+        f"https://api.dhan.co/v2/forever/orders/{order_id}",
+        headers={"access-token": get_token()},
+        timeout=10
+    )
+    log("🗑️ CANCEL:", order_id, r.status_code, r.text)
+
+
 def modify_sl(order_id, qty, trigger):
 
     payload = {
@@ -396,7 +405,40 @@ def run():
 
         orders = get_trade_orders(trade_id)
 
-        if not orders:
+        # ==========================
+        # HANDLE DUPLICATE SL ORDERS
+        # ==========================
+        if orders:
+            # keep highest SL, cancel rest
+            orders_sorted = sorted(orders, key=lambda x: x[5] or 0, reverse=True)
+
+            keep_order = orders_sorted[0]
+            keep_order_id = keep_order[2]
+            keep_sl = keep_order[5]
+
+            # cancel duplicates in Dhan
+            for o in orders_sorted[1:]:
+                dup_id = o[2]
+                log(f"❌ Cancel duplicate SL → {dup_id}")
+                cancel_order(dup_id)
+
+            # clean DB duplicates
+            conn = sqlite3.connect(DB_FILE)
+            conn.execute("""
+                DELETE FROM orders 
+                WHERE trade_id=? AND dhan_order_id!=?
+            """, (trade_id, keep_order_id))
+            conn.commit()
+            conn.close()
+
+        else:
+            keep_order_id = None
+            keep_sl = None
+
+        # ==========================
+        # PLACE SL IF MISSING
+        # ==========================
+        if not keep_order_id:
             sl = entry * BASE_SL_PCT
 
             oid = place_sl(sec_id, qty, sl)
@@ -404,14 +446,15 @@ def run():
             if oid:
                 insert_order(trade_id, oid, sl)
 
-        else:
-            prev_sl = orders[0][5]
-            order_id = orders[0][2]
+            continue
 
-            new_sl = calculate_sl(entry, ltp, prev_sl)
+        # ==========================
+        # TRAILING LOGIC
+        # ==========================
+        new_sl = calculate_sl(entry, ltp, keep_sl)
 
-            if new_sl > prev_sl:
-                modify_sl(order_id, qty, new_sl)
+        if new_sl > keep_sl:
+            modify_sl(keep_order_id, qty, new_sl)
 
     log("\n✅ DONE\n")
 
