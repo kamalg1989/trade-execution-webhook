@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 TRAILING SL ENGINE (2-TABLE CLEAN FINAL)
+# 🚀 TRAILING SL ENGINE (VERSIONED DB + MIGRATION)
 # ==============================================
 
 import os
@@ -19,6 +19,7 @@ DHAN_PIN = os.getenv("DHAN_PIN")
 DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
 
 DB_FILE = "Webhook-app/trades.db"
+DB_VERSION = 2   # 🔥 increment when schema changes
 
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
@@ -31,13 +32,51 @@ def log(*args):
     print(*args, flush=True)
 
 # ==========================
-# DB INIT
+# DB INIT + VERSIONING
 # ==========================
 def init_db():
+
     conn = sqlite3.connect(DB_FILE)
 
+    # meta table for versioning
     conn.execute("""
-    CREATE TABLE IF NOT EXISTS trades (
+    CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )
+    """)
+
+    version_row = conn.execute(
+        "SELECT value FROM meta WHERE key='db_version'"
+    ).fetchone()
+
+    current_version = int(version_row[0]) if version_row else 0
+
+    if current_version < DB_VERSION:
+        log(f"⚙️ Migrating DB {current_version} → {DB_VERSION}")
+        migrate_db(conn, current_version)
+
+        conn.execute("""
+            INSERT OR REPLACE INTO meta (key, value)
+            VALUES ('db_version', ?)
+        """, (DB_VERSION,))
+
+    conn.commit()
+    conn.close()
+
+
+# ==========================
+# MIGRATION LOGIC
+# ==========================
+def migrate_db(conn, old_version):
+
+    # Drop old tables (safe reset)
+    conn.execute("DROP TABLE IF EXISTS trades")
+    conn.execute("DROP TABLE IF EXISTS orders")
+
+    # Recreate clean schema
+    conn.execute("""
+    CREATE TABLE trades (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         symbol TEXT UNIQUE,
         security_id TEXT,
@@ -49,7 +88,7 @@ def init_db():
     """)
 
     conn.execute("""
-    CREATE TABLE IF NOT EXISTS orders (
+    CREATE TABLE orders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         trade_id INTEGER,
         dhan_order_id TEXT,
@@ -61,8 +100,39 @@ def init_db():
     )
     """)
 
+    log("✅ DB schema reset complete")
+
+# ==========================
+# DB CLEANUP
+# ==========================
+def cleanup_db():
+
+    conn = sqlite3.connect(DB_FILE)
+
+    log("🧹 Cleaning DB...")
+
+    # remove orphan orders
+    conn.execute("""
+        DELETE FROM orders
+        WHERE trade_id NOT IN (SELECT id FROM trades)
+    """)
+
+    # ensure single SL per trade
+    conn.execute("""
+        DELETE FROM orders
+        WHERE id NOT IN (
+            SELECT MAX(id)
+            FROM orders
+            WHERE type='SL'
+            GROUP BY trade_id
+        )
+        AND type='SL'
+    """)
+
     conn.commit()
     conn.close()
+
+    log("✅ DB Cleaned")
 
 # ==========================
 # TOKEN
@@ -104,10 +174,8 @@ def generate_token():
 
 def get_token():
     global CURRENT_TOKEN
-
     if not CURRENT_TOKEN or datetime.now(timezone.utc) > TOKEN_EXPIRY:
         CURRENT_TOKEN = generate_token()
-
     return CURRENT_TOKEN
 
 # ==========================
@@ -119,8 +187,7 @@ def fetch_positions():
         headers={"access-token": get_token()},
         timeout=10
     )
-    data = r.json()
-    return data if isinstance(data, list) else []
+    return r.json() if r.status_code == 200 else []
 
 
 def fetch_forever_orders():
@@ -138,10 +205,7 @@ def get_ltp(symbol):
     try:
         data = yf.Ticker(symbol + ".NS")
 
-        price = None
-
-        if hasattr(data, "fast_info") and data.fast_info:
-            price = data.fast_info.get("lastPrice")
+        price = data.fast_info.get("lastPrice")
 
         if not price:
             hist = data.history(period="1d", interval="1m")
@@ -157,13 +221,12 @@ def get_ltp(symbol):
     return None
 
 # ==========================
-# DB SYNC (CRITICAL FIX)
+# DB SYNC
 # ==========================
 def sync_trades(positions):
 
     conn = sqlite3.connect(DB_FILE)
 
-    # mark all CLOSED first
     conn.execute("UPDATE trades SET status='CLOSED'")
 
     for p in positions:
@@ -175,8 +238,6 @@ def sync_trades(positions):
         symbol = p["tradingSymbol"]
         sec_id = p["securityId"]
         entry = float(p.get("buyAvg"))
-
-        log(f"🔄 Sync → {symbol}")
 
         existing = conn.execute("""
             SELECT id FROM trades WHERE symbol=?
@@ -198,23 +259,13 @@ def sync_trades(positions):
     conn.commit()
     conn.close()
 
-# ==========================
-# ORDER HELPERS
-# ==========================
+
 def get_open_trades():
     conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
     conn.close()
     return rows
-
-
-def get_sl_orders_from_dhan(sec_id, orders):
-    return [
-        o for o in orders
-        if str(o.get("securityId")) == str(sec_id)
-           and o.get("transactionType") == "SELL"
-           and o.get("orderStatus") in ["PENDING", "TRANSIT"]
-    ]
 
 # ==========================
 # SL LOGIC
@@ -230,7 +281,6 @@ def calculate_sl(entry, ltp, prev):
         return base
 
     profit = ltp - entry
-
     new_sl = entry + profit * 0.5
     new_sl = min(new_sl, ltp * 0.995)
 
@@ -256,15 +306,11 @@ def place_sl(sec_id, qty, trigger):
         "triggerPrice": trigger
     }
 
-    log("🆕 SL PLACE:", payload)
-
     r = requests.post(
         "https://api.dhan.co/v2/forever/orders",
         json=payload,
         headers={"access-token": get_token()}
     )
-
-    log("📉 SL PLACE:", r.status_code, r.text)
 
     if r.status_code == 200:
         return r.json().get("orderId")
@@ -286,66 +332,21 @@ def modify_sl(order_id, qty, trigger):
         "validity": "DAY"
     }
 
-    log("🔄 MODIFY:", payload)
-
     r = requests.put(
         f"https://api.dhan.co/v2/forever/orders/{order_id}",
         json=payload,
         headers={"access-token": get_token()}
     )
 
-    log("📉 MODIFY:", r.status_code, r.text)
-
     return r.status_code == 200
 
 
 def cancel_order(order_id):
-    log("🗑️ CANCEL:", order_id)
     requests.delete(
         f"https://api.dhan.co/v2/forever/orders/{order_id}",
         headers={"access-token": get_token()}
     )
-# ==========================
-# DB CLEANUP (AUTO FIX)
-# ==========================
-def cleanup_db():
 
-    conn = sqlite3.connect(DB_FILE)
-
-    log("🧹 Cleaning DB...")
-
-    # 1. Keep only latest trade per symbol
-    conn.execute("""
-        DELETE FROM trades
-        WHERE id NOT IN (
-            SELECT MAX(id)
-            FROM trades
-            GROUP BY symbol
-        )
-    """)
-
-    # 2. Remove orphan orders (no trade)
-    conn.execute("""
-        DELETE FROM orders
-        WHERE trade_id NOT IN (SELECT id FROM trades)
-    """)
-
-    # 3. Remove duplicate SL orders per trade
-    conn.execute("""
-        DELETE FROM orders
-        WHERE id NOT IN (
-            SELECT MAX(id)
-            FROM orders
-            WHERE type='SL'
-            GROUP BY trade_id
-        )
-        AND type='SL'
-    """)
-
-    conn.commit()
-    conn.close()
-
-    log("✅ DB Cleaned")
 # ==========================
 # MAIN
 # ==========================
@@ -355,6 +356,7 @@ def run():
 
     init_db()
     cleanup_db()
+
     positions = fetch_positions()
     forever_orders = fetch_forever_orders()
 
@@ -366,19 +368,27 @@ def run():
 
     for t in trades:
 
-        trade_id, symbol, sec_id, qty, entry, _, status = t
+        trade_id = t["id"]
+        symbol = t["symbol"]
+        sec_id = t["security_id"]
+        qty = t["qty"]
+        entry = t["entry_price"]
 
         ltp = get_ltp(symbol)
 
         if not ltp:
-            log(f"⚠️ LTP missing → {symbol}")
             continue
 
-        log(f"\n➡️ {symbol} | Entry={entry} | LTP={ltp}")
+        log(f"{symbol} | Entry={entry} | LTP={ltp}")
 
-        sl_orders = get_sl_orders_from_dhan(sec_id, forever_orders)
+        sl_orders = [
+            o for o in forever_orders
+            if str(o.get("securityId")) == str(sec_id)
+               and o.get("transactionType") == "SELL"
+               and o.get("orderStatus") in ["PENDING", "TRANSIT"]
+        ]
 
-        # ===== CLEAN DUPLICATES =====
+        # cleanup invalid SL
         valid = []
         for o in sl_orders:
             tp = float(o.get("triggerPrice", 0))
@@ -390,7 +400,6 @@ def run():
 
         if len(valid) > 1:
             valid.sort(key=lambda x: float(x.get("triggerPrice")), reverse=True)
-
             for o in valid[1:]:
                 cancel_order(o["orderId"])
 
@@ -399,20 +408,12 @@ def run():
 
         new_sl = calculate_sl(entry, ltp, prev_sl)
 
-        log(f"SL OLD={prev_sl} → NEW={new_sl}")
-
         if not order_id:
-            oid = place_sl(sec_id, qty, new_sl)
-            if oid:
-                updated += 1
+            place_sl(sec_id, qty, new_sl)
+            updated += 1
             continue
 
         if new_sl <= prev_sl:
-            continue
-
-        change_pct = (new_sl - prev_sl) / prev_sl if prev_sl else 1
-
-        if change_pct < MIN_TRAIL_PCT:
             continue
 
         if modify_sl(order_id, qty, new_sl):
