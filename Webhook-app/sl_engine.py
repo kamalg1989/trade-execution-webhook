@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 TRAILING SL ENGINE (DB BASED)
+# 🚀 TRAILING SL ENGINE (DB BASED - FINAL)
 # ==============================================
 
 import os
@@ -19,7 +19,9 @@ DB_FILE = "Webhook-app/trades.db"
 
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
-MIN_TRAIL_PCT = 0.005
+
+MIN_TRAIL_PCT = 0.005   # 0.5%
+BASE_SL_PCT = 0.92      # 8% SL
 
 
 def log(*args):
@@ -28,7 +30,6 @@ def log(*args):
 # ==========================
 # DB
 # ==========================
-
 def init_db():
     conn = sqlite3.connect(DB_FILE)
 
@@ -50,11 +51,13 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 def get_open_trades():
     conn = sqlite3.connect(DB_FILE)
     rows = conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
     conn.close()
     return rows
+
 
 def update_sl(trade_id, sl):
     conn = sqlite3.connect(DB_FILE)
@@ -62,69 +65,153 @@ def update_sl(trade_id, sl):
     conn.commit()
     conn.close()
 
+
 # ==========================
-# TOKEN
+# TOKEN (RETRY + STABLE)
 # ==========================
 def generate_token():
     global TOKEN_EXPIRY
 
-    totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
+    totp = pyotp.TOTP(DHAN_TOTP_SECRET)
 
-    r = requests.post(
-        "https://auth.dhan.co/app/generateAccessToken",
-        params={
-            "dhanClientId": DHAN_CLIENT_ID,
-            "pin": DHAN_PIN,
-            "totp": totp
-        }
-    )
+    for _ in range(3):
+        code = totp.now()
 
-    data = r.json()
+        log("🔐 TOTP:", code)
 
-    if "accessToken" in data:
-        TOKEN_EXPIRY = datetime.fromisoformat(data["expiryTime"]).replace(tzinfo=timezone.utc)
-        return data["accessToken"]
+        r = requests.post(
+            "https://auth.dhan.co/app/generateAccessToken",
+            params={
+                "dhanClientId": DHAN_CLIENT_ID,
+                "pin": DHAN_PIN,
+                "totp": code
+            },
+            timeout=10
+        )
+
+        data = r.json()
+        log("🔍 TOKEN:", data)
+
+        if "accessToken" in data:
+            TOKEN_EXPIRY = datetime.fromisoformat(
+                data["expiryTime"]
+            ).replace(tzinfo=timezone.utc)
+            return data["accessToken"]
+
+        if "2 minutes" in str(data):
+            time.sleep(130)
+
+        time.sleep(3)
 
     raise Exception("Token failed")
 
+
 def get_token():
     global CURRENT_TOKEN
+
     if not CURRENT_TOKEN or datetime.now(timezone.utc) > TOKEN_EXPIRY:
         CURRENT_TOKEN = generate_token()
+
     return CURRENT_TOKEN
 
+
 # ==========================
-# LTP
+# LTP (Yahoo + fallback)
 # ==========================
-def get_ltp(symbol):
+def get_ltp(symbol, entry=None, pnl=None, qty=None):
+
     try:
         data = yf.Ticker(symbol + ".NS")
-        price = data.fast_info.get("lastPrice")
+
+        price = None
+
+        if hasattr(data, "fast_info") and data.fast_info:
+            price = data.fast_info.get("lastPrice")
+
+        if not price:
+            hist = data.history(period="1d", interval="1m")
+            if not hist.empty:
+                price = hist["Close"].iloc[-1]
+
         if price:
-            return round(float(price), 2)
-    except:
-        pass
+            price = round(float(price), 2)
+            log(f"🌐 LTP → {symbol} = {price}")
+            return price
+
+    except Exception as e:
+        log("❌ Yahoo error:", e)
+
+    # fallback
+    if entry and pnl and qty:
+        try:
+            ltp = entry + (pnl / qty)
+            ltp = round(ltp, 2)
+            log(f"🧮 LTP fallback → {ltp}")
+            return ltp
+        except:
+            pass
+
     return None
+
 
 # ==========================
 # SL LOGIC
 # ==========================
 def calculate_sl(entry, ltp, prev_sl):
 
-    base = entry * 0.92
+    base = entry * BASE_SL_PCT
+
+    if not prev_sl:
+        return base
 
     if ltp <= entry:
         return base
 
     profit = ltp - entry
+
     new_sl = entry + profit * 0.5
     new_sl = min(new_sl, ltp * 0.995)
 
     return max(prev_sl, new_sl)
 
+
 # ==========================
-# ORDER
+# ORDER APIs
 # ==========================
+def place_sl(sec_id, qty, trigger):
+
+    payload = {
+        "dhanClientId": DHAN_CLIENT_ID,
+        "correlationId": str(uuid.uuid4())[:20],
+        "orderFlag": "SINGLE",
+        "transactionType": "SELL",
+        "exchangeSegment": "NSE_EQ",
+        "productType": "CNC",
+        "orderType": "LIMIT",
+        "validity": "DAY",
+        "securityId": sec_id,
+        "quantity": qty,
+        "price": round(trigger * 0.995, 2),
+        "triggerPrice": trigger
+    }
+
+    log("🆕 PLACE SL:", payload)
+
+    r = requests.post(
+        "https://api.dhan.co/v2/forever/orders",
+        json=payload,
+        headers={"access-token": get_token()},
+        timeout=10
+    )
+
+    log("📉 PLACE:", r.status_code, r.text)
+
+    if r.status_code == 200:
+        return r.json().get("orderId")
+
+    return None
+
+
 def modify_sl(order_id, qty, trigger):
 
     payload = {
@@ -139,13 +226,19 @@ def modify_sl(order_id, qty, trigger):
         "validity": "DAY"
     }
 
+    log("🔄 MODIFY:", payload)
+
     r = requests.put(
         f"https://api.dhan.co/v2/forever/orders/{order_id}",
         json=payload,
-        headers={"access-token": get_token()}
+        headers={"access-token": get_token()},
+        timeout=10
     )
 
+    log("📉 MODIFY:", r.status_code, r.text)
+
     return r.status_code == 200
+
 
 # ==========================
 # MAIN
@@ -153,34 +246,75 @@ def modify_sl(order_id, qty, trigger):
 def run():
 
     log("\n🚀 TRAILING SL ENGINE START\n")
-    init_db() 
+
+    init_db()
     trades = get_open_trades()
+
     updated = 0
 
     for t in trades:
 
-        trade_id, symbol, sec_id, qty, entry, exit_price, prev_sl, order_id, status, _ = t
+        (trade_id, symbol, sec_id, qty,
+         entry, planned_exit, prev_sl,
+         order_id, status, _) = t
 
         ltp = get_ltp(symbol)
 
         if not ltp:
+            log(f"⚠️ Missing LTP → {symbol}")
             continue
 
-        log(f"{symbol} | Entry={entry} | LTP={ltp}")
+        log(f"\n➡️ {symbol} | Entry={entry} | LTP={ltp}")
 
-        # EXIT override
-        if exit_price and ltp < exit_price:
-            new_sl = exit_price
+        # ==========================
+        # INITIAL SL (CRITICAL FIX)
+        # ==========================
+        if not prev_sl or not order_id:
+
+            base_sl = entry * BASE_SL_PCT
+
+            log(f"🆕 Initial SL → {base_sl}")
+
+            new_order_id = place_sl(sec_id, qty, base_sl)
+
+            if new_order_id:
+                update_sl(trade_id, base_sl)
+
+                # also update order_id
+                conn = sqlite3.connect(DB_FILE)
+                conn.execute(
+                    "UPDATE trades SET order_id=? WHERE id=?",
+                    (new_order_id, trade_id)
+                )
+                conn.commit()
+                conn.close()
+
+                updated += 1
+
+            continue
+
+        # ==========================
+        # TRAILING SL
+        # ==========================
+        if planned_exit and ltp < planned_exit:
+            new_sl = planned_exit
         else:
             new_sl = calculate_sl(entry, ltp, prev_sl)
 
+        log(f"SL OLD={prev_sl} → NEW={new_sl}")
+
         if new_sl <= prev_sl:
+            log("⏭️ No improvement")
             continue
 
-        if ((new_sl - prev_sl) / prev_sl) < MIN_TRAIL_PCT:
-            continue
+        # avoid noise updates
+        if prev_sl > 0:
+            change_pct = (new_sl - prev_sl) / prev_sl
+            if change_pct < MIN_TRAIL_PCT:
+                log("⏭️ Too small move")
+                continue
 
-        if order_id and modify_sl(order_id, qty, new_sl):
+        if modify_sl(order_id, qty, new_sl):
             update_sl(trade_id, new_sl)
             updated += 1
 
