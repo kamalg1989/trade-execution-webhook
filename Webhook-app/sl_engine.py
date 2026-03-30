@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 TRAILING SL ENGINE (FINAL - POSITION SYNC)
+# 🚀 TRAILING SL ENGINE (2-TABLE CLEAN FINAL)
 # ==============================================
 
 import os
@@ -39,7 +39,7 @@ def init_db():
     conn.execute("""
     CREATE TABLE IF NOT EXISTS trades (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        symbol TEXT,
+        symbol TEXT UNIQUE,
         security_id TEXT,
         qty INTEGER,
         entry_price REAL,
@@ -95,7 +95,6 @@ def generate_token():
             return data["accessToken"]
 
         if "2 minutes" in str(data):
-            log("⏳ Rate limit wait")
             time.sleep(130)
 
         time.sleep(2)
@@ -105,12 +104,14 @@ def generate_token():
 
 def get_token():
     global CURRENT_TOKEN
+
     if not CURRENT_TOKEN or datetime.now(timezone.utc) > TOKEN_EXPIRY:
         CURRENT_TOKEN = generate_token()
+
     return CURRENT_TOKEN
 
 # ==========================
-# FETCH
+# DHAN APIs
 # ==========================
 def fetch_positions():
     r = requests.get(
@@ -118,9 +119,8 @@ def fetch_positions():
         headers={"access-token": get_token()},
         timeout=10
     )
-    data = r.json() if r.status_code == 200 else []
-    log("📊 POSITIONS:", data)
-    return data
+    data = r.json()
+    return data if isinstance(data, list) else []
 
 
 def fetch_forever_orders():
@@ -129,9 +129,7 @@ def fetch_forever_orders():
         headers={"access-token": get_token()},
         timeout=10
     )
-    data = r.json() if r.status_code == 200 else []
-    log("📦 FOREVER:", data)
-    return data
+    return r.json() if r.status_code == 200 else []
 
 # ==========================
 # LTP
@@ -139,23 +137,33 @@ def fetch_forever_orders():
 def get_ltp(symbol):
     try:
         data = yf.Ticker(symbol + ".NS")
-        price = data.fast_info.get("lastPrice")
+
+        price = None
+
+        if hasattr(data, "fast_info") and data.fast_info:
+            price = data.fast_info.get("lastPrice")
+
+        if not price:
+            hist = data.history(period="1d", interval="1m")
+            if not hist.empty:
+                price = hist["Close"].iloc[-1]
+
         if price:
-            price = round(float(price), 2)
-            log(f"🌐 LTP → {symbol} = {price}")
-            return price
-    except Exception as e:
-        log("❌ LTP error:", e)
+            return round(float(price), 2)
+
+    except:
+        pass
+
     return None
 
 # ==========================
-# DB SYNC (POSITIONS BASED)
+# DB SYNC (CRITICAL FIX)
 # ==========================
 def sync_trades(positions):
 
     conn = sqlite3.connect(DB_FILE)
 
-    # mark all closed first
+    # mark all CLOSED first
     conn.execute("UPDATE trades SET status='CLOSED'")
 
     for p in positions:
@@ -171,15 +179,15 @@ def sync_trades(positions):
         log(f"🔄 Sync → {symbol}")
 
         existing = conn.execute("""
-            SELECT id FROM trades WHERE symbol=? AND status='OPEN'
+            SELECT id FROM trades WHERE symbol=?
         """, (symbol,)).fetchone()
 
         if existing:
             conn.execute("""
                 UPDATE trades
                 SET qty=?, entry_price=?, status='OPEN'
-                WHERE id=?
-            """, (qty, entry, existing[0]))
+                WHERE symbol=?
+            """, (qty, entry, symbol))
         else:
             conn.execute("""
                 INSERT INTO trades
@@ -190,7 +198,9 @@ def sync_trades(positions):
     conn.commit()
     conn.close()
 
-
+# ==========================
+# ORDER HELPERS
+# ==========================
 def get_open_trades():
     conn = sqlite3.connect(DB_FILE)
     rows = conn.execute("SELECT * FROM trades WHERE status='OPEN'").fetchall()
@@ -198,33 +208,39 @@ def get_open_trades():
     return rows
 
 
-def upsert_sl(trade_id, order_id, trigger):
-    conn = sqlite3.connect(DB_FILE)
+def get_sl_orders_from_dhan(sec_id, orders):
+    return [
+        o for o in orders
+        if str(o.get("securityId")) == str(sec_id)
+           and o.get("transactionType") == "SELL"
+           and o.get("orderStatus") in ["PENDING", "TRANSIT"]
+    ]
 
-    exists = conn.execute("""
-        SELECT id FROM orders WHERE trade_id=? AND type='SL'
-    """, (trade_id,)).fetchone()
+# ==========================
+# SL LOGIC
+# ==========================
+def calculate_sl(entry, ltp, prev):
 
-    if exists:
-        conn.execute("""
-            UPDATE orders
-            SET dhan_order_id=?, trigger_price=?, status='PENDING'
-            WHERE trade_id=? AND type='SL'
-        """, (order_id, trigger, trade_id))
-    else:
-        conn.execute("""
-            INSERT INTO orders
-            (trade_id, dhan_order_id, type, side, trigger_price, status, created_at)
-            VALUES (?, ?, 'SL', 'SELL', ?, 'PENDING', ?)
-        """, (trade_id, order_id, trigger, datetime.now().isoformat()))
+    base = entry * BASE_SL_PCT
 
-    conn.commit()
-    conn.close()
+    if not prev:
+        return base
+
+    if ltp <= entry:
+        return base
+
+    profit = ltp - entry
+
+    new_sl = entry + profit * 0.5
+    new_sl = min(new_sl, ltp * 0.995)
+
+    return max(prev, new_sl)
 
 # ==========================
 # ORDER OPS
 # ==========================
 def place_sl(sec_id, qty, trigger):
+
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
         "correlationId": str(uuid.uuid4())[:20],
@@ -240,7 +256,7 @@ def place_sl(sec_id, qty, trigger):
         "triggerPrice": trigger
     }
 
-    log("🆕 PLACE SL:", payload)
+    log("🆕 SL PLACE:", payload)
 
     r = requests.post(
         "https://api.dhan.co/v2/forever/orders",
@@ -248,7 +264,7 @@ def place_sl(sec_id, qty, trigger):
         headers={"access-token": get_token()}
     )
 
-    log("📉 PLACE:", r.status_code, r.text)
+    log("📉 SL PLACE:", r.status_code, r.text)
 
     if r.status_code == 200:
         return r.json().get("orderId")
@@ -257,6 +273,7 @@ def place_sl(sec_id, qty, trigger):
 
 
 def modify_sl(order_id, qty, trigger):
+
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
         "orderId": order_id,
@@ -288,63 +305,47 @@ def cancel_order(order_id):
         f"https://api.dhan.co/v2/forever/orders/{order_id}",
         headers={"access-token": get_token()}
     )
-
 # ==========================
-# SL CLEANUP
+# DB CLEANUP (AUTO FIX)
 # ==========================
-def get_live_sl(sec_id, forever_orders, ltp):
+def cleanup_db():
 
-    sl_orders = [
-        o for o in forever_orders
-        if str(o.get("securityId")) == str(sec_id)
-           and o.get("transactionType") == "SELL"
-           and o.get("orderStatus") in ["PENDING", "TRANSIT"]
-    ]
+    conn = sqlite3.connect(DB_FILE)
 
-    if not sl_orders:
-        return None
+    log("🧹 Cleaning DB...")
 
-    valid = []
+    # 1. Keep only latest trade per symbol
+    conn.execute("""
+        DELETE FROM trades
+        WHERE id NOT IN (
+            SELECT MAX(id)
+            FROM trades
+            GROUP BY symbol
+        )
+    """)
 
-    for o in sl_orders:
-        tp = float(o.get("triggerPrice", 0))
+    # 2. Remove orphan orders (no trade)
+    conn.execute("""
+        DELETE FROM orders
+        WHERE trade_id NOT IN (SELECT id FROM trades)
+    """)
 
-        if tp < ltp:
-            valid.append(o)
-        else:
-            cancel_order(o["orderId"])
+    # 3. Remove duplicate SL orders per trade
+    conn.execute("""
+        DELETE FROM orders
+        WHERE id NOT IN (
+            SELECT MAX(id)
+            FROM orders
+            WHERE type='SL'
+            GROUP BY trade_id
+        )
+        AND type='SL'
+    """)
 
-    if not valid:
-        return None
+    conn.commit()
+    conn.close()
 
-    valid.sort(key=lambda x: float(x.get("triggerPrice")), reverse=True)
-    keep = valid[0]
-
-    for o in valid[1:]:
-        cancel_order(o["orderId"])
-
-    log(f"✅ ACTIVE SL → {keep['triggerPrice']}")
-
-    return keep
-
-# ==========================
-# SL LOGIC
-# ==========================
-def calculate_sl(entry, ltp, prev):
-    base = entry * BASE_SL_PCT
-
-    if not prev:
-        return base
-
-    if ltp <= entry:
-        return base
-
-    profit = ltp - entry
-    new_sl = entry + profit * 0.5
-    new_sl = min(new_sl, ltp * 0.995)
-
-    return max(prev, new_sl)
-
+    log("✅ DB Cleaned")
 # ==========================
 # MAIN
 # ==========================
@@ -353,7 +354,7 @@ def run():
     log("\n🚀 START\n")
 
     init_db()
-
+    cleanup_db()
     positions = fetch_positions()
     forever_orders = fetch_forever_orders()
 
@@ -361,26 +362,40 @@ def run():
 
     trades = get_open_trades()
 
+    updated = 0
+
     for t in trades:
 
-        trade_id, symbol, sec_id, qty, entry, *_ = t
+        trade_id, symbol, sec_id, qty, entry, _, status = t
 
         ltp = get_ltp(symbol)
+
         if not ltp:
+            log(f"⚠️ LTP missing → {symbol}")
             continue
 
         log(f"\n➡️ {symbol} | Entry={entry} | LTP={ltp}")
 
-        live_sl = get_live_sl(sec_id, forever_orders, ltp)
+        sl_orders = get_sl_orders_from_dhan(sec_id, forever_orders)
 
-        prev_sl = None
-        order_id = None
+        # ===== CLEAN DUPLICATES =====
+        valid = []
+        for o in sl_orders:
+            tp = float(o.get("triggerPrice", 0))
 
-        if live_sl:
-            prev_sl = float(live_sl["triggerPrice"])
-            order_id = live_sl["orderId"]
+            if tp < ltp:
+                valid.append(o)
+            else:
+                cancel_order(o["orderId"])
 
-            upsert_sl(trade_id, order_id, prev_sl)
+        if len(valid) > 1:
+            valid.sort(key=lambda x: float(x.get("triggerPrice")), reverse=True)
+
+            for o in valid[1:]:
+                cancel_order(o["orderId"])
+
+        order_id = valid[0]["orderId"] if valid else None
+        prev_sl = float(valid[0]["triggerPrice"]) if valid else None
 
         new_sl = calculate_sl(entry, ltp, prev_sl)
 
@@ -389,14 +404,21 @@ def run():
         if not order_id:
             oid = place_sl(sec_id, qty, new_sl)
             if oid:
-                upsert_sl(trade_id, oid, new_sl)
+                updated += 1
+            continue
 
-        else:
-            if new_sl > prev_sl:
-                if modify_sl(order_id, qty, new_sl):
-                    upsert_sl(trade_id, order_id, new_sl)
+        if new_sl <= prev_sl:
+            continue
 
-    log("\n✅ DONE\n")
+        change_pct = (new_sl - prev_sl) / prev_sl if prev_sl else 1
+
+        if change_pct < MIN_TRAIL_PCT:
+            continue
+
+        if modify_sl(order_id, qty, new_sl):
+            updated += 1
+
+    log(f"\n✅ DONE | Updated: {updated}")
 
 
 if __name__ == "__main__":
