@@ -23,7 +23,12 @@ import sqlite3
 # ==========================
 # CONFIG
 # ==========================
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+if OPENAI_API_KEY:
+    client = OpenAI(api_key=OPENAI_API_KEY)
+else:
+    client = None
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -358,6 +363,9 @@ def build_pdf(images, path):
 # GPT (UPGRADED)
 # ==========================
 def gpt_decision(pdf_path):
+    if not client:
+        print("⚠️ OPENAI_API_KEY missing → Skipping GPT")
+        return json.dumps({"picks": []})
 
     file = client.files.create(file=open(pdf_path,"rb"), purpose="assistants")
 
