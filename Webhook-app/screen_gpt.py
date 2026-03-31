@@ -619,6 +619,10 @@ Type: {p['entry_type']}
 
         payload_size = len(short_cb.encode("utf-8"))
         print(f"📏 Callback Payload Size: {payload_size} bytes")
+        print("📦 Callback RAW STRING:")
+        print(short_cb)
+        print("📦 Callback REPR:")
+        print(repr(short_cb))
 
         buttons = [[{
             "text": "✅ Confirm Buy",
