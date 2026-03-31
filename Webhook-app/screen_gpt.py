@@ -572,7 +572,7 @@ def run():
         score = p.get("score", 0)
 
         # Ensure uniqueness with timestamp seconds
-        setup_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{s.replace('.NS','')}"
+        setup_id = f"{datetime.now().strftime('%M%S')}{s[:2]}"
 
         payload = {
             "setup_id": setup_id,
