@@ -599,7 +599,10 @@ Reason: {p['reason']}
 Type: {p['entry_type']}
 """
 
-        short_cb = f"BUY|{setup_id}"
+        short_cb = f"BUY|{setup_id}|{s}|{qty}|{entry}|{exit_price}|{target}|{strategy}|{timeframe}|{score}"
+
+        payload_size = len(short_cb.encode("utf-8"))
+        print(f"📏 Callback Payload Size: {payload_size} bytes")
 
         buttons = [[{
             "text": "✅ Confirm Buy",
@@ -612,7 +615,7 @@ Type: {p['entry_type']}
         print(buttons)
 
         print(f"📤 Sending Telegram alert for {s}")
-        print(f"📤 Callback (SHORT): {short_cb}")
+        print(f"📤 Callback (FULL): {short_cb}")
 
         send_message(msg, buttons)
 
