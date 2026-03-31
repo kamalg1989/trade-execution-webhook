@@ -62,6 +62,24 @@ def init_db():
     )
     """)
 
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS trade_setups (
+        setup_id TEXT PRIMARY KEY,
+        symbol TEXT,
+        qty INTEGER,
+        entry REAL,
+        sl REAL,
+        target REAL,
+        strategy TEXT,
+        timeframe TEXT,
+        score REAL,
+        status TEXT,
+        exit REAL,
+        pnl REAL,
+        updated_at TEXT
+    )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -478,11 +496,25 @@ def run():
 
         trade_id, symbol, sec_id, qty, entry, _, status = t
 
+        conn = sqlite3.connect(DB_FILE)
+
         ltp = get_ltp(symbol)
         if not ltp:
+            conn.close()
             continue
 
         log(f"{symbol} | Entry={entry} | LTP={ltp}")
+
+        # ===== UPDATE LIVE STATUS IN trade_setups =====
+        pnl = round(((ltp - entry) / entry) * 100, 2)
+
+        conn.execute("""
+            UPDATE trade_setups
+            SET pnl=?, updated_at=?, status='OPEN'
+            WHERE symbol=? AND status!='CLOSED'
+        """, (pnl, datetime.now().isoformat(), symbol))
+
+        conn.commit()
 
         orders = get_trade_orders(trade_id)
 
@@ -508,14 +540,11 @@ def run():
                 log(f"❌ REMOVE DB DUP → {symbol} {dup_id} @ {dup_sl}")
                 cancel_order(dup_id)
 
-            conn = sqlite3.connect(DB_FILE)
             conn.execute("""
                 DELETE FROM orders 
                 WHERE trade_id=? AND dhan_order_id!=?
             """, (trade_id, keep_order_id))
             conn.commit()
-            conn.close()
-
         else:
             log(f"⚠️ NO SL FOUND IN DB → {symbol}")
             keep_order_id = None
@@ -534,6 +563,14 @@ def run():
             if oid:
                 insert_order(trade_id, oid, sl)
 
+                conn.execute("""
+                    UPDATE trade_setups
+                    SET sl=?, updated_at=?
+                    WHERE symbol=? AND status!='CLOSED'
+                """, (sl, datetime.now().isoformat(), symbol))
+                conn.commit()
+
+            conn.close()
             continue
 
         # ==========================
@@ -546,8 +583,17 @@ def run():
         if new_sl > keep_sl:
             log(f"🔄 TRAIL SL → {symbol} {keep_sl} → {new_sl}")
             modify_sl(keep_order_id, qty, new_sl)
+
+            conn.execute("""
+                UPDATE trade_setups
+                SET sl=?, updated_at=?
+                WHERE symbol=? AND status!='CLOSED'
+            """, (new_sl, datetime.now().isoformat(), symbol))
+            conn.commit()
         else:
             log(f"⏭️ NO TRAIL → {symbol}")
+
+        conn.close()
 
     log("\n✅ DONE\n")
 

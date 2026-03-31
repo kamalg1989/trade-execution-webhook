@@ -8,6 +8,8 @@ import pandas as pd
 from flask import Flask, request
 import threading
 import time
+import sqlite3
+import json
 
 # ==========================
 # GLOBAL DEDUP STORAGE
@@ -28,6 +30,31 @@ GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN_CUSTOM")
 
 INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
+
+# ==========================
+# DB CONFIG & HELPER
+# ==========================
+DB_PATH = os.getenv("DB_PATH", "trades.db")
+
+def fetch_trade_setup(setup_id):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        cur.execute("SELECT * FROM trade_setups WHERE setup_id = ?", (setup_id,))
+        row = cur.fetchone()
+        conn.close()
+
+        if not row:
+            log("❌ Setup not found in DB:", setup_id)
+            return None
+
+        return dict(row)
+
+    except Exception as e:
+        log("❌ DB fetch error:", e)
+        return None
 
 # ==========================
 # LOGGER
@@ -139,24 +166,33 @@ def webhook():
 
     parts = query.get("data", "").split("|")
 
-    if len(parts) < 10:
+    if len(parts) < 2:
         send_telegram("❌ Invalid payload")
         return "OK"
 
     action = parts[0]
-    stock = parts[1]
-    qty = int(parts[2])
-    entry = float(parts[3])
-    sl = float(parts[4])
-    target = float(parts[5])
-    strategy = parts[6]
-    timeframe = parts[7]
-    score = float(parts[8])
-    setup_id = parts[9]
+    setup_id = parts[1]
+
+    trade = fetch_trade_setup(setup_id)
+
+    if not trade:
+        send_telegram(f"❌ Setup not found: {setup_id}")
+        return "OK"
+
+    stock = trade.get("symbol")
+    qty = int(trade.get("qty"))
+    entry = float(trade.get("entry"))
+    sl = float(trade.get("sl"))
+    target = float(trade.get("target"))
+    strategy = trade.get("strategy")
+    timeframe = trade.get("timeframe")
+    score = float(trade.get("score"))
+
+    log("🧾 DB TRADE:", trade)
 
     if action == "BUY":
 
-        key = f"{setup_id}_{stock}_{qty}"
+        key = setup_id
         now = time.time()
 
         # ✅ ORDER DEDUP (GitHub trigger protection)
