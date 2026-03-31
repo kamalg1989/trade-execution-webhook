@@ -53,8 +53,6 @@ def save_trade(payload):
             entry REAL,
             sl REAL,
             target REAL,
-            strategy TEXT,
-            timeframe TEXT,
             score REAL,
 
             status TEXT DEFAULT 'PENDING',
@@ -88,9 +86,9 @@ def save_trade(payload):
 
     conn.execute("""
         INSERT OR REPLACE INTO trade_setups
-        (setup_id, symbol, qty, entry, sl, target, strategy, timeframe, score,
+        (setup_id, symbol, qty, entry, sl, target, score,
          status, risk, reward, rr_ratio)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         payload["setup_id"],
         payload["symbol"],
@@ -98,8 +96,6 @@ def save_trade(payload):
         payload["entry"],
         payload["sl"],
         payload["target"],
-        payload["strategy"],
-        payload["timeframe"],
         payload["score"],
         "PENDING",
         payload.get("risk", 0),
@@ -573,8 +569,6 @@ def run():
 
         rr_ratio = round(reward / risk, 2) if risk > 0 else 0
 
-        strategy = "BREAKOUT_BASE"
-        timeframe = "SWING"
         score = p.get("score", 0)
 
         # Ensure uniqueness with timestamp seconds
@@ -587,8 +581,6 @@ def run():
             "entry": entry,
             "sl": exit_price,
             "target": target,
-            "strategy": strategy,
-            "timeframe": timeframe,
             "score": score,
             "risk": risk,
             "reward": reward,
@@ -615,7 +607,7 @@ Reason: {p['reason']}
 Type: {p['entry_type']}
 """
 
-        short_cb = f"BUY|{setup_id}|{s}|{qty}|{entry}|{exit_price}|{target}|{strategy}|{timeframe}|{score}"
+        short_cb = f"BUY|{setup_id}|{s}|{qty}|{entry}|{exit_price}|{target}|{score}"
 
         payload_size = len(short_cb.encode("utf-8"))
         print(f"📏 Callback Payload Size: {payload_size} bytes")
