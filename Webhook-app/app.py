@@ -8,8 +8,6 @@ import pandas as pd
 from flask import Flask, request
 import threading
 import time
-import sqlite3
-import json
 
 # ==========================
 # GLOBAL DEDUP STORAGE
@@ -30,31 +28,6 @@ GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN_CUSTOM")
 
 INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
-
-# ==========================
-# DB CONFIG & HELPER
-# ==========================
-DB_PATH = os.getenv("DB_PATH", "trades.db")
-
-def fetch_trade_setup(setup_id):
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-
-        cur.execute("SELECT * FROM trade_setups WHERE setup_id = ?", (setup_id,))
-        row = cur.fetchone()
-        conn.close()
-
-        if not row:
-            log("❌ Setup not found in DB:", setup_id)
-            return None
-
-        return dict(row)
-
-    except Exception as e:
-        log("❌ DB fetch error:", e)
-        return None
 
 # ==========================
 # LOGGER
@@ -112,8 +85,7 @@ def send_telegram(msg):
 # ==========================
 # 🚀 GITHUB TRIGGER
 # ==========================
-def trigger_github_trade(stock, qty, entry, sl, target, strategy, timeframe, score, setup_id):
-
+def trigger_github_trade(payload):
     url = f"https://api.github.com/repos/{GITHUB_REPO}/dispatches"
 
     headers = {
@@ -121,25 +93,14 @@ def trigger_github_trade(stock, qty, entry, sl, target, strategy, timeframe, sco
         "Authorization": f"token {GITHUB_TOKEN}"
     }
 
-    payload = {
+    data = {
         "event_type": "trade_entry",
-        "client_payload": {
-            "symbol": stock.replace(".NS", ""),
-            "qty": qty,
-            "entry": entry,
-            "sl": sl,
-            "target": target,
-            "strategy": strategy,
-            "timeframe": timeframe,
-            "score": score,
-            "setup_id": setup_id
-        }
+        "client_payload": payload
     }
 
-    r = requests.post(url, json=payload, headers=headers)
+    r = requests.post(url, json=data, headers=headers)
 
     log("🚀 GITHUB TRIGGER:", r.status_code, r.text)
-
     return r.status_code == 204
 
 # ==========================
@@ -166,29 +127,18 @@ def webhook():
 
     parts = query.get("data", "").split("|")
 
-    if len(parts) < 2:
+    if len(parts) < 8:
         send_telegram("❌ Invalid payload")
         return "OK"
 
-    action = parts[0]
-    setup_id = parts[1]
+    action, setup_id, symbol, qty, entry, sl, target, score = parts
 
-    trade = fetch_trade_setup(setup_id)
-
-    if not trade:
-        send_telegram(f"❌ Setup not found: {setup_id}")
-        return "OK"
-
-    stock = trade.get("symbol")
-    qty = int(trade.get("qty"))
-    entry = float(trade.get("entry"))
-    sl = float(trade.get("sl"))
-    target = float(trade.get("target"))
-    strategy = trade.get("strategy")
-    timeframe = trade.get("timeframe")
-    score = float(trade.get("score"))
-
-    log("🧾 DB TRADE:", trade)
+    stock = symbol
+    qty = int(qty)
+    entry = float(entry)
+    sl = float(sl)
+    target = float(target)
+    score = float(score)
 
     if action == "BUY":
 
@@ -205,10 +155,15 @@ def webhook():
             PROCESSED_ORDERS[key] = now
 
         # 🚀 SINGLE trigger (FIXED)
-        success = trigger_github_trade(
-            stock, qty, entry, sl, target,
-            strategy, timeframe, score, setup_id
-        )
+        success = trigger_github_trade({
+            "setup_id": setup_id,
+            "symbol": stock.replace(".NS", ""),
+            "qty": qty,
+            "entry": entry,
+            "sl": sl,
+            "target": target,
+            "score": score
+        })
 
         if success:
             send_telegram(f"🟢 SENT: {stock} | SL={sl} | TGT={target}")
