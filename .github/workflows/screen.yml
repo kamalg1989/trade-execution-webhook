@@ -26,7 +26,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install -r requirements.txt
+        pip install -r Webhook-app/requirements.txt
 
     - name: Run script
       env:

@@ -1,5 +1,10 @@
+pandas
+yfinance
+mplfinance
+matplotlib
+openai
+reportlab
 flask
 requests
-pandas
 pyotp
 gunicorn
