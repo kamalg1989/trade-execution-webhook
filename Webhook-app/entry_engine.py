@@ -83,8 +83,6 @@ def init_db():
         entry_price REAL,
         sl_price REAL,
         target_price REAL,
-        strategy TEXT,
-        timeframe TEXT,
         score REAL,
         setup_id TEXT,
         order_id TEXT,
@@ -96,12 +94,12 @@ def init_db():
     conn.close()
 
 
-def insert_trade(symbol, sec_id, qty, entry, sl, target, strategy, timeframe, score, setup_id, order_id):
+def insert_trade(symbol, sec_id, qty, entry, sl, target, score, setup_id, order_id):
     conn = sqlite3.connect(DB_FILE)
     conn.execute("""
     INSERT INTO trades 
-    (symbol, security_id, qty, entry_price, sl_price, target_price, strategy, timeframe, score, setup_id, order_id, status, entry_time)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (symbol, security_id, qty, entry_price, sl_price, target_price, score, setup_id, order_id, status, entry_time)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         symbol,
         sec_id,
@@ -109,8 +107,6 @@ def insert_trade(symbol, sec_id, qty, entry, sl, target, strategy, timeframe, sc
         entry,
         sl,
         target,
-        strategy,
-        timeframe,
         score,
         setup_id,
         order_id,
@@ -221,8 +217,6 @@ def run():
     entry = float(os.getenv("ENTRY", 0))
     sl = float(os.getenv("SL", 0))
     target = float(os.getenv("TARGET", 0))
-    strategy = os.getenv("STRATEGY", "")
-    timeframe = os.getenv("TIMEFRAME", "")
     score = float(os.getenv("SCORE", 0))
     setup_id = os.getenv("SETUP_ID", "")
 
@@ -236,7 +230,7 @@ def run():
         log("⚠️ Duplicate trade blocked")
         return
 
-    log(symbol, qty, entry, sl, target, strategy, timeframe, score)
+    log(symbol, qty, entry, sl, target, score)
 
     # ✅ mapping
     sec_id = get_security_id(symbol)
@@ -254,7 +248,7 @@ def run():
     if isinstance(res, dict) and res.get("orderId"):
         insert_trade(
             symbol, sec_id, qty, entry, sl, target,
-            strategy, timeframe, score, setup_id,
+            score, setup_id,
             res["orderId"]
         )
         log("✅ TRADE SAVED")
