@@ -197,7 +197,37 @@ def fetch(stock):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    return df[['Open','High','Low','Close','Volume']].dropna()
+    df = df[['Open','High','Low','Close','Volume']].dropna()
+
+    # Check latest candle completeness
+    if not df.empty:
+        from datetime import date
+
+        last_row = df.iloc[-1]
+        last_date = df.index[-1].date()
+
+        # Detect incomplete candle (volume == 0 OR OHLC same OR NaN)
+        is_incomplete = (
+            pd.isna(last_row['Close']) or
+            last_row['Volume'] == 0 or
+            (last_row['High'] == last_row['Low'] == last_row['Open'] == last_row['Close'])
+        )
+
+        if is_incomplete:
+            print(f"⚠️ Incomplete candle detected for {stock} on {last_date} → dropping it")
+            df = df.iloc[:-1]
+        else:
+            print(f"✅ Complete candle confirmed for {stock}: {last_date}")
+
+        # Final freshness check
+        if not df.empty:
+            final_date = df.index[-1].date()
+            if final_date < date.today():
+                print(f"⚠️ Latest usable candle is older for {stock}: {final_date}")
+            else:
+                print(f"✅ Latest usable candle is today for {stock}: {final_date}")
+
+    return df
 
 
 def to_weekly(df):
