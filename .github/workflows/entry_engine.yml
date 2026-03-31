@@ -23,11 +23,17 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
 
-      - name: Prepare DB
+      - name: Prepare DB (use repo DB)
         run: |
           mkdir -p Webhook-app
-          touch Webhook-app/trades.db
+          if [ -f trades.db ]; then
+            cp trades.db Webhook-app/trades.db
+          else
+            touch Webhook-app/trades.db
+          fi
 
       - uses: actions/setup-python@v4
         with:
@@ -58,6 +64,7 @@ jobs:
       - name: Set remote
         run: |
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+          git pull origin main --rebase || true
 
       - name: Commit DB
         run: |
@@ -66,6 +73,7 @@ jobs:
 
           git pull origin main --rebase || true
 
-          git add Webhook-app/trades.db
+          cp Webhook-app/trades.db trades.db
+          git add trades.db
           git diff --cached --quiet || git commit -m "entry added"
           git push

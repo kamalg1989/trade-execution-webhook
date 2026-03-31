@@ -40,7 +40,7 @@ CAPITAL = 300000
 # DB
 # ==========================
 def get_conn():
-    return sqlite3.connect("trades.db")
+    return sqlite3.connect("Webhook-app/trades.db")
 
 
 def save_trade(payload):
