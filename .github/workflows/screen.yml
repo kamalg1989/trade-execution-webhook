@@ -35,7 +35,7 @@ jobs:
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
         GITHUB_TOKEN_CUSTOM: ${{ secrets.GITHUB_TOKEN_CUSTOM }}
-      run: python screen_gpt.py
+      run: python Webhook-app/screen_gpt.py
 
     - name: Upload Results
       if: always()
