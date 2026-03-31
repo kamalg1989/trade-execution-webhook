@@ -62,24 +62,6 @@ def init_db():
     )
     """)
 
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS trade_setups (
-        setup_id TEXT PRIMARY KEY,
-        symbol TEXT,
-        qty INTEGER,
-        entry REAL,
-        sl REAL,
-        target REAL,
-        strategy TEXT,
-        timeframe TEXT,
-        score REAL,
-        status TEXT,
-        exit REAL,
-        pnl REAL,
-        updated_at TEXT
-    )
-    """)
-
     conn.commit()
     conn.close()
 
@@ -505,17 +487,6 @@ def run():
 
         log(f"{symbol} | Entry={entry} | LTP={ltp}")
 
-        # ===== UPDATE LIVE STATUS IN trade_setups =====
-        pnl = round(((ltp - entry) / entry) * 100, 2)
-
-        conn.execute("""
-            UPDATE trade_setups
-            SET pnl=?, updated_at=?, status='OPEN'
-            WHERE symbol=? AND status!='CLOSED'
-        """, (pnl, datetime.now().isoformat(), symbol))
-
-        conn.commit()
-
         orders = get_trade_orders(trade_id)
 
         # ==========================
@@ -563,13 +534,6 @@ def run():
             if oid:
                 insert_order(trade_id, oid, sl)
 
-                conn.execute("""
-                    UPDATE trade_setups
-                    SET sl=?, updated_at=?
-                    WHERE symbol=? AND status!='CLOSED'
-                """, (sl, datetime.now().isoformat(), symbol))
-                conn.commit()
-
             conn.close()
             continue
 
@@ -584,12 +548,6 @@ def run():
             log(f"🔄 TRAIL SL → {symbol} {keep_sl} → {new_sl}")
             modify_sl(keep_order_id, qty, new_sl)
 
-            conn.execute("""
-                UPDATE trade_setups
-                SET sl=?, updated_at=?
-                WHERE symbol=? AND status!='CLOSED'
-            """, (new_sl, datetime.now().isoformat(), symbol))
-            conn.commit()
         else:
             log(f"⏭️ NO TRAIL → {symbol}")
 
