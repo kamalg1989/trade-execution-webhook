@@ -70,6 +70,22 @@ def save_trade(payload):
         )
     """)
 
+    # Ensure new columns exist (schema migration)
+    try:
+        conn.execute("ALTER TABLE trade_setups ADD COLUMN risk REAL")
+    except:
+        pass
+
+    try:
+        conn.execute("ALTER TABLE trade_setups ADD COLUMN reward REAL")
+    except:
+        pass
+
+    try:
+        conn.execute("ALTER TABLE trade_setups ADD COLUMN rr_ratio REAL")
+    except:
+        pass
+
     conn.execute("""
         INSERT OR REPLACE INTO trade_setups
         (setup_id, symbol, qty, entry, sl, target, strategy, timeframe, score,
