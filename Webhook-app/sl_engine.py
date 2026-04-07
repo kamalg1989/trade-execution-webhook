@@ -18,7 +18,52 @@ DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
 DHAN_PIN = os.getenv("DHAN_PIN")
 DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
 
+
 DB_FILE = "Webhook-app/trades.db"
+
+# ==========================
+# DB MIGRATION (SAFE)
+# ==========================
+def run_migration():
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+
+    def column_exists(table, column):
+        cur.execute(f"PRAGMA table_info({table})")
+        return column in [row[1] for row in cur.fetchall()]
+
+    # trades table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS trades (
+        symbol TEXT PRIMARY KEY,
+        security_id TEXT,
+        qty INTEGER,
+        entry_price REAL,
+        status TEXT
+    )
+    """)
+
+    # orders table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS orders (
+        symbol TEXT,
+        dhan_order_id TEXT,
+        trigger_price REAL,
+        status TEXT
+    )
+    """)
+
+    # ensure missing columns (backward compatibility)
+    for col in ["symbol","security_id","qty","entry_price","status"]:
+        if not column_exists("trades", col):
+            cur.execute(f"ALTER TABLE trades ADD COLUMN {col}")
+
+    for col in ["symbol","dhan_order_id","trigger_price","status"]:
+        if not column_exists("orders", col):
+            cur.execute(f"ALTER TABLE orders ADD COLUMN {col}")
+
+    conn.commit()
+    conn.close()
 
 BASE_SL_PCT = 0.92
 
@@ -271,7 +316,7 @@ def modify_sl(order_id, qty, trigger):
 def run():
 
     log("\n🚀 SL ENGINE V2 START\n")
-
+    run_migration()
     init_db()
 
     positions = fetch_positions()
