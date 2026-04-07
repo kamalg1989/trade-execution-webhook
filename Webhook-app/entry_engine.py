@@ -174,8 +174,14 @@ def get_token():
 # ==========================
 def place_order(sec_id, qty, entry):
 
-    trigger = round(entry, 2)
-    price = round(entry * 1.002, 2)  # must be > trigger
+    def round_to_tick(value):
+        return round(round(value / 0.05) * 0.05, 2)
+
+    trigger = round_to_tick(entry)
+    price = round_to_tick(entry * 1.002)  # must be > trigger
+
+    if price <= trigger:
+        price = round_to_tick(trigger + 0.05)
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
