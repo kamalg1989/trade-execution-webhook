@@ -7,7 +7,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'Webhook-app/**'
+      - 'Webhook-app/screen_gpt.py'
       - '.github/workflows/**'
   schedule:
     - cron: '0 23 * * 0-4'   # ✅ 4:30 AM IST (Mon–Fri)
