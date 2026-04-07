@@ -17,13 +17,13 @@ jobs:
       DHAN_TOTP_SECRET: ${{ secrets.DHAN_TOTP_SECRET }}
 
 
-  SYMBOL: ${{ github.event.client_payload.symbol }}
-  QTY: ${{ github.event.client_payload.qty }}
-  ENTRY: ${{ github.event.client_payload.entry }}
-  SL: ${{ github.event.client_payload.sl }}
-  TARGET: ${{ github.event.client_payload.target }}
-  SCORE: ${{ github.event.client_payload.score }}
-  SETUP_ID: ${{ github.event.client_payload.setup_id }}
+      SYMBOL: ${{ github.event.client_payload.symbol }}
+      QTY: ${{ github.event.client_payload.qty }}
+      ENTRY: ${{ github.event.client_payload.entry }}
+      SL: ${{ github.event.client_payload.sl }}
+      TARGET: ${{ github.event.client_payload.target }}
+      SCORE: ${{ github.event.client_payload.score }}
+      SETUP_ID: ${{ github.event.client_payload.setup_id }}
 
     steps:
       - uses: actions/checkout@v3
