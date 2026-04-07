@@ -266,8 +266,10 @@ def run():
         log("❌ Invalid input values")
         return
 
-    if sl <= 0:
-        log("⚠️ SL missing, continuing without SL validation")
+    # ❗ STRICT VALIDATION: SL & TARGET must be present
+    if sl <= 0 or target <= 0:
+        log("❌ SL or TARGET missing → Order blocked")
+        return
 
     # ✅ duplicate protection
     if is_duplicate_trade(setup_id):
