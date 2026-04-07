@@ -244,14 +244,12 @@ def run():
         except:
             return 0.0
 
-    qty = to_int(os.getenv("QTY") or 0)
-    entry = to_float(os.getenv("ENTRY") or 0)
-
-    # 🔧 HARD CODE (fallback if not passed)
-    sl = to_float(os.getenv("SL") or 158.22)
-    target = to_float(os.getenv("TARGET") or 168.63)
-    score = to_float(os.getenv("SCORE") or 7.5)
-    setup_id = os.getenv("SETUP_ID") or "DEFAULT_SETUP"
+    qty = to_int(os.getenv("QTY"))
+    entry = to_float(os.getenv("ENTRY"))
+    sl = to_float(os.getenv("SL"))
+    target = to_float(os.getenv("TARGET"))
+    score = to_float(os.getenv("SCORE"))
+    setup_id = os.getenv("SETUP_ID", "")
 
     log("DEBUG INPUT →", {
         "symbol": symbol,
@@ -262,8 +260,6 @@ def run():
         "score": score,
         "setup_id": setup_id
     })
-    if sl > 0 and target > 0:
-        log("✅ Using SL/TARGET:", sl, target)
 
     # ✅ validation
     if not symbol or qty <= 0 or entry <= 0:
