@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 import time
 import yfinance as yf
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # ==========================
 # CONFIG
@@ -44,12 +44,32 @@ def generate_token():
             "dhanClientId": DHAN_CLIENT_ID,
             "pin": DHAN_PIN,
             "totp": totp.now()
-        }
+        },
+        timeout=10
     )
+
+    if r.status_code != 200:
+        raise Exception(f"Token API failed: {r.text}")
 
     data = r.json()
 
-    TOKEN_EXPIRY = datetime.fromisoformat(data["expiryTime"]).replace(tzinfo=timezone.utc)
+    # DEBUG
+    print("TOKEN RESPONSE:", data)
+
+    if "accessToken" not in data:
+        raise Exception(f"Invalid token response: {data}")
+
+    expiry = data.get("expiryTime")
+
+    if expiry:
+        try:
+            TOKEN_EXPIRY = datetime.fromisoformat(expiry).replace(tzinfo=timezone.utc)
+        except Exception:
+            TOKEN_EXPIRY = datetime.now(timezone.utc) + timedelta(minutes=10)
+    else:
+        # fallback if expiry not provided
+        TOKEN_EXPIRY = datetime.now(timezone.utc) + timedelta(minutes=10)
+
     return data["accessToken"]
 
 
@@ -66,20 +86,29 @@ def get_token():
 # DHAN FETCH
 # ==========================
 def fetch_positions():
-    r = requests.get("https://api.dhan.co/v2/positions",
-                     headers={"access-token": get_token()})
+    r = requests.get(
+        "https://api.dhan.co/v2/positions",
+        headers={"access-token": get_token()},
+        timeout=10
+    )
     return r.json() if r.status_code == 200 else []
 
 
 def fetch_holdings():
-    r = requests.get("https://api.dhan.co/v2/holdings",
-                     headers={"access-token": get_token()})
+    r = requests.get(
+        "https://api.dhan.co/v2/holdings",
+        headers={"access-token": get_token()},
+        timeout=10
+    )
     return r.json() if r.status_code == 200 else []
 
 
 def fetch_orders():
-    r = requests.get("https://api.dhan.co/v2/forever/orders",
-                     headers={"access-token": get_token()})
+    r = requests.get(
+        "https://api.dhan.co/v2/forever/orders",
+        headers={"access-token": get_token()},
+        timeout=10
+    )
     return r.json() if r.status_code == 200 else []
 
 
@@ -200,7 +229,8 @@ def place_sl(sec_id, qty, trigger):
     requests.post(
         "https://api.dhan.co/v2/forever/orders",
         json=payload,
-        headers={"access-token": get_token()}
+        headers={"access-token": get_token()},
+        timeout=10
     )
 
 
@@ -217,7 +247,8 @@ def modify_sl(order_id, qty, trigger):
     requests.put(
         f"https://api.dhan.co/v2/forever/orders/{order_id}",
         json=payload,
-        headers={"access-token": get_token()}
+        headers={"access-token": get_token()},
+        timeout=10
     )
 
 
