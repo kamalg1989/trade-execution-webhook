@@ -93,6 +93,10 @@ def trigger_github_trade(payload):
         "Authorization": f"token {GITHUB_TOKEN}"
     }
 
+    if not payload.get("sl") or not payload.get("target"):
+        log("❌ BLOCKED: SL/Target missing in payload", payload)
+        return False
+
     data = {
         "event_type": "trade_entry",
         "client_payload": payload
@@ -126,6 +130,7 @@ def webhook():
         PROCESSED_CALLBACKS.add(callback_id)
 
     parts = query.get("data", "").split("|")
+    log("RAW CALLBACK:", query.get("data"))
 
     if len(parts) < 8:
         send_telegram("❌ Invalid payload")
@@ -133,12 +138,26 @@ def webhook():
 
     action, setup_id, symbol, qty, entry, sl, target, score = parts
 
+    def safe_float(x):
+        try:
+            return float(x)
+        except:
+            return None
+
     stock = symbol
     qty = int(qty)
-    entry = float(entry)
-    sl = float(sl)
-    target = float(target)
-    score = float(score)
+    entry = safe_float(entry)
+    sl = safe_float(sl)
+    target = safe_float(target)
+    score = safe_float(score)
+
+    if not setup_id:
+        send_telegram(f"❌ Missing setup_id for {stock}")
+        return "OK"
+
+    if sl is None or target is None:
+        send_telegram(f"❌ Missing SL/Target: {stock}")
+        return "OK"
 
     if action == "BUY":
 
