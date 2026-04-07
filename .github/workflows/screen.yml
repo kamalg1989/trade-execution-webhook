@@ -6,6 +6,9 @@ permissions:
 on:
   push:
     branches: [main]
+    paths:
+      - 'Webhook-app/**'
+      - '.github/workflows/**'
   schedule:
     - cron: '0 23 * * 0-4'   # ✅ 4:30 AM IST (Mon–Fri)
   workflow_dispatch:
