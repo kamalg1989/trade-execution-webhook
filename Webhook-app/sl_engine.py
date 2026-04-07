@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 SL ENGINE V2 (STATE-DRIVEN - FINAL)
+# 🚀 SL ENGINE V3 (ALIGNED + STABLE)
 # ==============================================
 
 import os
@@ -18,52 +18,7 @@ DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
 DHAN_PIN = os.getenv("DHAN_PIN")
 DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
 
-
 DB_FILE = "Webhook-app/trades.db"
-
-# ==========================
-# DB MIGRATION (SAFE)
-# ==========================
-def run_migration():
-    conn = sqlite3.connect(DB_FILE)
-    cur = conn.cursor()
-
-    def column_exists(table, column):
-        cur.execute(f"PRAGMA table_info({table})")
-        return column in [row[1] for row in cur.fetchall()]
-
-    # trades table
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS trades (
-        symbol TEXT PRIMARY KEY,
-        security_id TEXT,
-        qty INTEGER,
-        entry_price REAL,
-        status TEXT
-    )
-    """)
-
-    # orders table
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS orders (
-        symbol TEXT,
-        dhan_order_id TEXT,
-        trigger_price REAL,
-        status TEXT
-    )
-    """)
-
-    # ensure missing columns (backward compatibility)
-    for col in ["symbol","security_id","qty","entry_price","status"]:
-        if not column_exists("trades", col):
-            cur.execute(f"ALTER TABLE trades ADD COLUMN {col}")
-
-    for col in ["symbol","dhan_order_id","trigger_price","status"]:
-        if not column_exists("orders", col):
-            cur.execute(f"ALTER TABLE orders ADD COLUMN {col}")
-
-    conn.commit()
-    conn.close()
 
 BASE_SL_PCT = 0.92
 
@@ -76,37 +31,6 @@ def log(*args):
 
 
 # ==========================
-# DB INIT
-# ==========================
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS trades (
-        id INTEGER PRIMARY KEY,
-        symbol TEXT,
-        security_id TEXT,
-        qty INTEGER,
-        entry_price REAL,
-        status TEXT
-    )
-    """)
-
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS orders (
-        id INTEGER PRIMARY KEY,
-        symbol TEXT,
-        dhan_order_id TEXT,
-        trigger_price REAL,
-        status TEXT
-    )
-    """)
-
-    conn.commit()
-    conn.close()
-
-
-# ==========================
 # TOKEN
 # ==========================
 def generate_token():
@@ -114,26 +38,19 @@ def generate_token():
 
     totp = pyotp.TOTP(DHAN_TOTP_SECRET)
 
-    for _ in range(3):
-        r = requests.post(
-            "https://auth.dhan.co/app/generateAccessToken",
-            params={
-                "dhanClientId": DHAN_CLIENT_ID,
-                "pin": DHAN_PIN,
-                "totp": totp.now()
-            },
-            timeout=10
-        )
+    r = requests.post(
+        "https://auth.dhan.co/app/generateAccessToken",
+        params={
+            "dhanClientId": DHAN_CLIENT_ID,
+            "pin": DHAN_PIN,
+            "totp": totp.now()
+        }
+    )
 
-        data = r.json()
+    data = r.json()
 
-        if "accessToken" in data:
-            TOKEN_EXPIRY = datetime.fromisoformat(data["expiryTime"]).replace(tzinfo=timezone.utc)
-            return data["accessToken"]
-
-        time.sleep(2)
-
-    raise Exception("Token failed")
+    TOKEN_EXPIRY = datetime.fromisoformat(data["expiryTime"]).replace(tzinfo=timezone.utc)
+    return data["accessToken"]
 
 
 def get_token():
@@ -150,35 +67,35 @@ def get_token():
 # ==========================
 def fetch_positions():
     r = requests.get("https://api.dhan.co/v2/positions",
-                     headers={"access-token": get_token()}, timeout=10)
+                     headers={"access-token": get_token()})
     return r.json() if r.status_code == 200 else []
 
 
 def fetch_holdings():
     r = requests.get("https://api.dhan.co/v2/holdings",
-                     headers={"access-token": get_token()}, timeout=10)
+                     headers={"access-token": get_token()})
     return r.json() if r.status_code == 200 else []
 
 
 def fetch_orders():
     r = requests.get("https://api.dhan.co/v2/forever/orders",
-                     headers={"access-token": get_token()}, timeout=10)
+                     headers={"access-token": get_token()})
     return r.json() if r.status_code == 200 else []
 
 
 # ==========================
-# STATE SYNC
+# SYNC TRADES
 # ==========================
-def sync_trades_with_dhan(positions, holdings):
+def sync_trades(positions, holdings):
 
     conn = sqlite3.connect(DB_FILE)
 
-    active_symbols = set()
+    active = set()
 
     for p in positions:
         if int(p.get("netQty", 0)) > 0:
             sym = p["tradingSymbol"]
-            active_symbols.add(sym)
+            active.add(sym)
 
             conn.execute("""
             INSERT OR REPLACE INTO trades(symbol, security_id, qty, entry_price, status)
@@ -188,7 +105,7 @@ def sync_trades_with_dhan(positions, holdings):
     for h in holdings:
         if int(h.get("totalQty", 0)) > 0:
             sym = h["tradingSymbol"]
-            active_symbols.add(sym)
+            active.add(sym)
 
             conn.execute("""
             INSERT OR REPLACE INTO trades(symbol, security_id, qty, entry_price, status)
@@ -198,15 +115,18 @@ def sync_trades_with_dhan(positions, holdings):
     rows = conn.execute("SELECT symbol FROM trades WHERE status='OPEN'").fetchall()
 
     for (sym,) in rows:
-        if sym not in active_symbols:
-            log(f"🔒 Closing trade → {sym}")
+        if sym not in active:
+            log(f"🔒 Closing → {sym}")
             conn.execute("UPDATE trades SET status='CLOSED' WHERE symbol=?", (sym,))
 
     conn.commit()
     conn.close()
 
 
-def sync_orders_with_dhan(dhan_orders):
+# ==========================
+# SYNC ORDERS
+# ==========================
+def sync_orders(dhan_orders):
 
     conn = sqlite3.connect(DB_FILE)
 
@@ -235,34 +155,32 @@ def sync_orders_with_dhan(dhan_orders):
 # ==========================
 def get_ltp(symbol):
     try:
-        data = yf.Ticker(symbol + ".NS")
-        return round(data.fast_info["lastPrice"], 2)
+        return yf.Ticker(symbol + ".NS").fast_info["lastPrice"]
     except:
         return None
 
 
 # ==========================
-# SL CALC
+# SL LOGIC
 # ==========================
 def calculate_sl(entry, ltp, current_sl):
 
     base = entry * BASE_SL_PCT
 
-    if not current_sl:
+    if current_sl is None:
         return base
 
     if ltp <= entry:
         return base
 
     profit = ltp - entry
-    new_sl = entry + profit * 0.5
-    new_sl = min(new_sl, ltp * 0.995)
+    trail = entry + (profit * 0.5)
 
-    return max(current_sl, new_sl)
+    return max(current_sl, min(trail, ltp * 0.995))
 
 
 # ==========================
-# ORDER API
+# ORDER ACTIONS
 # ==========================
 def place_sl(sec_id, qty, trigger):
 
@@ -279,15 +197,11 @@ def place_sl(sec_id, qty, trigger):
         "triggerPrice": trigger
     }
 
-    r = requests.post("https://api.dhan.co/v2/forever/orders",
-                      json=payload,
-                      headers={"access-token": get_token()},
-                      timeout=10)
-
-    if r.status_code == 200:
-        return r.json().get("orderId")
-
-    return None
+    requests.post(
+        "https://api.dhan.co/v2/forever/orders",
+        json=payload,
+        headers={"access-token": get_token()}
+    )
 
 
 def modify_sl(order_id, qty, trigger):
@@ -300,14 +214,11 @@ def modify_sl(order_id, qty, trigger):
         "triggerPrice": trigger
     }
 
-    r = requests.put(
+    requests.put(
         f"https://api.dhan.co/v2/forever/orders/{order_id}",
         json=payload,
-        headers={"access-token": get_token()},
-        timeout=10
+        headers={"access-token": get_token()}
     )
-
-    return r.status_code == 200
 
 
 # ==========================
@@ -315,21 +226,26 @@ def modify_sl(order_id, qty, trigger):
 # ==========================
 def run():
 
-    log("\n🚀 SL ENGINE V2 START\n")
-    run_migration()
-    init_db()
+    log("\n🚀 SL ENGINE START\n")
 
     positions = fetch_positions()
     holdings = fetch_holdings()
     orders = fetch_orders()
 
-    sync_trades_with_dhan(positions, holdings)
-    sync_orders_with_dhan(orders)
+    sync_trades(positions, holdings)
+    sync_orders(orders)
 
     conn = sqlite3.connect(DB_FILE)
 
-    trades = conn.execute("SELECT symbol, security_id, qty, entry_price FROM trades WHERE status='OPEN'").fetchall()
-    order_rows = conn.execute("SELECT symbol, dhan_order_id, trigger_price FROM orders").fetchall()
+    trades = conn.execute("""
+        SELECT symbol, security_id, qty, entry_price
+        FROM trades WHERE status='OPEN'
+    """).fetchall()
+
+    order_rows = conn.execute("""
+        SELECT symbol, dhan_order_id, trigger_price
+        FROM orders
+    """).fetchall()
 
     order_map = {o[0]: o for o in order_rows}
 
@@ -344,18 +260,16 @@ def run():
 
         new_sl = calculate_sl(entry, ltp, current_sl)
 
-        log(f"{sym} | LTP={ltp} | SL={current_sl} → {new_sl}")
+        log(f"{sym} | LTP={ltp} | SL {current_sl} → {new_sl}")
 
         if not existing:
             log(f"🆕 Place SL → {sym}")
             place_sl(sec_id, qty, new_sl)
             continue
 
-        order_id = existing[1]
-
         if new_sl > current_sl:
             log(f"🔄 Trail SL → {sym}")
-            modify_sl(order_id, qty, new_sl)
+            modify_sl(existing[1], qty, new_sl)
 
     conn.close()
 
