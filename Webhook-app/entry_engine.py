@@ -219,17 +219,43 @@ def run():
     init_db()
 
     symbol = os.getenv("SYMBOL")
-    qty = int(os.getenv("QTY", 0))
-    entry = float(os.getenv("ENTRY", 0))
-    sl = float(os.getenv("SL", 0))
-    target = float(os.getenv("TARGET", 0))
-    score = float(os.getenv("SCORE", 0))
+
+    def to_int(val):
+        try:
+            return int(val)
+        except:
+            return 0
+
+    def to_float(val):
+        try:
+            return float(val)
+        except:
+            return 0.0
+
+    qty = to_int(os.getenv("QTY"))
+    entry = to_float(os.getenv("ENTRY"))
+    sl = to_float(os.getenv("SL"))
+    target = to_float(os.getenv("TARGET"))
+    score = to_float(os.getenv("SCORE"))
     setup_id = os.getenv("SETUP_ID", "")
 
+    log("DEBUG INPUT →", {
+        "symbol": symbol,
+        "qty": qty,
+        "entry": entry,
+        "sl": sl,
+        "target": target,
+        "score": score,
+        "setup_id": setup_id
+    })
+
     # ✅ validation
-    if not symbol or qty <= 0 or entry <= 0 or sl <= 0:
+    if not symbol or qty <= 0 or entry <= 0:
         log("❌ Invalid input values")
         return
+
+    if sl <= 0:
+        log("⚠️ SL missing, continuing without SL validation")
 
     # ✅ duplicate protection
     if is_duplicate_trade(setup_id):
