@@ -118,7 +118,19 @@ def insert_trade(symbol, sec_id, qty, entry, sl, target, score, setup_id, order_
 
 
 def is_duplicate_trade(setup_id):
+    if not setup_id:
+        return False
+
     conn = sqlite3.connect(DB_FILE)
+
+    # check if column exists
+    cols = conn.execute("PRAGMA table_info(trades)").fetchall()
+    col_names = [c[1] for c in cols]
+
+    if "setup_id" not in col_names:
+        # auto-migrate (add column safely)
+        conn.execute("ALTER TABLE trades ADD COLUMN setup_id TEXT")
+        conn.commit()
 
     row = conn.execute("""
         SELECT id FROM trades 
