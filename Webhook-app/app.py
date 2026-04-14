@@ -26,10 +26,11 @@ ORDER_WINDOW = 300  # 5 minutes
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-GITHUB_REPO = os.getenv("GITHUB_REPO")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-
 INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
+
+# Absolute path to entry engine
+ENTRY_ENGINE_PATH = "/root/trade-execution-webhook/Webhook-app/entry_engine.py"
+PROJECT_ROOT = "/root/trade-execution-webhook"
 
 # ==========================
 # LOGGER
