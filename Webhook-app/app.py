@@ -31,6 +31,7 @@ INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
 # Absolute path to entry engine
 ENTRY_ENGINE_PATH = "/root/trade-execution-webhook/Webhook-app/entry_engine.py"
 PROJECT_ROOT = "/root/trade-execution-webhook"
+VENV_PYTHON = "/root/trade-execution-webhook/venv/bin/python"
 
 # ==========================
 # LOGGER
