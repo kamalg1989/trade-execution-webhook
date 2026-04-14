@@ -49,7 +49,12 @@ def load_instruments():
         (df['SEM_SEGMENT'] == 'E')
     ]
 
-    df['SEM_TRADING_SYMBOL'] = df['SEM_TRADING_SYMBOL'].astype(str).str.strip().str.upper()
+    df['SEM_TRADING_SYMBOL'] = (
+        df['SEM_TRADING_SYMBOL']
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
 
     log("✅ Instruments Loaded:", len(df))
     return df
