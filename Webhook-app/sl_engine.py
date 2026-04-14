@@ -113,6 +113,12 @@ def init_db():
                 modified_at TEXT
             )
         """)
+        # Migrate trades table — add columns that may be missing from older DBs
+        for col in ["sl_price REAL", "target_price REAL", "setup_id TEXT"]:
+            try:
+                conn.execute(f"ALTER TABLE trades ADD COLUMN {col}")
+            except Exception:
+                pass
 
 
 # ==========================
