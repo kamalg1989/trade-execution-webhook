@@ -90,6 +90,7 @@ def get_security_id(stock):
 # ==========================
 def send_telegram(msg):
     try:
+        log("📨 TELEGRAM MESSAGE:", msg)
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             json={"chat_id": CHAT_ID, "text": msg},
