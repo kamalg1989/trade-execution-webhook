@@ -8,13 +8,14 @@ import pyotp
 import sqlite3
 from datetime import datetime
 import time
+import uuid
 import pandas as pd
 
 # ==========================
 # CONFIG
 # ==========================
 INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
-DB_FILE = "Webhook-app/trades.db"
+DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades.db")
 
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
 DHAN_PIN = os.getenv("DHAN_PIN")
@@ -28,6 +29,20 @@ CURRENT_TOKEN = None
 # ==========================
 def log(*args):
     print(*args, flush=True)
+
+
+# ==========================
+# TELEGRAM
+# ==========================
+def send_telegram(msg):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{os.getenv('TELEGRAM_TOKEN')}/sendMessage",
+            json={"chat_id": os.getenv("TELEGRAM_CHAT_ID"), "text": msg},
+            timeout=10
+        )
+    except Exception as e:
+        log(f"❌ Telegram Error: {e}")
 
 
 # ==========================
@@ -197,7 +212,7 @@ def place_order(sec_id, qty, entry):
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
-        "correlationId": str(int(time.time())),
+        "correlationId": str(uuid.uuid4()).replace("-", "")[:20],
         "orderFlag": "SINGLE",
         "transactionType": "BUY",
         "exchangeSegment": "NSE_EQ",
@@ -210,18 +225,22 @@ def place_order(sec_id, qty, entry):
         "triggerPrice": trigger
     }
 
-    r = requests.post(
-        "https://api.dhan.co/v2/forever/orders",
-        json=payload,
-        headers={
-            "access-token": get_token(),
-            "Content-Type": "application/json"
-        }
-    )
-
-    log("📉 ORDER:", r.text)
-
-    return r.json()
+    try:
+        r = requests.post(
+            "https://api.dhan.co/v2/forever/orders",
+            json=payload,
+            headers={
+                "access-token": get_token(),
+                "Content-Type": "application/json"
+            },
+            timeout=15
+        )
+        r.raise_for_status()
+        log("📉 ORDER:", r.text)
+        return r.json()
+    except Exception as e:
+        log(f"❌ ORDER REQUEST FAILED: {e}")
+        return {}
 
 # ==========================
 # MAIN
@@ -276,6 +295,12 @@ def run():
         log("⚠️ Duplicate trade blocked")
         return
 
+    # ✅ price relationship validation
+    if not (sl < entry < target):
+        log(f"❌ Invalid prices: SL={sl} Entry={entry} Target={target}")
+        send_telegram(f"❌ Invalid price order for {symbol}: SL={sl} Entry={entry} Target={target}")
+        return
+
     log(symbol, qty, entry, sl, target, score)
 
     # ✅ mapping
@@ -283,6 +308,7 @@ def run():
 
     if not sec_id:
         log(f"❌ Security ID not found for {symbol}")
+        send_telegram(f"❌ Security ID not found for {symbol}")
         return
 
     log("DEBUG →", symbol, sec_id, qty, entry)
@@ -300,6 +326,7 @@ def run():
         log("✅ TRADE SAVED")
     else:
         log("❌ ORDER FAILED", res)
+        send_telegram(f"❌ ORDER FAILED for {symbol}: {res}")
 
 
 if __name__ == "__main__":

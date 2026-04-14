@@ -18,7 +18,7 @@ DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
 DHAN_PIN = os.getenv("DHAN_PIN")
 DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
 
-DB_FILE = "Webhook-app/trades.db"
+DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades.db")
 
 BASE_SL_PCT = 0.92
 
@@ -28,6 +28,20 @@ TOKEN_EXPIRY = None
 
 def log(*args):
     print(*args, flush=True)
+
+
+# ==========================
+# TELEGRAM
+# ==========================
+def send_telegram(msg):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{os.getenv('TELEGRAM_TOKEN')}/sendMessage",
+            json={"chat_id": os.getenv("TELEGRAM_CHAT_ID"), "text": msg},
+            timeout=10
+        )
+    except Exception as e:
+        log(f"❌ Telegram Error: {e}")
 
 
 # ==========================
@@ -83,6 +97,25 @@ def get_token():
 
 
 # ==========================
+# DB INIT
+# ==========================
+def init_db():
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sl_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT UNIQUE,
+                security_id TEXT,
+                dhan_order_id TEXT,
+                trigger_price REAL,
+                status TEXT,
+                placed_at TEXT,
+                modified_at TEXT
+            )
+        """)
+
+
+# ==========================
 # DHAN FETCH
 # ==========================
 def fetch_positions():
@@ -116,67 +149,42 @@ def fetch_orders():
 # SYNC TRADES
 # ==========================
 def sync_trades(positions, holdings):
-
-    conn = sqlite3.connect(DB_FILE)
-
     active = set()
 
     for p in positions:
         if int(p.get("netQty", 0)) > 0:
-            sym = p["tradingSymbol"]
-            active.add(sym)
-
-            conn.execute("""
-            INSERT OR REPLACE INTO trades(symbol, security_id, qty, entry_price, status)
-            VALUES (?, ?, ?, ?, 'OPEN')
-            """, (sym, p["securityId"], p["netQty"], p["buyAvg"]))
+            active.add(p["tradingSymbol"])
 
     for h in holdings:
         if int(h.get("totalQty", 0)) > 0:
-            sym = h["tradingSymbol"]
-            active.add(sym)
+            active.add(h["tradingSymbol"])
 
-            conn.execute("""
-            INSERT OR REPLACE INTO trades(symbol, security_id, qty, entry_price, status)
-            VALUES (?, ?, ?, ?, 'OPEN')
-            """, (sym, h["securityId"], h["totalQty"], h["avgCostPrice"]))
-
-    rows = conn.execute("SELECT symbol FROM trades WHERE status='OPEN'").fetchall()
-
-    for (sym,) in rows:
-        if sym not in active:
-            log(f"🔒 Closing → {sym}")
-            conn.execute("UPDATE trades SET status='CLOSED' WHERE symbol=?", (sym,))
-
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_FILE) as conn:
+        rows = conn.execute("SELECT symbol FROM trades WHERE status='OPEN'").fetchall()
+        for (sym,) in rows:
+            if sym not in active:
+                log(f"🔒 Closing → {sym}")
+                conn.execute("UPDATE trades SET status='CLOSED' WHERE symbol=?", (sym,))
 
 
 # ==========================
 # SYNC ORDERS
 # ==========================
 def sync_orders(dhan_orders):
-
-    conn = sqlite3.connect(DB_FILE)
-
-    conn.execute("DELETE FROM orders")
-
-    for o in dhan_orders:
-        if o.get("transactionType") != "SELL":
-            continue
-
-        conn.execute("""
-        INSERT INTO orders(symbol, dhan_order_id, trigger_price, status)
-        VALUES (?, ?, ?, ?)
-        """, (
-            o.get("tradingSymbol"),
-            o.get("orderId"),
-            float(o.get("triggerPrice", 0)),
-            o.get("orderStatus", "UNKNOWN")
-        ))
-
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute("DELETE FROM sl_orders")
+        for o in dhan_orders:
+            if o.get("transactionType") != "SELL":
+                continue
+            conn.execute("""
+                INSERT INTO sl_orders(symbol, dhan_order_id, trigger_price, status)
+                VALUES (?, ?, ?, ?)
+            """, (
+                o.get("tradingSymbol"),
+                o.get("orderId"),
+                float(o.get("triggerPrice", 0)),
+                o.get("orderStatus", "UNKNOWN")
+            ))
 
 
 # ==========================
@@ -185,7 +193,8 @@ def sync_orders(dhan_orders):
 def get_ltp(symbol):
     try:
         return yf.Ticker(symbol + ".NS").fast_info["lastPrice"]
-    except:
+    except Exception as e:
+        log(f"⚠️ LTP fetch failed for {symbol}: {e}")
         return None
 
 
@@ -256,55 +265,59 @@ def modify_sl(order_id, qty, trigger):
 # MAIN
 # ==========================
 def run():
+    try:
+        log("\n🚀 SL ENGINE START\n")
 
-    log("\n🚀 SL ENGINE START\n")
+        init_db()
 
-    positions = fetch_positions()
-    holdings = fetch_holdings()
-    orders = fetch_orders()
+        positions = fetch_positions()
+        holdings = fetch_holdings()
+        orders = fetch_orders()
 
-    sync_trades(positions, holdings)
-    sync_orders(orders)
+        sync_trades(positions, holdings)
+        sync_orders(orders)
 
-    conn = sqlite3.connect(DB_FILE)
+        with sqlite3.connect(DB_FILE) as conn:
+            trades = conn.execute("""
+                SELECT symbol, security_id, qty, entry_price, sl_price
+                FROM trades WHERE status='OPEN'
+            """).fetchall()
 
-    trades = conn.execute("""
-        SELECT symbol, security_id, qty, entry_price
-        FROM trades WHERE status='OPEN'
-    """).fetchall()
+            order_rows = conn.execute("""
+                SELECT symbol, dhan_order_id, trigger_price
+                FROM sl_orders
+            """).fetchall()
 
-    order_rows = conn.execute("""
-        SELECT symbol, dhan_order_id, trigger_price
-        FROM orders
-    """).fetchall()
+        order_map = {o[0]: o for o in order_rows}
 
-    order_map = {o[0]: o for o in order_rows}
+        for sym, sec_id, qty, entry, initial_sl in trades:
 
-    for sym, sec_id, qty, entry in trades:
+            ltp = get_ltp(sym)
+            if not ltp:
+                continue
 
-        ltp = get_ltp(sym)
-        if not ltp:
-            continue
+            existing = order_map.get(sym)
+            current_sl = existing[2] if existing else initial_sl
 
-        existing = order_map.get(sym)
-        current_sl = existing[2] if existing else None
+            new_sl = calculate_sl(entry, ltp, current_sl)
 
-        new_sl = calculate_sl(entry, ltp, current_sl)
+            log(f"{sym} | LTP={ltp} | SL {current_sl} → {new_sl}")
 
-        log(f"{sym} | LTP={ltp} | SL {current_sl} → {new_sl}")
+            if not existing:
+                log(f"🆕 Place SL → {sym}")
+                place_sl(sec_id, qty, new_sl)
+                continue
 
-        if not existing:
-            log(f"🆕 Place SL → {sym}")
-            place_sl(sec_id, qty, new_sl)
-            continue
+            if new_sl > current_sl:
+                log(f"🔄 Trail SL → {sym}")
+                modify_sl(existing[1], qty, new_sl)
 
-        if new_sl > current_sl:
-            log(f"🔄 Trail SL → {sym}")
-            modify_sl(existing[1], qty, new_sl)
+        log("\n✅ DONE\n")
 
-    conn.close()
-
-    log("\n✅ DONE\n")
+    except Exception as e:
+        log(f"❌ SL ENGINE CRASHED: {e}")
+        send_telegram(f"❌ SL ENGINE ERROR: {e}")
+        raise
 
 
 if __name__ == "__main__":

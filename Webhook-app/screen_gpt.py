@@ -20,6 +20,8 @@ from reportlab.lib.utils import ImageReader
 
 import sqlite3
 
+DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades.db")
+
 # ==========================
 # CONFIG
 # ==========================
@@ -33,14 +35,14 @@ else:
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-CAPITAL = 200000
+CAPITAL = int(os.getenv("CAPITAL", "200000"))
 
 
 # ==========================
 # DB
 # ==========================
 def get_conn():
-    return sqlite3.connect("Webhook-app/trades.db")
+    return sqlite3.connect(DB_FILE)
 
 
 def save_trade(payload):
@@ -378,6 +380,9 @@ def plot_chart(stock, save_path):
     plt.subplots_adjust(hspace=0.05)
     plt.savefig(save_path, dpi=200, bbox_inches='tight', pad_inches=0)
     plt.close()
+    for f in ["d.png", "w.png"]:
+        if os.path.exists(f):
+            os.remove(f)
 
 
 # ==========================
@@ -409,7 +414,7 @@ def gpt_decision(pdf_path):
         print("⚠️ OPENAI_API_KEY missing → Skipping GPT")
         return json.dumps({"picks": []})
 
-    file = client.files.create(file=open(pdf_path,"rb"), purpose="assistants")
+    file = client.files.create(file=open(pdf_path,"rb"), purpose="user_data")
 
     PROMPT = """
     You are an institutional breakout trader following strict rules.
@@ -602,7 +607,7 @@ def run():
         score = p.get("score", 0)
 
         # Ensure uniqueness with timestamp seconds
-        setup_id = f"{datetime.now().strftime('%M%S')}{s[:2]}"
+        setup_id = f"{datetime.now().strftime('%H%M%S%f')}{s[:4]}"
 
         payload = {
             "setup_id": setup_id,

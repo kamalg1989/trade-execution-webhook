@@ -51,12 +51,20 @@ def load_instruments():
     log("✅ Instruments Loaded:", len(df))
     return df
 
-INSTRUMENT_DF = load_instruments()
+INSTRUMENT_DF = None
 
 # ==========================
 # SYMBOL → SECURITY_ID (optional)
 # ==========================
 def get_security_id(stock):
+    global INSTRUMENT_DF
+    if INSTRUMENT_DF is None:
+        try:
+            INSTRUMENT_DF = load_instruments()
+        except Exception as e:
+            log(f"⚠️ Failed to load instruments: {e}")
+            return None
+
     symbol = stock.replace(".NS", "").strip().upper()
 
     row = INSTRUMENT_DF[

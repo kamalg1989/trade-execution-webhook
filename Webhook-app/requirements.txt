@@ -1,0 +1,9 @@
+flask
+requests
+pandas
+pyotp
+yfinance
+mplfinance
+matplotlib
+openai
+reportlab
