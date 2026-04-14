@@ -100,7 +100,7 @@ def send_telegram(msg):
         log("❌ Telegram Error:", e)
 
 # ==========================
-# 🚀 GITHUB TRIGGER
+# 🚀 LOCAL ENTRY ENGINE EXECUTION
 # ==========================
 def trigger_github_trade(payload):
     url = f"https://api.github.com/repos/{GITHUB_REPO}/dispatches"
