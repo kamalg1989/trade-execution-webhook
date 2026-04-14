@@ -128,7 +128,7 @@ def execute_trade_locally(payload):
         log(json.dumps(payload, indent=2))
 
         result = subprocess.run(
-            ["python3", ENTRY_ENGINE_PATH],
+            [VENV_PYTHON, ENTRY_ENGINE_PATH],
             cwd=PROJECT_ROOT,
             env=env,
             capture_output=True,
