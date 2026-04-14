@@ -35,7 +35,7 @@ else:
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-CAPITAL = int(os.getenv("CAPITAL", "200000"))
+CAPITAL = int(os.getenv("CAPITAL") or "200000")
 
 
 # ==========================
