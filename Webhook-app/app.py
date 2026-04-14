@@ -102,27 +102,51 @@ def send_telegram(msg):
 # ==========================
 # 🚀 LOCAL ENTRY ENGINE EXECUTION
 # ==========================
-def trigger_github_trade(payload):
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/dispatches"
+def execute_trade_locally(payload):
+    """
+    Executes entry_engine.py on the VPS.
+    Ensures Dhan API calls originate from the VPS static IP.
+    """
+    try:
+        if not payload.get("sl") or not payload.get("target"):
+            log("❌ BLOCKED: SL/Target missing in payload", payload)
+            return False
 
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"token {GITHUB_TOKEN}"
-    }
+        env = os.environ.copy()
+        env.update({
+            "SYMBOL": str(payload["symbol"]),
+            "QTY": str(payload["qty"]),
+            "ENTRY": str(payload["entry"]),
+            "SL": str(payload["sl"]),
+            "TARGET": str(payload["target"]),
+            "SCORE": str(payload["score"]),
+            "SETUP_ID": str(payload["setup_id"]),
+        })
 
-    if not payload.get("sl") or not payload.get("target"):
-        log("❌ BLOCKED: SL/Target missing in payload", payload)
+        log("🚀 EXECUTING ENTRY ENGINE WITH PAYLOAD:")
+        log(json.dumps(payload, indent=2))
+
+        result = subprocess.run(
+            ["python3", ENTRY_ENGINE_PATH],
+            cwd=PROJECT_ROOT,
+            env=env,
+            capture_output=True,
+            text=True
+        )
+
+        log("📤 ENTRY ENGINE STDOUT:\n", result.stdout)
+        log("📤 ENTRY ENGINE STDERR:\n", result.stderr)
+
+        if result.returncode == 0:
+            log("✅ Trade execution completed successfully.")
+            return True
+        else:
+            log("❌ Trade execution failed with return code:", result.returncode)
+            return False
+
+    except Exception as e:
+        log("❌ Error executing trade locally:", e)
         return False
-
-    data = {
-        "event_type": "trade_entry",
-        "client_payload": payload
-    }
-
-    r = requests.post(url, json=data, headers=headers)
-
-    log("🚀 GITHUB TRIGGER:", r.status_code, r.text)
-    return r.status_code == 204
 
 # ==========================
 # FLASK
@@ -133,6 +157,7 @@ app = Flask(__name__)
 def webhook():
 
     data = request.get_json(force=True)
+    log("📩 RAW TELEGRAM PAYLOAD:", json.dumps(data, indent=2))
 
     if not data or "callback_query" not in data:
         return "OK"
@@ -143,11 +168,14 @@ def webhook():
     # ✅ CALLBACK DEDUP (Telegram duplicate protection)
     with LOCK:
         if callback_id in PROCESSED_CALLBACKS:
+            log("⚠️ Duplicate callback ignored:", callback_id)
             return "OK"
         PROCESSED_CALLBACKS.add(callback_id)
 
-    parts = query.get("data", "").split("|")
-    log("RAW CALLBACK:", query.get("data"))
+    raw_callback = query.get("data", "")
+    log("RAW CALLBACK:", raw_callback)
+
+    parts = raw_callback.split("|")
 
     if len(parts) < 8:
         send_telegram("❌ Invalid payload")
@@ -158,7 +186,7 @@ def webhook():
     def safe_float(x):
         try:
             return float(x)
-        except:
+        except Exception:
             return None
 
     stock = symbol
@@ -167,6 +195,17 @@ def webhook():
     sl = safe_float(sl)
     target = safe_float(target)
     score = safe_float(score)
+
+    log("✅ PARSED TRADE DATA:", {
+        "action": action,
+        "setup_id": setup_id,
+        "symbol": stock,
+        "qty": qty,
+        "entry": entry,
+        "sl": sl,
+        "target": target,
+        "score": score
+    })
 
     if not setup_id:
         send_telegram(f"❌ Missing setup_id for {stock}")
@@ -181,17 +220,15 @@ def webhook():
         key = setup_id
         now = time.time()
 
-        # ✅ ORDER DEDUP (GitHub trigger protection)
+        # ✅ ORDER DEDUP
         with LOCK:
             if key in PROCESSED_ORDERS:
                 if (now - PROCESSED_ORDERS[key]) < ORDER_WINDOW:
                     log("⚠️ Duplicate order blocked:", key)
                     return "OK"
-
             PROCESSED_ORDERS[key] = now
 
-        # 🚀 SINGLE trigger (FIXED)
-        success = trigger_github_trade({
+        payload = {
             "setup_id": setup_id,
             "symbol": stock.replace(".NS", ""),
             "qty": qty,
@@ -199,15 +236,18 @@ def webhook():
             "sl": sl,
             "target": target,
             "score": score
-        })
+        }
+
+        # 🚀 Execute locally on VPS
+        success = execute_trade_locally(payload)
 
         if success:
-            send_telegram(f"🟢 SENT: {stock} | SL={sl} | TGT={target}")
+            send_telegram(f"🟢 ORDER EXECUTED: {stock} | SL={sl} | TGT={target}")
         else:
-            send_telegram(f"❌ GITHUB TRIGGER FAILED: {stock}")
+            send_telegram(f"❌ ORDER FAILED: {stock}")
 
     return "OK"
 
 @app.route("/")
 def home():
-    return "Webhook running"
+    return "Webhook running on VPS"
