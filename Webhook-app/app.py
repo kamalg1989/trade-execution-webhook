@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK → GITHUB ENTRY ENGINE (FINAL)
+# 🚀 TELEGRAM WEBHOOK → VPS ENTRY ENGINE (FINAL)
 # ==============================================
 
 import os
