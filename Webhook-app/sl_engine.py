@@ -298,28 +298,7 @@ def place_sl(sec_id, qty, trigger, symbol):
         send_telegram(f"❌ SL ENGINE ERROR for {symbol}: {e}")
         return None
 
-    
-def modify_sl(order_id, qty, trigger):
-    payload = {
-        "dhanClientId": DHAN_CLIENT_ID,
-        "orderId": order_id,
-        "orderFlag": "SINGLE",
-        "orderType": "LIMIT",
-        "quantity": int(qty),
-        "price": round(trigger * 0.995, 2),
-        "triggerPrice": round(trigger, 2),
-        "validity": "DAY"
-    }
 
-    r = requests.put(
-        f"https://api.dhan.co/v2/forever/orders/{order_id}",
-        json=payload,
-        headers={"access-token": get_token()},
-        timeout=10
-    )
-
-    logger.info(f"Modified SL order: {r.status_code} {r.text}")
-    return r.json() if r.status_code in (200, 201) else None
 
 
 # ==========================
