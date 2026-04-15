@@ -299,7 +299,62 @@ def place_sl(sec_id, qty, trigger, symbol):
         return None
 
 
+def modify_sl(order_id, qty, trigger, symbol):
+    try:
+        token = get_token()
 
+        payload = {
+            "dhanClientId": DHAN_CLIENT_ID,
+            "orderId": order_id,
+            "orderFlag": "SINGLE",
+            "orderType": "LIMIT",
+            "quantity": int(qty),
+            "price": round(trigger * 0.995, 2),
+            "triggerPrice": round(trigger, 2),
+            "validity": "DAY"
+        }
+
+        headers = {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "access-token": token
+        }
+
+        log("\n================ DHAN MODIFY SL REQUEST ===============")
+        log(f"Symbol        : {symbol}")
+        log(f"Order ID      : {order_id}")
+        log(f"New Trigger   : {payload['triggerPrice']}")
+        log(f"Payload       : {payload}")
+        log("=======================================================\n")
+
+        response = requests.put(
+            f"https://api.dhan.co/v2/forever/orders/{order_id}",
+            json=payload,
+            headers=headers,
+            timeout=15
+        )
+
+        log("\n================ DHAN MODIFY SL RESPONSE ==============")
+        log(f"Status Code : {response.status_code}")
+        log(f"Response    : {response.text}")
+        log("=======================================================\n")
+
+        if response.status_code not in (200, 201):
+            send_telegram(
+                f"❌ SL MODIFY FAILED\n"
+                f"{symbol}\n"
+                f"Status: {response.status_code}\n"
+                f"Response: {response.text}"
+            )
+            return None
+
+        send_telegram(f"🔄 SL trailed for {symbol} to {payload['triggerPrice']}")
+        return response.json()
+
+    except Exception as e:
+        log(f"❌ Exception while modifying SL for {symbol}: {e}")
+        send_telegram(f"❌ SL MODIFY ERROR for {symbol}: {e}")
+        return None
 
 # ==========================
 # MAIN EXECUTION
