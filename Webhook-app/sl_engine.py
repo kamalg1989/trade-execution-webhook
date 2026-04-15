@@ -62,7 +62,40 @@ def send_telegram(msg):
 # ==========================
 # TOKEN MANAGEMENT
 # ==========================
+def generate_token():
+    global TOKEN_EXPIRY
 
+    totp = pyotp.TOTP(DHAN_TOTP_SECRET)
+    current_totp = totp.now()
+    log(f"🔐 Generated TOTP: {current_totp}")
+
+    response = requests.post(
+        "https://auth.dhan.co/app/generateAccessToken",
+        params={
+            "dhanClientId": DHAN_CLIENT_ID,
+            "pin": DHAN_PIN,
+            "totp": current_totp
+        },
+        timeout=10
+    )
+
+    log(f"🔐 Token API Status: {response.status_code}")
+    log(f"🔐 Token API Response: {response.text}")
+
+    if response.status_code != 200:
+        raise Exception(f"Token API failed: {response.text}")
+
+    data = response.json()
+
+    expiry = data.get("expiryTime")
+    if expiry:
+        TOKEN_EXPIRY = datetime.fromisoformat(expiry).replace(tzinfo=timezone.utc)
+        log(f"🔐 Token Expiry: {TOKEN_EXPIRY}")
+    else:
+        TOKEN_EXPIRY = datetime.now(timezone.utc) + timedelta(minutes=10)
+        log("🔐 Token expiry not provided; using fallback.")
+
+    return data["accessToken"]
 
 def get_token():
     global CURRENT_TOKEN
