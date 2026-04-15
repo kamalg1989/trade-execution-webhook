@@ -242,7 +242,7 @@ def place_sl(sec_id, qty, trigger):
         "transactionType": "SELL",
         "exchangeSegment": "NSE_EQ",
         "productType": "CNC",
-        "orderType": "STOP_LOSS",
+        "orderType": "LIMIT",
         "validity": "DAY",
         "securityId": str(sec_id),
         "quantity": int(qty),
