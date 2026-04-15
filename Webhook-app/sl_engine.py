@@ -229,6 +229,56 @@ def place_sl(sec_id, qty, trigger, symbol):
     send_telegram(f"🛡️ SL placed for {symbol} at {trigger_price}")
     return response.json()
 
+def modify_sl(order_id, qty, trigger, symbol):
+    token = get_token()
+
+    price = round(trigger * 0.995, 2)  # Ensure SELL price < trigger
+    disclosed_qty = max(1, int(qty * 0.3))
+
+    payload = {
+        "dhanClientId": DHAN_CLIENT_ID,
+        "orderId": order_id,
+        "orderFlag": "SINGLE",
+        "orderType": "LIMIT",
+        "legName": "STOP_LOSS_LEG",
+        "quantity": int(qty),
+        "price": price,
+        "triggerPrice": round(trigger, 2),
+        "disclosedQuantity": disclosed_qty,
+        "validity": "DAY"
+    }
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "access-token": token
+    }
+
+    logger.info(f"Modifying SL for {symbol}: {payload}")
+
+    response = requests.put(
+        f"https://api.dhan.co/v2/forever/orders/{order_id}",
+        json=payload,
+        headers=headers,
+        timeout=15
+    )
+
+    logger.info(
+        f"Dhan Modify Response ({symbol}): "
+        f"{response.status_code} {response.text}"
+    )
+
+    if response.status_code not in (200, 201):
+        send_telegram(
+            f"❌ SL MODIFY FAILED for {symbol}\n"
+            f"Status: {response.status_code}\n"
+            f"{response.text}"
+        )
+        return None
+
+    send_telegram(f"🔄 SL trailed for {symbol} to {trigger}")
+    return response.json()
+
 
 # ==========================
 # MAIN EXECUTION
