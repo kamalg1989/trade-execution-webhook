@@ -32,7 +32,7 @@ DB_FILE = os.path.join(BASE_DIR, "trades.db")
 BASE_SL_PCT = 0.92
 
 CURRENT_TOKEN = None
-TOKEN_EXPIRY = None
+TOKEN_EXPIRY = datetime.now(timezone.utc)
 
 # ==========================
 # LOGGER CONFIGURATION
@@ -42,7 +42,6 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
 
 # ==========================
 # TELEGRAM NOTIFICATIONS
@@ -58,7 +57,6 @@ def send_telegram(msg):
     except Exception as e:
         logger.error(f"Telegram Error: {e}")
 
-
 # ==========================
 # TOKEN MANAGEMENT
 # ==========================
@@ -67,7 +65,8 @@ def generate_token():
 
     totp = pyotp.TOTP(DHAN_TOTP_SECRET)
     current_totp = totp.now()
-    log(f"🔐 Generated TOTP: {current_totp}")
+
+    logger.info("Generating Dhan access token")
 
     response = requests.post(
         "https://auth.dhan.co/app/generateAccessToken",
@@ -79,9 +78,6 @@ def generate_token():
         timeout=10
     )
 
-    log(f"🔐 Token API Status: {response.status_code}")
-    log(f"🔐 Token API Response: {response.text}")
-
     if response.status_code != 200:
         raise Exception(f"Token API failed: {response.text}")
 
@@ -90,11 +86,10 @@ def generate_token():
     expiry = data.get("expiryTime")
     if expiry:
         TOKEN_EXPIRY = datetime.fromisoformat(expiry).replace(tzinfo=timezone.utc)
-        log(f"🔐 Token Expiry: {TOKEN_EXPIRY}")
     else:
         TOKEN_EXPIRY = datetime.now(timezone.utc) + timedelta(minutes=10)
-        log("🔐 Token expiry not provided; using fallback.")
 
+    logger.info(f"Token generated. Expiry: {TOKEN_EXPIRY}")
     return data["accessToken"]
 
 def get_token():
@@ -102,7 +97,6 @@ def get_token():
     if not CURRENT_TOKEN or datetime.now(timezone.utc) >= TOKEN_EXPIRY:
         CURRENT_TOKEN = generate_token()
     return CURRENT_TOKEN
-
 
 # ==========================
 # DATABASE INITIALIZATION
@@ -122,7 +116,6 @@ def init_db():
             )
         """)
 
-
 # ==========================
 # DHAN API FETCH FUNCTIONS
 # ==========================
@@ -134,7 +127,6 @@ def fetch_positions():
     )
     return r.json() if r.status_code == 200 else []
 
-
 def fetch_holdings():
     r = requests.get(
         "https://api.dhan.co/v2/holdings",
@@ -143,7 +135,6 @@ def fetch_holdings():
     )
     return r.json() if r.status_code == 200 else []
 
-
 def fetch_orders():
     r = requests.get(
         "https://api.dhan.co/v2/forever/orders",
@@ -151,35 +142,6 @@ def fetch_orders():
         timeout=10
     )
     return r.json() if r.status_code == 200 else []
-
-
-# ==========================
-# SYNC TRADES WITH HOLDINGS
-# ==========================
-def sync_trades(positions, holdings):
-    active = set()
-
-    for p in positions:
-        if int(p.get("netQty", 0)) > 0:
-            active.add(p.get("tradingSymbol"))
-
-    for h in holdings:
-        if int(h.get("totalQty", 0)) > 0:
-            active.add(h.get("tradingSymbol"))
-
-    with sqlite3.connect(DB_FILE) as conn:
-        rows = conn.execute(
-            "SELECT symbol FROM trades WHERE status='OPEN'"
-        ).fetchall()
-
-        for (sym,) in rows:
-            if sym not in active:
-                logger.info(f"Closing trade for {sym}")
-                conn.execute(
-                    "UPDATE trades SET status='CLOSED' WHERE symbol=?",
-                    (sym,)
-                )
-
 
 # ==========================
 # SYNC EXISTING SL ORDERS
@@ -203,7 +165,6 @@ def sync_orders(dhan_orders):
                 datetime.utcnow().isoformat()
             ))
 
-
 # ==========================
 # FETCH LTP USING YFINANCE
 # ==========================
@@ -213,7 +174,6 @@ def get_ltp(symbol):
     except Exception as e:
         logger.warning(f"LTP fetch failed for {symbol}: {e}")
         return None
-
 
 # ==========================
 # SL CALCULATION LOGIC
@@ -232,131 +192,89 @@ def calculate_sl(entry, ltp, current_sl):
 
     return round(max(current_sl, min(trailing_sl, ltp * 0.995)), 2)
 
-
 # ==========================
 # DHAN ORDER ACTIONS
 # ==========================
 def place_sl(sec_id, qty, trigger, symbol):
-    try:
-        token = get_token()
+    token = get_token()
 
-        payload = {
-            "dhanClientId": DHAN_CLIENT_ID,
-            "correlationId": str(uuid.uuid4())[:20],
-            "orderFlag": "SINGLE",
-            "transactionType": "SELL",
-            "exchangeSegment": "NSE_EQ",
-            "productType": "CNC",
-            "orderType": "LIMIT",  # ✅ Correct order type for Forever Orders
-            "validity": "DAY",
-            "securityId": str(sec_id),
-            "quantity": int(qty),
-            "price": round(trigger * 0.995, 2),
-            "triggerPrice": round(trigger, 2)
-        }
+    payload = {
+        "dhanClientId": DHAN_CLIENT_ID,
+        "correlationId": str(uuid.uuid4())[:20],
+        "orderFlag": "SINGLE",
+        "transactionType": "SELL",
+        "exchangeSegment": "NSE_EQ",
+        "productType": "CNC",
+        "orderType": "STOP_LOSS",  # Correct order type
+        "validity": "DAY",
+        "securityId": str(sec_id),
+        "quantity": int(qty),
+        "price": round(trigger * 0.995, 2),
+        "triggerPrice": round(trigger, 2)
+    }
 
-        headers = {
-            "accept": "application/json",
-            "content-type": "application/json",
-            "access-token": token
-        }
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "access-token": token
+    }
 
-        log("\n================ DHAN SL ORDER REQUEST ================")
-        log(f"Symbol        : {symbol}")
-        log(f"Security ID   : {sec_id}")
-        log(f"Quantity      : {qty}")
-        log(f"Trigger Price : {payload['triggerPrice']}")
-        log(f"Limit Price   : {payload['price']}")
-        log(f"Payload       : {payload}")
-        log("=======================================================\n")
+    logger.info(f"Placing SL for {symbol}: {payload}")
 
-        response = requests.post(
-            "https://api.dhan.co/v2/forever/orders",
-            json=payload,
-            headers=headers,
-            timeout=15
-        )
+    response = requests.post(
+        "https://api.dhan.co/v2/forever/orders",
+        json=payload,
+        headers=headers,
+        timeout=15
+    )
 
-        log("\n================ DHAN SL ORDER RESPONSE ===============")
-        log(f"Status Code : {response.status_code}")
-        log(f"Response    : {response.text}")
-        log("=======================================================\n")
+    logger.info(f"Dhan SL Response ({symbol}): {response.status_code} {response.text}")
 
-        if response.status_code not in (200, 201):
-            send_telegram(
-                f"❌ SL ORDER FAILED\n"
-                f"{symbol}\n"
-                f"Status: {response.status_code}\n"
-                f"Response: {response.text}"
-            )
-            return None
-
-        data = response.json()
-        send_telegram(f"🛡️ SL placed for {symbol} at {payload['triggerPrice']}")
-        return data
-
-    except Exception as e:
-        log(f"❌ Exception while placing SL for {symbol}: {e}")
-        send_telegram(f"❌ SL ENGINE ERROR for {symbol}: {e}")
+    if response.status_code not in (200, 201):
+        send_telegram(f"❌ SL ORDER FAILED for {symbol}: {response.text}")
         return None
 
+    send_telegram(f"🛡️ SL placed for {symbol} at {trigger}")
+    return response.json()
 
 def modify_sl(order_id, qty, trigger, symbol):
-    try:
-        token = get_token()
+    token = get_token()
 
-        payload = {
-            "dhanClientId": DHAN_CLIENT_ID,
-            "orderId": order_id,
-            "orderFlag": "SINGLE",
-            "orderType": "LIMIT",
-            "quantity": int(qty),
-            "price": round(trigger * 0.995, 2),
-            "triggerPrice": round(trigger, 2),
-            "validity": "DAY"
-        }
+    payload = {
+        "dhanClientId": DHAN_CLIENT_ID,
+        "orderId": order_id,
+        "orderFlag": "SINGLE",
+        "orderType": "STOP_LOSS",
+        "legName": "TARGET_LEG",
+        "quantity": int(qty),
+        "price": round(trigger * 0.995, 2),
+        "triggerPrice": round(trigger, 2),
+        "validity": "DAY"
+    }
 
-        headers = {
-            "accept": "application/json",
-            "content-type": "application/json",
-            "access-token": token
-        }
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "access-token": token
+    }
 
-        log("\n================ DHAN MODIFY SL REQUEST ===============")
-        log(f"Symbol        : {symbol}")
-        log(f"Order ID      : {order_id}")
-        log(f"New Trigger   : {payload['triggerPrice']}")
-        log(f"Payload       : {payload}")
-        log("=======================================================\n")
+    logger.info(f"Modifying SL for {symbol}: {payload}")
 
-        response = requests.put(
-            f"https://api.dhan.co/v2/forever/orders/{order_id}",
-            json=payload,
-            headers=headers,
-            timeout=15
-        )
+    response = requests.put(
+        f"https://api.dhan.co/v2/forever/orders/{order_id}",
+        json=payload,
+        headers=headers,
+        timeout=15
+    )
 
-        log("\n================ DHAN MODIFY SL RESPONSE ==============")
-        log(f"Status Code : {response.status_code}")
-        log(f"Response    : {response.text}")
-        log("=======================================================\n")
+    logger.info(f"Dhan Modify Response ({symbol}): {response.status_code} {response.text}")
 
-        if response.status_code not in (200, 201):
-            send_telegram(
-                f"❌ SL MODIFY FAILED\n"
-                f"{symbol}\n"
-                f"Status: {response.status_code}\n"
-                f"Response: {response.text}"
-            )
-            return None
-
-        send_telegram(f"🔄 SL trailed for {symbol} to {payload['triggerPrice']}")
-        return response.json()
-
-    except Exception as e:
-        log(f"❌ Exception while modifying SL for {symbol}: {e}")
-        send_telegram(f"❌ SL MODIFY ERROR for {symbol}: {e}")
+    if response.status_code not in (200, 201):
+        send_telegram(f"❌ SL MODIFY FAILED for {symbol}: {response.text}")
         return None
+
+    send_telegram(f"🔄 SL trailed for {symbol} to {trigger}")
+    return response.json()
 
 # ==========================
 # MAIN EXECUTION
@@ -367,11 +285,7 @@ def run():
 
         init_db()
 
-        positions = fetch_positions()
-        holdings = fetch_holdings()
         orders = fetch_orders()
-
-        sync_trades(positions, holdings)
         sync_orders(orders)
 
         with sqlite3.connect(DB_FILE) as conn:
@@ -396,18 +310,12 @@ def run():
             current_sl = existing[2] if existing else initial_sl
             new_sl = calculate_sl(entry, ltp, current_sl)
 
-            logger.info(
-                f"{sym} | LTP={ltp} | SL {current_sl} → {new_sl}"
-            )
+            logger.info(f"{sym} | LTP={ltp} | SL {current_sl} → {new_sl}")
 
             if not existing:
-                logger.info(f"Placing SL for {sym}")
-                place_sl(sec_id, qty, new_sl)
-                send_telegram(f"🛡️ SL placed for {sym} at {new_sl}")
+                place_sl(sec_id, qty, new_sl, sym)
             elif new_sl > current_sl:
-                logger.info(f"Trailing SL for {sym}")
-                modify_sl(existing[1], qty, new_sl)
-                send_telegram(f"🔄 SL trailed for {sym} to {new_sl}")
+                modify_sl(existing[1], qty, new_sl, sym)
 
         logger.info("✅ SL ENGINE COMPLETED")
 
