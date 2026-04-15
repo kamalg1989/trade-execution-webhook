@@ -244,7 +244,7 @@ def modify_sl(order_id, qty, trigger, symbol):
         "dhanClientId": DHAN_CLIENT_ID,
         "orderId": order_id,
         "orderFlag": "SINGLE",
-        "orderType": "STOP_LOSS",
+        "orderType": "LIMIT",
         "legName": "TARGET_LEG",
         "quantity": int(qty),
         "price": round(trigger * 0.995, 2),
