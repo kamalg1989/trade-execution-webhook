@@ -230,6 +230,7 @@ def place_sl(sec_id, qty, trigger, symbol):
     return response.json()
 
 
+
 # ==========================
 # MAIN EXECUTION
 # ==========================
