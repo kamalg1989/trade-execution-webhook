@@ -7,3 +7,4 @@ mplfinance
 matplotlib
 openai
 reportlab
+dotenv
