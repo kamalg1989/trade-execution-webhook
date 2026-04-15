@@ -234,33 +234,71 @@ def calculate_sl(entry, ltp, current_sl):
 # ==========================
 # DHAN ORDER ACTIONS
 # ==========================
-def place_sl(sec_id, qty, trigger):
-    payload = {
-        "dhanClientId": DHAN_CLIENT_ID,
-        "correlationId": str(uuid.uuid4())[:20],
-        "orderFlag": "SINGLE",
-        "transactionType": "SELL",
-        "exchangeSegment": "NSE_EQ",
-        "productType": "CNC",
-        "orderType": "LIMIT",
-        "validity": "DAY",
-        "securityId": str(sec_id),
-        "quantity": int(qty),
-        "price": round(trigger * 0.995, 2),
-        "triggerPrice": round(trigger, 2)
-    }
+def place_sl(sec_id, qty, trigger, symbol):
+    try:
+        token = get_token()
 
-    r = requests.post(
-        "https://api.dhan.co/v2/forever/orders",
-        json=payload,
-        headers={"access-token": get_token()},
-        timeout=10
-    )
+        payload = {
+            "dhanClientId": DHAN_CLIENT_ID,
+            "correlationId": str(uuid.uuid4())[:20],
+            "orderFlag": "SINGLE",
+            "transactionType": "SELL",
+            "exchangeSegment": "NSE_EQ",
+            "productType": "CNC",
+            "orderType": "LIMIT",  # ✅ Correct order type for Forever Orders
+            "validity": "DAY",
+            "securityId": str(sec_id),
+            "quantity": int(qty),
+            "price": round(trigger * 0.995, 2),
+            "triggerPrice": round(trigger, 2)
+        }
 
-    logger.info(f"Placed SL order: {r.status_code} {r.text}")
-    return r.json() if r.status_code in (200, 201) else None
+        headers = {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "access-token": token
+        }
 
+        log("\n================ DHAN SL ORDER REQUEST ================")
+        log(f"Symbol        : {symbol}")
+        log(f"Security ID   : {sec_id}")
+        log(f"Quantity      : {qty}")
+        log(f"Trigger Price : {payload['triggerPrice']}")
+        log(f"Limit Price   : {payload['price']}")
+        log(f"Payload       : {payload}")
+        log("=======================================================\n")
 
+        response = requests.post(
+            "https://api.dhan.co/v2/forever/orders",
+            json=payload,
+            headers=headers,
+            timeout=15
+        )
+
+        log("\n================ DHAN SL ORDER RESPONSE ===============")
+        log(f"Status Code : {response.status_code}")
+        log(f"Response    : {response.text}")
+        log("=======================================================\n")
+
+        if response.status_code not in (200, 201):
+            send_telegram(
+                f"❌ SL ORDER FAILED\n"
+                f"{symbol}\n"
+                f"Status: {response.status_code}\n"
+                f"Response: {response.text}"
+            )
+            return None
+
+        data = response.json()
+        send_telegram(f"🛡️ SL placed for {symbol} at {payload['triggerPrice']}")
+        return data
+
+    except Exception as e:
+        log(f"❌ Exception while placing SL for {symbol}: {e}")
+        send_telegram(f"❌ SL ENGINE ERROR for {symbol}: {e}")
+        return None
+
+    
 def modify_sl(order_id, qty, trigger):
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
