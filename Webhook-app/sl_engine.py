@@ -10,6 +10,14 @@ import uuid
 import logging
 import yfinance as yf
 from datetime import datetime, timezone, timedelta
+from dotenv import load_dotenv
+
+# ==========================
+# LOAD ENVIRONMENT VARIABLES
+# ==========================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ENV_PATH = os.path.join(BASE_DIR, "..", ".env")
+load_dotenv(ENV_PATH)
 
 # ==========================
 # CONFIG
