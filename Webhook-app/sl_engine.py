@@ -32,7 +32,9 @@ if not all([DHAN_CLIENT_ID, DHAN_PIN, DHAN_TOTP_SECRET]):
     raise ValueError("Missing required Dhan environment variables.")
 
 DB_FILE = os.path.join(BASE_DIR, "trades.db")
-BASE_SL_PCT = 0.92
+BASE_SL_PCT = 0.92        # 8% initial SL
+TRAIL_PROFIT_LOCK = 0.5   # Lock 50% of profit
+MIN_LTP_BUFFER = 0.05     # Maintain 5% gap from LTP
 
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = datetime.now(timezone.utc)
