@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 SL ENGINE V4 (VPS INTEGRATED + STABLE)
+# 🚀 SL ENGINE V5 (VPS INTEGRATED + API ALIGNED)
 # ==============================================
 
 import os
@@ -28,11 +28,17 @@ DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+if not all([DHAN_CLIENT_ID, DHAN_PIN, DHAN_TOTP_SECRET]):
+    raise ValueError("Missing required Dhan environment variables.")
+
 DB_FILE = os.path.join(BASE_DIR, "trades.db")
 BASE_SL_PCT = 0.92
 
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = datetime.now(timezone.utc)
+
+# Reusable HTTP session
+session = requests.Session()
 
 # ==========================
 # LOGGER CONFIGURATION
@@ -49,7 +55,7 @@ logger = logging.getLogger(__name__)
 def send_telegram(msg):
     try:
         if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-            requests.post(
+            session.post(
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
                 json={"chat_id": TELEGRAM_CHAT_ID, "text": msg},
                 timeout=10
@@ -64,23 +70,19 @@ def generate_token():
     global TOKEN_EXPIRY
 
     totp = pyotp.TOTP(DHAN_TOTP_SECRET)
-    current_totp = totp.now()
-
     logger.info("Generating Dhan access token")
 
-    response = requests.post(
+    response = session.post(
         "https://auth.dhan.co/app/generateAccessToken",
         params={
             "dhanClientId": DHAN_CLIENT_ID,
             "pin": DHAN_PIN,
-            "totp": current_totp
+            "totp": totp.now()
         },
-        timeout=10
+        timeout=30
     )
 
-    if response.status_code != 200:
-        raise Exception(f"Token API failed: {response.text}")
-
+    response.raise_for_status()
     data = response.json()
 
     expiry = data.get("expiryTime")
@@ -119,29 +121,14 @@ def init_db():
 # ==========================
 # DHAN API FETCH FUNCTIONS
 # ==========================
-def fetch_positions():
-    r = requests.get(
-        "https://api.dhan.co/v2/positions",
-        headers={"access-token": get_token()},
-        timeout=10
-    )
-    return r.json() if r.status_code == 200 else []
-
-def fetch_holdings():
-    r = requests.get(
-        "https://api.dhan.co/v2/holdings",
-        headers={"access-token": get_token()},
-        timeout=10
-    )
-    return r.json() if r.status_code == 200 else []
-
 def fetch_orders():
-    r = requests.get(
-        "https://api.dhan.co/v2/forever/orders",
+    response = session.get(
+        "https://api.dhan.co/v2/forever/all",
         headers={"access-token": get_token()},
-        timeout=10
+        timeout=30
     )
-    return r.json() if r.status_code == 200 else []
+    response.raise_for_status()
+    return response.json()
 
 # ==========================
 # SYNC EXISTING SL ORDERS
@@ -155,14 +142,15 @@ def sync_orders(dhan_orders):
 
             conn.execute("""
                 INSERT OR REPLACE INTO sl_orders
-                (symbol, dhan_order_id, trigger_price, status, placed_at)
-                VALUES (?, ?, ?, ?, ?)
+                (symbol, security_id, dhan_order_id, trigger_price, status, placed_at)
+                VALUES (?, ?, ?, ?, ?, ?)
             """, (
                 o.get("tradingSymbol"),
+                o.get("securityId"),
                 o.get("orderId"),
                 float(o.get("triggerPrice", 0)),
                 o.get("orderStatus", "UNKNOWN"),
-                datetime.utcnow().isoformat()
+                datetime.now(timezone.utc).isoformat()
             ))
 
 # ==========================
@@ -197,6 +185,9 @@ def calculate_sl(entry, ltp, current_sl):
 # ==========================
 def place_sl(sec_id, qty, trigger, symbol):
     token = get_token()
+    trigger_price = round(trigger, 2)
+    limit_price = round(trigger_price * 0.995, 2)
+    disclosed_qty = max(1, int(qty * 0.3))
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
@@ -205,27 +196,28 @@ def place_sl(sec_id, qty, trigger, symbol):
         "transactionType": "SELL",
         "exchangeSegment": "NSE_EQ",
         "productType": "CNC",
-        "orderType": "LIMIT",  # Correct order type
+        "orderType": "LIMIT",
         "validity": "DAY",
         "securityId": str(sec_id),
         "quantity": int(qty),
-        "price": round(trigger * 0.995, 2),
-        "triggerPrice": round(trigger, 2)
+        "price": limit_price,
+        "triggerPrice": trigger_price,
+        "disclosedQuantity": disclosed_qty
     }
 
     headers = {
-        "accept": "application/json",
-        "content-type": "application/json",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
         "access-token": token
     }
 
     logger.info(f"Placing SL for {symbol}: {payload}")
 
-    response = requests.post(
+    response = session.post(
         "https://api.dhan.co/v2/forever/orders",
         json=payload,
         headers=headers,
-        timeout=15
+        timeout=30
     )
 
     logger.info(f"Dhan SL Response ({symbol}): {response.status_code} {response.text}")
@@ -234,11 +226,14 @@ def place_sl(sec_id, qty, trigger, symbol):
         send_telegram(f"❌ SL ORDER FAILED for {symbol}: {response.text}")
         return None
 
-    send_telegram(f"🛡️ SL placed for {symbol} at {trigger}")
+    send_telegram(f"🛡️ SL placed for {symbol} at {trigger_price}")
     return response.json()
 
 def modify_sl(order_id, qty, trigger, symbol):
     token = get_token()
+    trigger_price = round(trigger, 2)
+    limit_price = round(trigger_price * 0.995, 2)
+    disclosed_qty = max(1, int(qty * 0.3))
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
@@ -247,24 +242,25 @@ def modify_sl(order_id, qty, trigger, symbol):
         "orderType": "LIMIT",
         "legName": "TARGET_LEG",
         "quantity": int(qty),
-        "price": round(trigger * 0.995, 2),
-        "triggerPrice": round(trigger, 2),
+        "price": limit_price,
+        "triggerPrice": trigger_price,
+        "disclosedQuantity": disclosed_qty,
         "validity": "DAY"
     }
 
     headers = {
-        "accept": "application/json",
-        "content-type": "application/json",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
         "access-token": token
     }
 
     logger.info(f"Modifying SL for {symbol}: {payload}")
 
-    response = requests.put(
+    response = session.put(
         f"https://api.dhan.co/v2/forever/orders/{order_id}",
         json=payload,
         headers=headers,
-        timeout=15
+        timeout=30
     )
 
     logger.info(f"Dhan Modify Response ({symbol}): {response.status_code} {response.text}")
@@ -273,7 +269,7 @@ def modify_sl(order_id, qty, trigger, symbol):
         send_telegram(f"❌ SL MODIFY FAILED for {symbol}: {response.text}")
         return None
 
-    send_telegram(f"🔄 SL trailed for {symbol} to {trigger}")
+    send_telegram(f"🔄 SL trailed for {symbol} to {trigger_price}")
     return response.json()
 
 # ==========================
