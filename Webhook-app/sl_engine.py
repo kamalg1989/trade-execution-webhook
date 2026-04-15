@@ -169,19 +169,28 @@ def get_ltp(symbol):
 # SL CALCULATION LOGIC
 # ==========================
 def calculate_sl(entry, ltp, current_sl):
+    """
+    Calculate trailing stop-loss with a minimum 5% buffer from LTP.
+    """
+
+    # Initial SL
     base_sl = entry * BASE_SL_PCT
 
-    if current_sl is None:
-        return round(base_sl, 2)
+    # Start with the highest of current or base SL
+    new_sl = max(current_sl or 0, base_sl)
 
-    if ltp <= entry:
-        return round(base_sl, 2)
+    # Apply trailing logic only when in profit
+    if ltp > entry:
+        profit = ltp - entry
+        trailing_sl = entry + (profit * TRAIL_PROFIT_LOCK)
 
-    profit = ltp - entry
-    trailing_sl = entry + (profit * 0.5)
+        # Ensure SL is not closer than 5% to LTP
+        max_allowed_sl = ltp * (1 - MIN_LTP_BUFFER)
 
-    return round(max(current_sl, min(trailing_sl, ltp * 0.995)), 2)
+        # Choose the safer SL
+        new_sl = max(new_sl, min(trailing_sl, max_allowed_sl))
 
+    return round(new_sl, 2)
 # ==========================
 # DHAN ORDER ACTIONS
 # ==========================
