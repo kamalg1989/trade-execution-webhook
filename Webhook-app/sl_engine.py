@@ -123,7 +123,7 @@ def init_db():
 # ==========================
 def fetch_orders():
     response = session.get(
-        "https://api.dhan.co/v2/forever/all",
+        "https://api.dhan.co/v2/forever/orders",
         headers={"access-token": get_token()},
         timeout=30
     )
