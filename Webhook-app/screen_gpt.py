@@ -194,18 +194,34 @@ def get_stocks():
 # ==========================
 def fetch(stock):
     try:
-        # Map symbol to securityId (assumes you already store mapping or hardcode temporarily)
-        # TODO: Replace with dynamic lookup if needed
-        SECURITY_MAP = {
-            "SAIL.NS": "2963",
-            "ONGC.NS": "2475",
-            "ANANDRATHI.NS": "7145",
-            "SCHNEIDER.NS": "31238"
-        }
+        # ==========================
+        # LOAD SECURITY MAP (AUTO)
+        # ==========================
+        global SECURITY_MAP_CACHE
 
-        security_id = SECURITY_MAP.get(stock)
+        if "SECURITY_MAP_CACHE" not in globals():
+            try:
+                url = "https://images.dhan.co/api-data/api-scrip-master.csv"
+                df_map = pd.read_csv(url)
+
+                # Filter NSE EQ only
+                df_map = df_map[df_map["SEM_EXM_EXCH_ID"] == "NSE"]
+
+                SECURITY_MAP_CACHE = {
+                    f"{row['SEM_TRADING_SYMBOL']}.NS": str(row["SEM_SMST_SECURITY_ID"])
+                    for _, row in df_map.iterrows()
+                }
+
+                print(f"✅ Loaded {len(SECURITY_MAP_CACHE)} instruments from Dhan")
+
+            except Exception as e:
+                print(f"❌ Failed to load instrument list: {e}")
+                return pd.DataFrame()
+
+        security_id = SECURITY_MAP_CACHE.get(stock)
+
         if not security_id:
-            print(f"❌ Missing securityId for {stock}")
+            print(f"❌ securityId not found for {stock}")
             return pd.DataFrame()
 
         from datetime import datetime, timedelta
@@ -217,15 +233,19 @@ def fetch(stock):
             "securityId": security_id,
             "exchangeSegment": "NSE_EQ",
             "instrument": "EQUITY",
-            "expiryCode": 0,
             "oi": False,
             "fromDate": from_date.strftime("%Y-%m-%d"),
             "toDate": to_date.strftime("%Y-%m-%d")
         }
 
+        token = os.getenv("DHAN_ACCESS_TOKEN")
+        if not token:
+            print("❌ Missing DHAN_ACCESS_TOKEN")
+            return pd.DataFrame()
+
         headers = {
             "Content-Type": "application/json",
-            "access-token": os.getenv("DHAN_ACCESS_TOKEN")
+            "access-token": token
         }
 
         response = requests.post(
@@ -259,7 +279,7 @@ def fetch(stock):
 
         df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
 
-        print(f"📊 Dhan data used for {stock}: {df.index[-1].date()}")
+        print(f"📊 {stock} | candles={len(df)} | last={df.index[-1].date()}")
 
         return df
 
