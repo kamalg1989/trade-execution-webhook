@@ -193,41 +193,46 @@ def get_stocks():
 # DATA
 # ==========================
 def fetch(stock):
-    df = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
+    df = yf.download(
+        stock,
+        period="6mo",
+        interval="1d",
+        auto_adjust=True,
+        progress=False,
+        threads=False
+    )
+
     df.index = pd.to_datetime(df.index)
 
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    df = df[['Open','High','Low','Close','Volume']].dropna()
+    df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
 
-    # Check latest candle completeness
+    if df.empty:
+        print(f"❌ No data for {stock}")
+        return df
+
+    from datetime import date
+
+    last_row = df.iloc[-1]
+    last_date = df.index[-1].date()
+
+    # Drop incomplete candle (common yfinance issue)
+    is_incomplete = (
+        pd.isna(last_row['Close']) or
+        last_row['Volume'] == 0 or
+        (last_row['High'] == last_row['Low'] == last_row['Open'] == last_row['Close'])
+    )
+
+    if is_incomplete:
+        print(f"⚠️ Dropping incomplete candle for {stock}: {last_date}")
+        df = df.iloc[:-1]
+
+    # Final freshness log (no fallback, just visibility)
     if not df.empty:
-        from datetime import date
-
-        last_row = df.iloc[-1]
-        last_date = df.index[-1].date()
-
-        # Detect incomplete candle (volume == 0 OR OHLC same OR NaN)
-        is_incomplete = (
-            pd.isna(last_row['Close']) or
-            last_row['Volume'] == 0 or
-            (last_row['High'] == last_row['Low'] == last_row['Open'] == last_row['Close'])
-        )
-
-        if is_incomplete:
-            print(f"⚠️ Incomplete candle detected for {stock} on {last_date} → dropping it")
-            df = df.iloc[:-1]
-        else:
-            print(f"✅ Complete candle confirmed for {stock}: {last_date}")
-
-        # Final freshness check
-        if not df.empty:
-            final_date = df.index[-1].date()
-            if final_date < date.today():
-                print(f"⚠️ Latest usable candle is older for {stock}: {final_date}")
-            else:
-                print(f"✅ Latest usable candle is today for {stock}: {final_date}")
+        final_date = df.index[-1].date()
+        print(f"📊 Final candle used for {stock}: {final_date}")
 
     return df
 
