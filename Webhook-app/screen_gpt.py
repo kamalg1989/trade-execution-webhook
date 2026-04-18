@@ -193,48 +193,79 @@ def get_stocks():
 # DATA
 # ==========================
 def fetch(stock):
-    df = yf.download(
-        stock,
-        period="6mo",
-        interval="1d",
-        auto_adjust=True,
-        progress=False,
-        threads=False
-    )
+    try:
+        # Map symbol to securityId (assumes you already store mapping or hardcode temporarily)
+        # TODO: Replace with dynamic lookup if needed
+        SECURITY_MAP = {
+            "SAIL.NS": "2963",
+            "ONGC.NS": "2475",
+            "ANANDRATHI.NS": "7145",
+            "SCHNEIDER.NS": "31238"
+        }
 
-    df.index = pd.to_datetime(df.index)
+        security_id = SECURITY_MAP.get(stock)
+        if not security_id:
+            print(f"❌ Missing securityId for {stock}")
+            return pd.DataFrame()
 
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+        from datetime import datetime, timedelta
 
-    df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+        to_date = datetime.now()
+        from_date = to_date - timedelta(days=200)
 
-    if df.empty:
-        print(f"❌ No data for {stock}")
+        payload = {
+            "securityId": security_id,
+            "exchangeSegment": "NSE_EQ",
+            "instrument": "EQUITY",
+            "expiryCode": 0,
+            "oi": False,
+            "fromDate": from_date.strftime("%Y-%m-%d"),
+            "toDate": to_date.strftime("%Y-%m-%d")
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "access-token": os.getenv("DHAN_ACCESS_TOKEN")
+        }
+
+        response = requests.post(
+            "https://api.dhan.co/v2/charts/historical",
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            print(f"❌ Dhan API failed for {stock}: {response.text}")
+            return pd.DataFrame()
+
+        data = response.json()
+
+        if not data.get("close"):
+            print(f"❌ No data returned for {stock}")
+            return pd.DataFrame()
+
+        df = pd.DataFrame({
+            "Open": data["open"],
+            "High": data["high"],
+            "Low": data["low"],
+            "Close": data["close"],
+            "Volume": data["volume"],
+            "Timestamp": data["timestamp"]
+        })
+
+        df["Date"] = pd.to_datetime(df["Timestamp"], unit="s")
+        df.set_index("Date", inplace=True)
+
+        df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+
+        print(f"📊 Dhan data used for {stock}: {df.index[-1].date()}")
+
         return df
 
-    from datetime import date
-
-    last_row = df.iloc[-1]
-    last_date = df.index[-1].date()
-
-    # Drop incomplete candle (common yfinance issue)
-    is_incomplete = (
-        pd.isna(last_row['Close']) or
-        last_row['Volume'] == 0 or
-        (last_row['High'] == last_row['Low'] == last_row['Open'] == last_row['Close'])
-    )
-
-    if is_incomplete:
-        print(f"⚠️ Dropping incomplete candle for {stock}: {last_date}")
-        df = df.iloc[:-1]
-
-    # Final freshness log (no fallback, just visibility)
-    if not df.empty:
-        final_date = df.index[-1].date()
-        print(f"📊 Final candle used for {stock}: {final_date}")
-
-    return df
+    except Exception as e:
+        print(f"❌ Dhan fetch error for {stock}: {e}")
+        return pd.DataFrame()
 
 
 def to_weekly(df):
