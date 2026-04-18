@@ -259,16 +259,21 @@ def fetch(stock):
                         "pin": pin,
                         "totp": totp
                     },
-                    timeout=10
+                    timeout=15
                 )
+
+                if r.status_code != 200:
+                    print(f"❌ Token HTTP error: {r.status_code} {r.text}")
+                    return None
 
                 data = r.json()
 
-                if "accessToken" not in data:
-                    print(f"❌ Token error: {data}")
+                token = data.get("accessToken")
+                if not token:
+                    print(f"❌ Token missing in response: {data}")
                     return None
 
-                return data["accessToken"]
+                return token
 
             except Exception as e:
                 print(f"❌ Token generation failed: {e}")
@@ -277,6 +282,7 @@ def fetch(stock):
 
         token = get_dhan_token()
         if not token:
+            print(f"❌ Skipping {stock} due to token failure")
             return pd.DataFrame()
 
         headers = {
@@ -284,15 +290,28 @@ def fetch(stock):
             "access-token": token
         }
 
-        response = requests.post(
-            "https://api.dhan.co/v2/charts/historical",
-            json=payload,
-            headers=headers,
-            timeout=10
-        )
+        response = None
+        for attempt in range(3):
+            try:
+                response = requests.post(
+                    "https://api.dhan.co/v2/charts/historical",
+                    json=payload,
+                    headers=headers,
+                    timeout=15
+                )
 
-        if response.status_code != 200:
-            print(f"❌ Dhan API failed for {stock}: {response.text}")
+                if response.status_code == 200:
+                    break
+
+                print(f"⚠️ Retry {attempt+1} failed for {stock}: {response.text}")
+                time.sleep(2 ** attempt)
+
+            except Exception as e:
+                print(f"⚠️ Retry {attempt+1} exception for {stock}: {e}")
+                time.sleep(2 ** attempt)
+
+        if not response or response.status_code != 200:
+            print(f"❌ Dhan API failed for {stock}")
             return pd.DataFrame()
 
         data = response.json()
@@ -335,6 +354,8 @@ def to_weekly(df):
 # FILTER
 # ==========================
 def filter_stock(df):
+    if df is None or df.empty:
+        return False
 
     if len(df) < 50:
         return False
@@ -391,6 +412,9 @@ def create_trade(df):
 def plot_chart(stock, save_path):
 
     df = fetch(stock)
+    if df is None or df.empty:
+        print(f"❌ Skipping chart for {stock} due to no data")
+        return
     df_weekly = to_weekly(df.copy())
 
     for ema in [10,21,50,200]:
@@ -650,9 +674,15 @@ def run():
 
         img = f"{folder}/{s}.png"
         plot_chart(s, img)
+
+        if not os.path.exists(img):
+            continue
+
         images.append(img)
 
         df = fetch(s)
+        if df is None or df.empty:
+            continue
         trade_map[s] = create_trade(df)
 
     pdf_path = f"{folder}/charts.pdf"
