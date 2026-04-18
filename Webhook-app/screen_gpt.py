@@ -202,7 +202,7 @@ def fetch(stock):
         if "SECURITY_MAP_CACHE" not in globals():
             try:
                 url = "https://images.dhan.co/api-data/api-scrip-master.csv"
-                df_map = pd.read_csv(url)
+                df_map = pd.read_csv(url, low_memory=False)
 
                 # Filter NSE EQ only
                 df_map = df_map[df_map["SEM_EXM_EXCH_ID"] == "NSE"]
@@ -238,9 +238,45 @@ def fetch(stock):
             "toDate": to_date.strftime("%Y-%m-%d")
         }
 
-        token = os.getenv("DHAN_ACCESS_TOKEN")
+        def get_dhan_token():
+            try:
+                import pyotp
+
+                client_id = os.getenv("DHAN_CLIENT_ID")
+                pin = os.getenv("DHAN_PIN")
+                secret = os.getenv("DHAN_TOTP_SECRET")
+
+                if not all([client_id, pin, secret]):
+                    print("❌ Missing Dhan credentials")
+                    return None
+
+                totp = pyotp.TOTP(secret).now()
+
+                r = requests.post(
+                    "https://auth.dhan.co/app/generateAccessToken",
+                    params={
+                        "dhanClientId": client_id,
+                        "pin": pin,
+                        "totp": totp
+                    },
+                    timeout=10
+                )
+
+                data = r.json()
+
+                if "accessToken" not in data:
+                    print(f"❌ Token error: {data}")
+                    return None
+
+                return data["accessToken"]
+
+            except Exception as e:
+                print(f"❌ Token generation failed: {e}")
+                return None
+
+
+        token = get_dhan_token()
         if not token:
-            print("❌ Missing DHAN_ACCESS_TOKEN")
             return pd.DataFrame()
 
         headers = {
