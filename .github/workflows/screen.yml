@@ -19,54 +19,57 @@ jobs:
     timeout-minutes: 20
 
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-    - name: Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-    - name: Upgrade pip
-      run: python -m pip install --upgrade pip
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
 
-    - name: Install dependencies
-      run: |
-        pip install -r Webhook-app/requirements.txt
+      - name: Install dependencies
+        run: |
+          pip install -r Webhook-app/requirements.txt
 
-    - name: Run script
-      env:
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
-        GITHUB_TOKEN_CUSTOM: ${{ secrets.GITHUB_TOKEN_CUSTOM }}
-        CAPITAL: ${{ secrets.CAPITAL }}
-      run: python Webhook-app/screen_gpt.py
+      - name: Run script
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
+          GITHUB_TOKEN_CUSTOM: ${{ secrets.GITHUB_TOKEN_CUSTOM }}
+          CAPITAL: ${{ secrets.CAPITAL }}
+          DHAN_CLIENT_ID: ${{ secrets.DHAN_CLIENT_ID }}
+          DHAN_PIN: ${{ secrets.DHAN_PIN }}
+          DHAN_TOTP_SECRET: ${{ secrets.DHAN_TOTP_SECRET }}
+        run: python Webhook-app/screen_gpt.py
 
-    - name: Upload Results
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: trading-output
-        path: |
-          run_*/
-          charts/
+      - name: Upload Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trading-output
+          path: |
+            run_*/
+            charts/
 
-    - name: Upload DB
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: trades-db
-        path: Webhook-app/trades.db
+      - name: Upload DB
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trades-db
+          path: Webhook-app/trades.db
 
-    - name: Commit DB (persist)
-      run: |
-        git config user.name "bot"
-        git config user.email "bot@github.com"
-
-        git pull origin main --rebase || true
-
-        git add Webhook-app/trades.db
-        git diff --cached --quiet || git commit -m "screen update db"
-        git push
+      - name: Commit DB (persist)
+        run: |
+          git config user.name "bot"
+          git config user.email "bot@github.com"
+          
+          git pull origin main --rebase || true
+          
+          git add Webhook-app/trades.db
+          git diff --cached --quiet || git commit -m "screen update db"
+          git push
