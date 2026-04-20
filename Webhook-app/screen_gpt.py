@@ -41,21 +41,15 @@ CAPITAL = int(os.getenv("CAPITAL") or "200000")
 # ==========================
 # GLOBAL TOKEN CACHE
 # ==========================
-DHAN_TOKEN_CACHE = {"token": None, "generated_at": 0, "attempted": False}
+DHAN_TOKEN_CACHE = {"token": None, "generated_at": 0}
 
 
 def get_dhan_token():
     global DHAN_TOKEN_CACHE
 
-    # Reuse cached token if available
-    if DHAN_TOKEN_CACHE["token"]:
+    # Reuse cached token if < 23 hours old (Dhan tokens valid 24h)
+    if DHAN_TOKEN_CACHE["token"] and (time.time() - DHAN_TOKEN_CACHE["generated_at"]) < 23 * 3600:
         return DHAN_TOKEN_CACHE["token"]
-
-    # If already attempted and failed, avoid retry spam
-    if DHAN_TOKEN_CACHE["attempted"]:
-        return None
-
-    DHAN_TOKEN_CACHE["attempted"] = True
 
     try:
         import pyotp
@@ -82,16 +76,17 @@ def get_dhan_token():
 
         if r.status_code != 200:
             print(f"❌ Token HTTP error: {r.status_code} {r.text}")
-            return None
+            return DHAN_TOKEN_CACHE["token"]  # fallback to old token if exists
 
         data = r.json()
         token = data.get("accessToken")
 
         if not token:
-            print(f"⚠️ Token generation blocked: {data}")
-            return None
+            # Rate-limited → reuse old cached token if available
+            print(f"⚠️ Token generation blocked: {data}. Reusing cached token.")
+            return DHAN_TOKEN_CACHE["token"]
 
-        DHAN_TOKEN_CACHE = {"token": token, "generated_at": time.time(), "attempted": True}
+        DHAN_TOKEN_CACHE = {"token": token, "generated_at": time.time()}
         print("✅ New Dhan token generated and cached")
         return token
 
@@ -664,9 +659,9 @@ def run():
             tightness = (base_high - base_low) / base_low
 
             score = (
-                (current / base_high) * 0.5 +   # breakout proximity
-                (current / df['EMA50'].iloc[-1]) * 0.3 +  # trend strength
-                (1 - tightness) * 0.2           # tighter base
+                    (current / base_high) * 0.5 +   # breakout proximity
+                    (current / df['EMA50'].iloc[-1]) * 0.3 +  # trend strength
+                    (1 - tightness) * 0.2           # tighter base
             )
 
             scored.append((s, score))
