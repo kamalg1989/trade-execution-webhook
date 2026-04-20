@@ -25,6 +25,27 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
 
 import sqlite3
+import traceback
+import sys
+
+# ================= DEBUG =================
+def log_exception(prefix, e):
+    print(f"\n❌ {prefix}: {e}")
+    traceback.print_exc()
+
+def safe_execute(stage, fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:
+        log_exception(stage, e)
+        return None
+
+def global_exception_hook(exctype, value, tb):
+    print("\n🔥 UNHANDLED EXCEPTION")
+    traceback.print_exception(exctype, value, tb)
+
+sys.excepthook = global_exception_hook
+# ========================================
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades.db")
 
