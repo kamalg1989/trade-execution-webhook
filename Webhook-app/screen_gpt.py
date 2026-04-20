@@ -19,11 +19,9 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 from openai import OpenAI
 from matplotlib.patches import Patch
-
 from reportlab.platypus import SimpleDocTemplate, Image, Spacer
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
-
 import sqlite3
 import traceback
 import sys
