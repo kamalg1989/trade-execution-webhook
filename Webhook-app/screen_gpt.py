@@ -923,7 +923,7 @@ def run():
     trade_map = {}
     detected_entries = {}
     meta = {}
-
+    running_risk = get_open_risk()
     print("\n" + "=" * 60)
     print("🔎 STAGES 1-6 — Per-stock pipeline")
     print("=" * 60)
