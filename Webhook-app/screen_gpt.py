@@ -281,10 +281,16 @@ def fetch(stock):
             print(f"❌ securityId not found for {stock}")
             return pd.DataFrame()
 
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
 
-        to_date = datetime.now()
+        # Use IST timezone and make toDate inclusive by adding +1 day
+        IST = timezone(timedelta(hours=5, minutes=30))
+        now_ist = datetime.now(IST)
+
+        to_date = now_ist + timedelta(days=1)   # compensate non-inclusive API
         from_date = to_date - timedelta(days=200)
+
+        print(f"📅 Fetch Range (IST): {from_date.date()} → {to_date.date()} (inclusive-adjusted)")
 
         payload = {
             "securityId": security_id,
@@ -344,12 +350,25 @@ def fetch(stock):
             "Timestamp": data["timestamp"]
         })
 
-        df["Date"] = pd.to_datetime(df["Timestamp"], unit="s")
+        # Convert timestamp to IST timezone for correct candle alignment
+        df["Date"] = pd.to_datetime(df["Timestamp"], unit="s", utc=True).dt.tz_convert("Asia/Kolkata")
         df.set_index("Date", inplace=True)
 
         df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
 
-        print(f"📊 {stock} | candles={len(df)} | last={df.index[-1].date()}")
+        # Ensure latest candle is picked correctly (handle partial-day issues)
+        df = df.sort_index()
+
+        if len(df) > 1:
+            last_ts = df.index[-1]
+            prev_ts = df.index[-2]
+
+            # If last candle looks incomplete (same day but very low volume), fallback to previous
+            if last_ts.date() == prev_ts.date() and df.iloc[-1]["Volume"] < df.iloc[-2]["Volume"] * 0.2:
+                print(f"⚠️ Dropping incomplete candle for {stock} at {last_ts}")
+                df = df.iloc[:-1]
+
+        print(f"📊 {stock} | candles={len(df)} | last={df.index[-1].date()} | latest_close={df.iloc[-1]['Close']}")
 
         return df
 
