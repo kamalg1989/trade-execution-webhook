@@ -427,6 +427,9 @@ def create_trade(df):
 def plot_chart(stock, save_path):
 
     df = fetch(stock)
+    if df is None or df.empty:
+        print(f"❌ Skipping chart for {stock} due to no data")
+        return
     df_weekly = to_weekly(df.copy())
 
     for ema in [10,21,50,200]:
