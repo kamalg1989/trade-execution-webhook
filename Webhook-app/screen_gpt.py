@@ -1,5 +1,12 @@
 # ==============================================
-# 🚀 FINAL SYSTEM (GPT UPGRADED + JSON OUTPUT)
+# 🚀 OHM SYSTEM — P0 UPDATE
+# Adds proper entry-technique detection per OHM PDF:
+#   - Trend Bar
+#   - Pin Bar (bullish)
+#   - HH-HL (double bar)
+#   - Inside Bar
+# Entry / SL now derived from the matched pattern, not blindly
+# from last candle's high/low.
 # ==============================================
 
 import os
