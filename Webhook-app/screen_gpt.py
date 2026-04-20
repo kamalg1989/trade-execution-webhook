@@ -369,6 +369,8 @@ def to_weekly(df):
 # FILTER
 # ==========================
 def filter_stock(df):
+    if df is None or df.empty:
+        return False
 
     if len(df) < 50:
         return False
