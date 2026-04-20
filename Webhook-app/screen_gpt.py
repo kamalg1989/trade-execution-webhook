@@ -359,6 +359,75 @@ def fetch(stock):
         # Ensure latest candle is picked correctly (handle partial-day issues)
         df = df.sort_index()
 
+        # ==========================
+        # 🔄 FALLBACK: TRY INTRADAY FOR TODAY'S CANDLE
+        # ==========================
+        try:
+            last_date = df.index[-1].date()
+            today_ist = now_ist.date()
+
+            if last_date < today_ist:
+                print(f"⚠️ {stock}: Daily candle missing for today ({today_ist}). Trying intraday fallback...")
+
+                intraday_payload = {
+                    "securityId": security_id,
+                    "exchangeSegment": "NSE_EQ",
+                    "instrument": "EQUITY",
+                    "interval": "60",
+                    "oi": False,
+                    "fromDate": (now_ist - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "toDate": now_ist.strftime("%Y-%m-%d %H:%M:%S")
+                }
+
+                intraday_resp = requests.post(
+                    "https://api.dhan.co/v2/charts/intraday",
+                    json=intraday_payload,
+                    headers=headers,
+                    timeout=15
+                )
+
+                if intraday_resp.status_code == 200:
+                    intraday_data = intraday_resp.json()
+
+                    if intraday_data.get("close"):
+                        df_1h = pd.DataFrame({
+                            "Open": intraday_data["open"],
+                            "High": intraday_data["high"],
+                            "Low": intraday_data["low"],
+                            "Close": intraday_data["close"],
+                            "Volume": intraday_data["volume"],
+                            "Timestamp": intraday_data["timestamp"]
+                        })
+
+                        df_1h["Date"] = pd.to_datetime(df_1h["Timestamp"], unit="s", utc=True).dt.tz_convert("Asia/Kolkata")
+                        df_1h.set_index("Date", inplace=True)
+
+                        df_1h = df_1h.sort_index()
+
+                        # Aggregate to today's candle
+                        today_df = df_1h[df_1h.index.date == today_ist]
+
+                        if not today_df.empty:
+                            o = today_df.iloc[0]["Open"]
+                            h = today_df["High"].max()
+                            l = today_df["Low"].min()
+                            c = today_df.iloc[-1]["Close"]
+                            v = today_df["Volume"].sum()
+
+                            print(f"✅ {stock}: Intraday fallback success → O:{o} H:{h} L:{l} C:{c}")
+
+                            df.loc[pd.Timestamp(today_ist, tz="Asia/Kolkata")] = [o, h, l, c, v]
+                        else:
+                            print(f"⚠️ {stock}: Intraday returned but no today's rows")
+                    else:
+                        print(f"⚠️ {stock}: Intraday API returned empty data")
+
+                else:
+                    print(f"❌ {stock}: Intraday API failed {intraday_resp.status_code} {intraday_resp.text}")
+
+        except Exception as e:
+            print(f"❌ {stock}: Intraday fallback error → {e}")
+
         if len(df) > 1:
             last_ts = df.index[-1]
             prev_ts = df.index[-2]
