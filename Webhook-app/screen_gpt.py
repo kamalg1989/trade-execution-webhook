@@ -250,43 +250,112 @@ def get_stocks():
 # DATA
 # ==========================
 def fetch(stock):
-    df = yf.download(stock, period="6mo", auto_adjust=True, progress=False)
-    df.index = pd.to_datetime(df.index)
+    try:
+        # ==========================
+        # LOAD SECURITY MAP (AUTO)
+        # ==========================
+        global SECURITY_MAP_CACHE
 
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+        if "SECURITY_MAP_CACHE" not in globals():
+            try:
+                url = "https://images.dhan.co/api-data/api-scrip-master.csv"
+                df_map = pd.read_csv(url, low_memory=False)
 
-    df = df[['Open','High','Low','Close','Volume']].dropna()
+                # Filter NSE EQ only
+                df_map = df_map[df_map["SEM_EXM_EXCH_ID"] == "NSE"]
 
-    # Check latest candle completeness
-    if not df.empty:
-        from datetime import date
+                SECURITY_MAP_CACHE = {
+                    f"{row['SEM_TRADING_SYMBOL']}.NS": str(row["SEM_SMST_SECURITY_ID"])
+                    for _, row in df_map.iterrows()
+                }
 
-        last_row = df.iloc[-1]
-        last_date = df.index[-1].date()
+                print(f"✅ Loaded {len(SECURITY_MAP_CACHE)} instruments from Dhan")
 
-        # Detect incomplete candle (volume == 0 OR OHLC same OR NaN)
-        is_incomplete = (
-            pd.isna(last_row['Close']) or
-            last_row['Volume'] == 0 or
-            (last_row['High'] == last_row['Low'] == last_row['Open'] == last_row['Close'])
-        )
+            except Exception as e:
+                print(f"❌ Failed to load instrument list: {e}")
+                return pd.DataFrame()
 
-        if is_incomplete:
-            print(f"⚠️ Incomplete candle detected for {stock} on {last_date} → dropping it")
-            df = df.iloc[:-1]
-        else:
-            print(f"✅ Complete candle confirmed for {stock}: {last_date}")
+        security_id = SECURITY_MAP_CACHE.get(stock)
 
-        # Final freshness check
-        if not df.empty:
-            final_date = df.index[-1].date()
-            if final_date < date.today():
-                print(f"⚠️ Latest usable candle is older for {stock}: {final_date}")
-            else:
-                print(f"✅ Latest usable candle is today for {stock}: {final_date}")
+        if not security_id:
+            print(f"❌ securityId not found for {stock}")
+            return pd.DataFrame()
 
-    return df
+        from datetime import datetime, timedelta
+
+        to_date = datetime.now()
+        from_date = to_date - timedelta(days=200)
+
+        payload = {
+            "securityId": security_id,
+            "exchangeSegment": "NSE_EQ",
+            "instrument": "EQUITY",
+            "oi": False,
+            "fromDate": from_date.strftime("%Y-%m-%d"),
+            "toDate": to_date.strftime("%Y-%m-%d")
+        }
+
+        token = get_dhan_token()
+        if not token:
+            print(f"❌ Skipping {stock} due to token failure")
+            return pd.DataFrame()
+
+        headers = {
+            "Content-Type": "application/json",
+            "access-token": token
+        }
+
+        response = None
+        for attempt in range(3):
+            try:
+                response = requests.post(
+                    "https://api.dhan.co/v2/charts/historical",
+                    json=payload,
+                    headers=headers,
+                    timeout=15
+                )
+
+                if response.status_code == 200:
+                    break
+
+                print(f"⚠️ Retry {attempt+1} failed for {stock}: {response.text}")
+                time.sleep(2 ** attempt)
+
+            except Exception as e:
+                print(f"⚠️ Retry {attempt+1} exception for {stock}: {e}")
+                time.sleep(2 ** attempt)
+
+        if not response or response.status_code != 200:
+            print(f"❌ Dhan API failed for {stock}")
+            return pd.DataFrame()
+
+        data = response.json()
+
+        if not data.get("close"):
+            print(f"❌ No data returned for {stock}")
+            return pd.DataFrame()
+
+        df = pd.DataFrame({
+            "Open": data["open"],
+            "High": data["high"],
+            "Low": data["low"],
+            "Close": data["close"],
+            "Volume": data["volume"],
+            "Timestamp": data["timestamp"]
+        })
+
+        df["Date"] = pd.to_datetime(df["Timestamp"], unit="s")
+        df.set_index("Date", inplace=True)
+
+        df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+
+        print(f"📊 {stock} | candles={len(df)} | last={df.index[-1].date()}")
+
+        return df
+
+    except Exception as e:
+        print(f"❌ Dhan fetch error for {stock}: {e}")
+        return pd.DataFrame()
 
 
 def to_weekly(df):
