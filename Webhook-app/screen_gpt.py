@@ -72,7 +72,7 @@ def _generate_new_token():
 
         if not all([client_id, pin, secret]):
             print("❌ Missing Dhan credentials")
-            return None
+            return None, "missing_creds"
 
         totp = pyotp.TOTP(secret).now()
 
