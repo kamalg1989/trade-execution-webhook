@@ -88,23 +88,70 @@ def _generate_new_token():
 
         if r.status_code != 200:
             print(f"❌ Token HTTP error: {r.status_code} {r.text}")
-            return DHAN_TOKEN_CACHE["token"]  # fallback to old token if exists
+            return None, "http_error"
 
         data = r.json()
         token = data.get("accessToken")
 
         if not token:
-            # Rate-limited → reuse old cached token if available
-            print(f"⚠️ Token generation blocked: {data}. Reusing cached token.")
-            return DHAN_TOKEN_CACHE["token"]
+            msg = str(data).lower()
+            if "2 minutes" in msg or "rate" in msg or "once every" in msg:
+                print(f"⚠️ Rate-limited: {data}")
+                return None, "rate_limited"
+            print(f"❌ No token in response: {data}")
+            return None, "no_token"
 
-        DHAN_TOKEN_CACHE = {"token": token, "generated_at": time.time()}
-        print("✅ New Dhan token generated and cached")
-        return token
+        return token, "ok"
 
     except Exception as e:
-        print(f"❌ Token generation failed: {e}")
-        return DHAN_TOKEN_CACHE["token"]
+        print(f"❌ Token generation exception: {e}")
+        return None, "exception"
+
+
+def get_dhan_token(force_refresh=False):
+    """
+    Get a valid Dhan token.
+    1. Return cached token if < 23h old (unless force_refresh)
+    2. Try generating a new token
+    3. If rate-limited (2-min cooldown), wait 125s and retry once
+    4. Validate the token before returning
+    """
+    global DHAN_TOKEN_CACHE
+
+    # Step 1 — reuse cached token if fresh
+    if not force_refresh and DHAN_TOKEN_CACHE["token"]:
+        if (time.time() - DHAN_TOKEN_CACHE["generated_at"]) < 23 * 3600:
+            return DHAN_TOKEN_CACHE["token"]
+
+    # Step 2 — try generating
+    token, status = _generate_new_token()
+
+    # Step 3 — handle rate limit with wait+retry
+    if status == "rate_limited":
+        print("⏳ Dhan token rate-limited. Waiting 125 seconds before retry...")
+        time.sleep(125)
+        print("🔄 Retrying token generation after wait...")
+        token, status = _generate_new_token()
+
+    # If still no token, try cached fallback
+    if not token:
+        if DHAN_TOKEN_CACHE["token"]:
+            print("⚠️ Token generation failed. Falling back to cached token.")
+            return DHAN_TOKEN_CACHE["token"]
+        print("❌ No token available and no cache to fall back to.")
+        return None
+
+    # Step 4 — validate token before caching
+    if not validate_dhan_token(token):
+        print("❌ Newly generated token failed validation.")
+        if DHAN_TOKEN_CACHE["token"]:
+            print("⚠️ Falling back to previous cached token.")
+            return DHAN_TOKEN_CACHE["token"]
+        return None
+
+    DHAN_TOKEN_CACHE = {"token": token, "generated_at": time.time()}
+    print("✅ New Dhan token generated, validated, and cached")
+    return token
 
 
 # ==========================
