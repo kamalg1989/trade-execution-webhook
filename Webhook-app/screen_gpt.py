@@ -955,9 +955,20 @@ def run():
             continue
         funnel["pass_entry"] += 1
 
-        allowed, current_open, cap = check_aggregate_risk(trade["total_risk_inr"], symbol=s)
+        proposed = trade["total_risk_inr"]
+        cap = CAPITAL * MAX_OPEN_RISK_PCT
+
+        # in-run protection
+        if running_risk + proposed > cap:
+            print(f"   [{s}] AGGR RISK ⛔ (in-run) | running=₹{running_risk:.0f}, proposed=₹{proposed:.0f}, cap=₹{cap:.0f}")
+            continue
+
+        # DB protection
+        allowed, _, _ = check_aggregate_risk(proposed, symbol=s)
         if not allowed:
             continue
+
+        running_risk += proposed
         funnel["pass_aggregate_risk"] += 1
 
         trade_map[s] = trade
