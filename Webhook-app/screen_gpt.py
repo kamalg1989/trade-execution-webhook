@@ -39,6 +39,63 @@ CAPITAL = int(os.getenv("CAPITAL") or "200000")
 
 
 # ==========================
+# GLOBAL TOKEN CACHE
+# ==========================
+DHAN_TOKEN_CACHE = {"token": None, "generated_at": 0}
+
+
+def get_dhan_token():
+    global DHAN_TOKEN_CACHE
+
+    # Reuse cached token if < 23 hours old (Dhan tokens valid 24h)
+    if DHAN_TOKEN_CACHE["token"] and (time.time() - DHAN_TOKEN_CACHE["generated_at"]) < 23 * 3600:
+        return DHAN_TOKEN_CACHE["token"]
+
+    try:
+        import pyotp
+
+        client_id = os.getenv("DHAN_CLIENT_ID")
+        pin = os.getenv("DHAN_PIN")
+        secret = os.getenv("DHAN_TOTP_SECRET")
+
+        if not all([client_id, pin, secret]):
+            print("❌ Missing Dhan credentials")
+            return None
+
+        totp = pyotp.TOTP(secret).now()
+
+        r = requests.post(
+            "https://auth.dhan.co/app/generateAccessToken",
+            params={
+                "dhanClientId": client_id,
+                "pin": pin,
+                "totp": totp
+            },
+            timeout=15
+        )
+
+        if r.status_code != 200:
+            print(f"❌ Token HTTP error: {r.status_code} {r.text}")
+            return DHAN_TOKEN_CACHE["token"]  # fallback to old token if exists
+
+        data = r.json()
+        token = data.get("accessToken")
+
+        if not token:
+            # Rate-limited → reuse old cached token if available
+            print(f"⚠️ Token generation blocked: {data}. Reusing cached token.")
+            return DHAN_TOKEN_CACHE["token"]
+
+        DHAN_TOKEN_CACHE = {"token": token, "generated_at": time.time()}
+        print("✅ New Dhan token generated and cached")
+        return token
+
+    except Exception as e:
+        print(f"❌ Token generation failed: {e}")
+        return DHAN_TOKEN_CACHE["token"]
+
+
+# ==========================
 # DB
 # ==========================
 def get_conn():
