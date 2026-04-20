@@ -789,6 +789,14 @@ def parse_gpt_output(output):
 # ==========================
 def run():
 
+    # 🔐 Pre-flight: ensure we have a valid Dhan token BEFORE processing stocks
+    print("🔐 Performing Dhan token pre-flight check...")
+    token = get_dhan_token()
+    if not token:
+        print("❌ Cannot proceed — no valid Dhan token available.")
+        return
+    print("✅ Dhan token ready. Starting stock processing...")
+
     stocks = get_stocks()
 
     shortlist = []
