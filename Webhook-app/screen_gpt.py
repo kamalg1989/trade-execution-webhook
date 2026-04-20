@@ -44,13 +44,25 @@ CAPITAL = int(os.getenv("CAPITAL") or "200000")
 DHAN_TOKEN_CACHE = {"token": None, "generated_at": 0}
 
 
-def get_dhan_token():
-    global DHAN_TOKEN_CACHE
+def validate_dhan_token(token):
+    """Lightweight validation — call a cheap Dhan endpoint to check token validity."""
+    try:
+        r = requests.get(
+            "https://api.dhan.co/v2/fundlimit",
+            headers={"access-token": token, "Content-Type": "application/json"},
+            timeout=10
+        )
+        if r.status_code == 200:
+            return True
+        print(f"⚠️ Token validation failed: {r.status_code} {r.text}")
+        return False
+    except Exception as e:
+        print(f"⚠️ Token validation error: {e}")
+        return False
 
-    # Reuse cached token if < 23 hours old (Dhan tokens valid 24h)
-    if DHAN_TOKEN_CACHE["token"] and (time.time() - DHAN_TOKEN_CACHE["generated_at"]) < 23 * 3600:
-        return DHAN_TOKEN_CACHE["token"]
 
+def _generate_new_token():
+    """Single attempt to generate a new Dhan token. Returns (token, status)."""
     try:
         import pyotp
 
