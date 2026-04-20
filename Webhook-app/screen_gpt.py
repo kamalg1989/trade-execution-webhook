@@ -383,6 +383,16 @@ def fetch(stock):
                 if response.status_code == 200:
                     break
 
+                # If unauthorized, token may have expired — force refresh and retry
+                if response.status_code in (401, 403):
+                    print(f"⚠️ Token unauthorized for {stock}. Forcing refresh...")
+                    token = get_dhan_token(force_refresh=True)
+                    if token:
+                        headers["access-token"] = token
+                    else:
+                        print(f"❌ Could not refresh token for {stock}")
+                        return pd.DataFrame()
+
                 print(f"⚠️ Retry {attempt+1} failed for {stock}: {response.text}")
                 time.sleep(2 ** attempt)
 
