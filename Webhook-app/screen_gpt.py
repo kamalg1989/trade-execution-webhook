@@ -54,7 +54,7 @@ MIN_BAR_RANGE_PCT = 0.005
 
 # ---- Liquidity filter ----
 # Minimum 20-day avg daily turnover (price × volume) in ₹
-MIN_DAILY_TURNOVER = 1_00_00_00000   # ₹1 crore
+MIN_DAILY_TURNOVER = 1_00_00_000   # ₹1 crore
 
 # ---- Fundamental filter (from yfinance) ----
 # All thresholds expressed as pass/fail gates. Stock must pass ALL to qualify.
