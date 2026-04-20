@@ -689,9 +689,15 @@ def run():
 
         img = f"{folder}/{s}.png"
         plot_chart(s, img)
+
+        if not os.path.exists(img):
+            continue
+
         images.append(img)
 
         df = fetch(s)
+        if df is None or df.empty:
+            continue
         trade_map[s] = create_trade(df)
 
     pdf_path = f"{folder}/charts.pdf"
