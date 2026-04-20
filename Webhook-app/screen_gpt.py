@@ -19,31 +19,12 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 from openai import OpenAI
 from matplotlib.patches import Patch
+
 from reportlab.platypus import SimpleDocTemplate, Image, Spacer
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
+
 import sqlite3
-import traceback
-import sys
-
-# ================= DEBUG =================
-def log_exception(prefix, e):
-    print(f"\n❌ {prefix}: {e}")
-    traceback.print_exc()
-
-def safe_execute(stage, fn, *args, **kwargs):
-    try:
-        return fn(*args, **kwargs)
-    except Exception as e:
-        log_exception(stage, e)
-        return None
-
-def global_exception_hook(exctype, value, tb):
-    print("\n🔥 UNHANDLED EXCEPTION")
-    traceback.print_exception(exctype, value, tb)
-
-sys.excepthook = global_exception_hook
-# ========================================
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades.db")
 
@@ -974,20 +955,9 @@ def run():
             continue
         funnel["pass_entry"] += 1
 
-        proposed = trade["total_risk_inr"]
-        cap = CAPITAL * MAX_OPEN_RISK_PCT
-
-        # in-run protection
-        if running_risk + proposed > cap:
-            print(f"   [{s}] AGGR RISK ⛔ (in-run) | running=₹{running_risk:.0f}, proposed=₹{proposed:.0f}, cap=₹{cap:.0f}")
-            continue
-
-        # DB protection
-        allowed, _, _ = check_aggregate_risk(proposed, symbol=s)
+        allowed, current_open, cap = check_aggregate_risk(trade["total_risk_inr"], symbol=s)
         if not allowed:
             continue
-
-        running_risk += proposed
         funnel["pass_aggregate_risk"] += 1
 
         trade_map[s] = trade
