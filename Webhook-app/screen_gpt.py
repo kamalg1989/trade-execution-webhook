@@ -69,7 +69,7 @@ FUND_REQUIRE_POSITIVE_EPS = True   # EPS must be > 0
 # ---- IFP (Institutional Foot Print) config ----
 IFP_VOL_SURGE_MULTIPLE = 1.5
 IFP_UP_DAY_CLOSE_POS_MIN = 0.60
-IFP_LOOKBACK_DAYS = 20
+IFP_LOOKBACK_DAYS = 100
 IFP_MIN_SCORE = 0.25
 
 # ---- Market cycle / regime config ----
