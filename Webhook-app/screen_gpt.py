@@ -445,6 +445,13 @@ def send_message(text, buttons=None):
     if buttons:
         payload["reply_markup"] = json.dumps({"inline_keyboard": buttons})
     try:
+        print("\n📤 TELEGRAM DEBUG ------------------------")
+
+        print(f"Message length: {len(text)}")
+
+        print(f"Buttons: {buttons}")
+
+        print(f"Payload preview: {text[:200]}...")
         res = requests.post(url, data=payload, timeout=10)
         print(f"📡 Telegram status: {res.status_code}")
     except Exception as e:
