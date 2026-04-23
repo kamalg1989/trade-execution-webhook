@@ -449,7 +449,6 @@ def send_message(text, buttons=None):
         print(f"Message length: {len(text)}")
         print(f"Buttons: {buttons}")
         print(f"Payload preview: {text[:200]}...")
-        print(f"📡 Response: {res.text}")
         res = requests.post(url, data=payload, timeout=10)
         print(f"📡 Telegram status: {res.status_code}")
     except Exception as e:
