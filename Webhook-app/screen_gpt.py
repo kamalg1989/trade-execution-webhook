@@ -447,7 +447,7 @@ def send_message(text, buttons=None):
         print(f"🔕 [DRY_RUN] Would send Telegram message:\n{text[:200]}{'...' if len(text)>200 else ''}")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": escape_markdown_v2(text), "parse_mode": "Markdown"}
+    payload = {"chat_id": CHAT_ID, "text": escape_markdown_v2(text), "parse_mode": "MarkdownV2"}
     if buttons:
         payload["reply_markup"] = json.dumps({"inline_keyboard": buttons})
     try:
