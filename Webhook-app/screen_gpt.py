@@ -446,9 +446,7 @@ def send_message(text, buttons=None):
         payload["reply_markup"] = json.dumps({"inline_keyboard": buttons})
     try:
         print("\n📤 TELEGRAM DEBUG ------------------------")
-
         print(f"Message length: {len(text)}")
-
         print(f"Buttons: {buttons}")
         print(f"Payload preview: {text[:200]}...")
         print(f"📡 Response: {res.text}")
