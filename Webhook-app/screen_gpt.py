@@ -1,14 +1,18 @@
 # ==============================================
-# 🚀 OHM SYSTEM — P2.1 (pipeline ordering optimization)
-# Builds on P0 + P1 + P2.
+# 🚀 OHM SYSTEM — P2.2 (threshold tuning + base-quality bugfix)
+# Builds on P0 + P1 + P2 + P2.1.
 #
-# P2.1 changes:
-#   - Reordered per-stock pipeline: cheap local checks first, network last
-#     → liquidity → technical → base_quality → base_stage → fundamental (yfinance)
-#       → IFP → entry → aggregate risk
-#     Based on last run, reduces yfinance calls from ~484 to ~1-10
-#   - Added stage-level timing logs
-#   - Added DRY_RUN mode (env var) that skips Telegram but runs everything else
+# P2.2 changes:
+#   - TECH_MAX_BASE_RANGE: 0.15 → 0.20 (suits Distribution regimes)
+#   - Trend alignment: relaxed from strict sort (close>EMA50>SMA200)
+#     to medium (close>SMA200 AND close>EMA50). Exposed via config.
+#   - BUGFIX: base-quality giveback now uses current close (not worst
+#     intraday wick in base) — fixes false rejections for stocks near highs
+#   - BUGFIX: prior_high_at_base_start uses full prior window max
+#     (was: only last 5 bars — missed earlier peaks)
+#   - BASE_VOL_DRYUP_MAX_RATIO: 1.0 → 1.3
+#   - Base-quality per-gate failure counters in pipeline funnel
+#   - Compact 1-line base-quality failure log (verbose behind flag)
 # ==============================================
 
 import os
@@ -169,13 +173,22 @@ SKIP_MANUAL = True
 # ==========================================================
 # 🆕 P2 — TECHNICAL FILTER CONFIG (now exposed)
 # ==========================================================
-# Base range ≤ this fraction of base low (e.g., 0.15 = 15% range across base)
-TECH_MAX_BASE_RANGE = 0.15           # was hardcoded 0.15
+# Base range ≤ this fraction of base low (e.g., 0.20 = 20% range across base)
+TECH_MAX_BASE_RANGE = 0.20           # P2.2: loosened from 0.15 for DISTRIBUTION regime
 
 # Volume check: today's vol > this × 20d avg
-TECH_VOL_MULT = 0.80                 # was hardcoded 0.8
+TECH_VOL_MULT = 0.80
 
-# Require close > EMA50 > SMA200 alignment
+# Trend alignment mode — controls how strict the moving-average check is:
+#   "strict"    → close > EMA50 > SMA200  (original — requires perfect sort)
+#   "medium"    → close > SMA200 AND close > EMA50  (P2.2 default — no sort needed)
+#   "loose"     → close > SMA200 only  (EMA50 ignored)
+#   "very_loose"→ close within TECH_TREND_CROSSBACK_BUFFER of SMA200
+#   "off"       → no trend alignment check at all
+TECH_TREND_ALIGNMENT_MODE = "medium"      # P2.2: relaxed from "strict"
+TECH_TREND_CROSSBACK_BUFFER = 0.02         # only used in very_loose mode (2%)
+
+# DEPRECATED — kept for backward compat. When True and MODE is "strict", behavior matches old.
 TECH_REQUIRE_TREND_ALIGNMENT = True
 
 # Base length in bars (standard OHM is 20 trading days ≈ 1 month)
@@ -191,16 +204,19 @@ BASE_MIN_PRIOR_UPMOVE_PCT = 0.15     # 15% rise in the prior leg
 # Look this far back to measure the prior up-move (from base-start backwards)
 BASE_PRIOR_UPMOVE_LOOKBACK = 60      # ~3 months
 
-# Maximum giveback: base low should not retrace more than this of prior up-move
+# Maximum giveback: how much of prior up-move has current close retraced?
+# P2.2 BUGFIX: uses current close (not worst intraday wick in base window)
 BASE_MAX_GIVEBACK_PCT = 0.30         # ≤ 30% giveback
 
 # During the base, average volume should be lower than the up-move's average vol
 # by this factor (dry base is constructive)
-BASE_VOL_DRYUP_MAX_RATIO = 1.0       # base_vol / upmove_vol ≤ 1.0 (equal or drier)
-# set to large value (e.g. 99) to effectively disable
+BASE_VOL_DRYUP_MAX_RATIO = 1.3       # P2.2: loosened from 1.0 to 1.3
 
 # Near-breakout HARD GATE: current close must be within X% of base high
 NEAR_BREAKOUT_MAX_DISTANCE = 0.05    # close >= 0.95 × base_high
+
+# Log verbosity for base quality (True = 5-line breakdown, False = 1-line summary)
+BASE_QUALITY_VERBOSE_LOGS = False    # P2.2: quieter by default
 
 # ==========================================================
 # 🆕 P2 — BASE STAGE CLASSIFICATION CONFIG
@@ -702,20 +718,41 @@ def filter_technical(df, symbol="?"):
     sma200 = df['Close'].rolling(200).mean().iloc[-1]
     last_close = df.iloc[-1]['Close']
 
-    cond1 = True
-    if TECH_REQUIRE_TREND_ALIGNMENT:
+    # --- Gate 1: Trend alignment (mode-driven) ---
+    mode = TECH_TREND_ALIGNMENT_MODE
+    if mode == "strict":
         cond1 = last_close > ema50 > sma200
+        cond1_label = f"close>{ema50:.2f}>{sma200:.2f}? {cond1}"
+    elif mode == "medium":
+        cond1 = (last_close > sma200) and (last_close > ema50)
+        cond1_label = (f"close({last_close:.2f})>SMA200({sma200:.2f})&EMA50({ema50:.2f})? {cond1}")
+    elif mode == "loose":
+        cond1 = last_close > sma200
+        cond1_label = f"close({last_close:.2f})>SMA200({sma200:.2f})? {cond1}"
+    elif mode == "very_loose":
+        cond1 = last_close >= sma200 * (1 - TECH_TREND_CROSSBACK_BUFFER)
+        cond1_label = (f"close({last_close:.2f})>=SMA200-{TECH_TREND_CROSSBACK_BUFFER:.0%}"
+                       f"({sma200*(1-TECH_TREND_CROSSBACK_BUFFER):.2f})? {cond1}")
+    elif mode == "off":
+        cond1 = True
+        cond1_label = "(trend check off)"
+    else:
+        # Unknown mode → fall back to old behavior for safety
+        cond1 = last_close > ema50 > sma200
+        cond1_label = f"close>{ema50:.2f}>{sma200:.2f}? {cond1} (unknown mode={mode})"
 
+    # --- Gate 2: Base tightness ---
     recent = df.tail(BASE_LOOKBACK_BARS)
     base_range = (recent['High'].max() - recent['Low'].min()) / recent['Low'].min()
     cond2 = base_range < TECH_MAX_BASE_RANGE
 
+    # --- Gate 3: Volume ---
     vol_avg = df['Volume'].rolling(20).mean().iloc[-1]
     cond3 = df.iloc[-1]['Volume'] > TECH_VOL_MULT * vol_avg
 
     passed = cond1 and cond2 and cond3
     mark = "✅" if passed else "❌"
-    dbg(f"   [{symbol}] TECH {mark} | close({last_close:.2f})>EMA50({ema50:.2f})>SMA200({sma200:.2f})? {cond1} | "
+    dbg(f"   [{symbol}] TECH {mark} | mode={mode} | {cond1_label} | "
         f"base_range={base_range:.2%}<{TECH_MAX_BASE_RANGE:.0%}? {cond2} | "
         f"vol>{TECH_VOL_MULT}×avg? {cond3}")
     return passed
@@ -830,9 +867,16 @@ def assess_base_quality(df, symbol="?"):
     Returns (passed: bool, score: float 0-1, details: dict)
     Checks:
       - prior up-move exists (≥ BASE_MIN_PRIOR_UPMOVE_PCT)
-      - base volume is drier than up-move volume
-      - giveback ≤ BASE_MAX_GIVEBACK_PCT
+      - base volume is drier than up-move volume (ratio ≤ BASE_VOL_DRYUP_MAX_RATIO)
+      - giveback ≤ BASE_MAX_GIVEBACK_PCT  (uses CURRENT close, not worst wick)
       - current close is within NEAR_BREAKOUT_MAX_DISTANCE of base high
+
+    P2.2 BUGFIXES:
+      - prior_high_at_base_start now uses the MAX of the ENTIRE prior window,
+        not just the last 5 bars (old version missed peaks that occurred earlier).
+      - giveback_pct now uses current CLOSE, not the worst intraday Low over the
+        20-bar base. A single bad wick shouldn't penalize a stock that has
+        since recovered to near its highs.
     """
     if df is None or len(df) < BASE_LOOKBACK_BARS + BASE_PRIOR_UPMOVE_LOOKBACK:
         dbg(f"   [{symbol}] BASE_QUALITY ❌ — insufficient history")
@@ -843,37 +887,39 @@ def assess_base_quality(df, symbol="?"):
     base_low = float(base['Low'].min())
     current = float(df['Close'].iloc[-1])
 
-    # Look backwards from base-start to find prior up-move
+    # Prior window = bars preceding the current base
     prior = df.iloc[-(BASE_LOOKBACK_BARS + BASE_PRIOR_UPMOVE_LOOKBACK):-BASE_LOOKBACK_BARS]
     if prior.empty:
         return False, 0.0, {"reason": "no_prior_data"}
 
     prior_low = float(prior['Low'].min())
-    prior_high_at_base_start = float(prior['High'].iloc[-5:].max())  # high just before base started
-    upmove_pct = (prior_high_at_base_start - prior_low) / prior_low if prior_low > 0 else 0
+    # BUGFIX: use full prior window high, not just last-5-bar max
+    prior_high = float(prior['High'].max())
+    upmove_pct = (prior_high - prior_low) / prior_low if prior_low > 0 else 0
 
-    # Giveback: how much of upmove has the base given back?
-    if prior_high_at_base_start - prior_low > 0:
-        giveback_pct = (prior_high_at_base_start - base_low) / (prior_high_at_base_start - prior_low)
+    # BUGFIX: giveback based on current close (where we ARE) vs prior high
+    # Old: used base_low (worst intraday wick) — punished single bad days
+    if prior_high - prior_low > 0:
+        giveback_pct = (prior_high - current) / (prior_high - prior_low)
     else:
         giveback_pct = 1.0
+    # clamp to [0, 1+] — if current > prior_high, giveback is negative (even better)
+    giveback_pct = max(0.0, giveback_pct)
 
-    # Volume comparison
+    # Volume comparison (base vs prior up-move)
     base_vol_avg = float(base['Volume'].mean())
     prior_vol_avg = float(prior['Volume'].mean()) if len(prior) > 0 else 1
     vol_ratio = base_vol_avg / prior_vol_avg if prior_vol_avg > 0 else 99
 
-    # Near breakout
+    # Near breakout gate (unchanged)
     distance_from_high = (base_high - current) / base_high if base_high > 0 else 1.0
 
-    # Check each gate
     checks = {
         "prior_upmove": upmove_pct >= BASE_MIN_PRIOR_UPMOVE_PCT,
         "giveback_ok": giveback_pct <= BASE_MAX_GIVEBACK_PCT,
         "vol_dryup": vol_ratio <= BASE_VOL_DRYUP_MAX_RATIO,
         "near_breakout": distance_from_high <= NEAR_BREAKOUT_MAX_DISTANCE,
     }
-
     passed = all(checks.values())
     score = sum(checks.values()) / len(checks)
 
@@ -881,18 +927,29 @@ def assess_base_quality(df, symbol="?"):
         "base_high": round(base_high, 2),
         "base_low": round(base_low, 2),
         "current": round(current, 2),
+        "prior_high": round(prior_high, 2),
+        "prior_low": round(prior_low, 2),
         "upmove_pct": round(upmove_pct, 3),
         "giveback_pct": round(giveback_pct, 3),
         "vol_ratio": round(vol_ratio, 2),
         "distance_from_high_pct": round(distance_from_high, 4),
         "checks": checks,
     }
+
+    # Compact 1-line log by default, multi-line if verbose
     mark = "✅" if passed else "❌"
-    dbg(f"   [{symbol}] BASE_QUALITY {mark} | score={score:.2f}")
-    dbg(f"         prior_upmove={upmove_pct:.1%} (need ≥{BASE_MIN_PRIOR_UPMOVE_PCT:.0%}) → {checks['prior_upmove']}")
-    dbg(f"         giveback={giveback_pct:.1%} (need ≤{BASE_MAX_GIVEBACK_PCT:.0%}) → {checks['giveback_ok']}")
-    dbg(f"         vol_ratio={vol_ratio:.2f} (need ≤{BASE_VOL_DRYUP_MAX_RATIO}) → {checks['vol_dryup']}")
-    dbg(f"         dist_from_high={distance_from_high:.2%} (need ≤{NEAR_BREAKOUT_MAX_DISTANCE:.0%}) → {checks['near_breakout']}")
+    failed_gates = [k for k, v in checks.items() if not v]
+    if BASE_QUALITY_VERBOSE_LOGS or passed:
+        dbg(f"   [{symbol}] BASE_QUALITY {mark} | score={score:.2f}")
+        dbg(f"         prior_upmove={upmove_pct:.1%} (≥{BASE_MIN_PRIOR_UPMOVE_PCT:.0%}) → {checks['prior_upmove']}")
+        dbg(f"         giveback={giveback_pct:.1%} (≤{BASE_MAX_GIVEBACK_PCT:.0%}) → {checks['giveback_ok']}")
+        dbg(f"         vol_ratio={vol_ratio:.2f} (≤{BASE_VOL_DRYUP_MAX_RATIO}) → {checks['vol_dryup']}")
+        dbg(f"         dist_from_high={distance_from_high:.2%} (≤{NEAR_BREAKOUT_MAX_DISTANCE:.0%}) → {checks['near_breakout']}")
+    else:
+        dbg(f"   [{symbol}] BASE_QUALITY {mark} | score={score:.2f} | "
+            f"fail: {','.join(failed_gates)} | "
+            f"upmove={upmove_pct:.0%} giveback={giveback_pct:.0%} "
+            f"vol_r={vol_ratio:.2f} dist_hi={distance_from_high:.2%}")
     return passed, score, details
 
 
@@ -1387,6 +1444,15 @@ def run():
         "pass_aggregate_risk": 0,
     }
 
+    # P2.2: per-gate failure counters for base-quality (tells us WHICH gate kills flow)
+    bq_fail_counts = {
+        "prior_upmove": 0,
+        "giveback_ok": 0,
+        "vol_dryup": 0,
+        "near_breakout": 0,
+        "insufficient_history": 0,
+    }
+
     candidates = []  # list of (symbol, trade, meta)
 
     print("\n" + "=" * 60)
@@ -1413,6 +1479,13 @@ def run():
         bq_pass, bq_score, bq_details = _timed(timer, "3_base_quality",
                                                assess_base_quality, df, symbol=s)
         if not bq_pass:
+            # Track which gate(s) failed — helps tune thresholds
+            if bq_details.get("reason") == "insufficient_history":
+                bq_fail_counts["insufficient_history"] += 1
+            else:
+                for gate, ok in bq_details.get("checks", {}).items():
+                    if not ok:
+                        bq_fail_counts[gate] = bq_fail_counts.get(gate, 0) + 1
             continue
         funnel["pass_base_quality"] += 1
 
@@ -1480,6 +1553,16 @@ def run():
         print(f"   {stage_name:25} → {count}")
     print(f"   regime                    → {regime}")
     print(f"   candidates                → {len(candidates)}")
+
+    # P2.2: base-quality per-gate breakdown (only if any stocks reached this stage)
+    bq_total_fails = sum(bq_fail_counts.values())
+    if bq_total_fails > 0:
+        print("\n   --- base-quality fail breakdown ---")
+        print(f"   (stocks can fail multiple gates; counts are per-gate)")
+        for gate, cnt in bq_fail_counts.items():
+            if cnt > 0:
+                pct = (cnt / bq_total_fails) * 100 if bq_total_fails else 0
+                print(f"   {gate:25} → {cnt}  ({pct:.0f}% of fails)")
 
     if not candidates:
         msg = f"📭 OHM Scan: 0 qualifying setups.\nRegime: {regime}\nFunnel: {funnel}"
