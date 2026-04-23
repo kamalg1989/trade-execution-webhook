@@ -439,11 +439,8 @@ def get_open_risk():
 def escape_markdown_v2(text):
 
     escape_chars = r"_*[]()~`>#+-=|{}.!"
-
     for ch in escape_chars:
-
         text = text.replace(ch, f"\\{ch}")
-
     return text
 
 def send_message(text, buttons=None):
