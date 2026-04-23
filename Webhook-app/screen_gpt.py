@@ -1,17 +1,14 @@
 # ==============================================
-# 🚀 OHM SYSTEM — P2 UPDATE
-# Builds on P0 (entry techniques) + P1 (pipeline: liquidity/fund/IFP/regime).
+# 🚀 OHM SYSTEM — P2.1 (pipeline ordering optimization)
+# Builds on P0 + P1 + P2.
 #
-# P2 adds:
-#   - Base-stage classification (Base 1 / 2 / 3 / n) per OHM "When to Buy"
-#   - Base quality checks (prior up-move, dry volume in base, giveback ≤ 30%)
-#   - Near-breakout hard gate (not just scored)
-#   - Additional entry triggers: Pullback, Breakout retest (opt-in via config)
-#   - Target strategy made configurable (2R, base-projection, trailing-only)
-#   - GPT demoted to confirmation-only (deterministic ranking in code)
-#   - Tick-size aware rounding (fixes Atul-style order rejections)
-#   - All thresholds exposed as config constants at top
-#   - Heavier debug logging throughout
+# P2.1 changes:
+#   - Reordered per-stock pipeline: cheap local checks first, network last
+#     → liquidity → technical → base_quality → base_stage → fundamental (yfinance)
+#       → IFP → entry → aggregate risk
+#     Based on last run, reduces yfinance calls from ~484 to ~1-10
+#   - Added stage-level timing logs
+#   - Added DRY_RUN mode (env var) that skips Telegram but runs everything else
 # ==============================================
 
 import os
@@ -48,9 +45,45 @@ CAPITAL = int(os.getenv("CAPITAL") or "200000")
 
 DEBUG = True  # master toggle for verbose logs
 
+# When True, skips Telegram sends (useful for tuning). Set via env var.
+DRY_RUN = os.getenv("OHM_DRY_RUN", "false").lower() in ("true", "1", "yes")
+
 def dbg(msg):
     if DEBUG:
         print(msg)
+
+
+# ==========================
+# TIMING HELPER
+# ==========================
+class StageTimer:
+    """Tracks cumulative time spent at each pipeline stage."""
+    def __init__(self):
+        self.totals = {}
+        self.counts = {}
+
+    def add(self, stage, seconds):
+        self.totals[stage] = self.totals.get(stage, 0.0) + seconds
+        self.counts[stage] = self.counts.get(stage, 0) + 1
+
+    def report(self):
+        print("\n" + "=" * 60)
+        print("⏱️  STAGE TIMING")
+        print("=" * 60)
+        items = sorted(self.totals.items(), key=lambda x: -x[1])
+        for stage, total in items:
+            count = self.counts[stage]
+            avg_ms = (total / count) * 1000 if count else 0
+            print(f"   {stage:25} total={total:7.2f}s  calls={count:4d}  avg={avg_ms:7.1f}ms")
+        print(f"   {'TOTAL':25} {sum(self.totals.values()):7.2f}s")
+
+
+def _timed(timer, stage, fn, *args, **kwargs):
+    """Run fn, record elapsed under stage."""
+    t0 = time.time()
+    result = fn(*args, **kwargs)
+    timer.add(stage, time.time() - t0)
+    return result
 
 
 # ==========================================================
@@ -388,6 +421,9 @@ def get_open_risk():
 # TELEGRAM
 # ==========================
 def send_message(text, buttons=None):
+    if DRY_RUN:
+        print(f"🔕 [DRY_RUN] Would send Telegram message:\n{text[:200]}{'...' if len(text)>200 else ''}")
+        return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
     if buttons:
@@ -400,6 +436,9 @@ def send_message(text, buttons=None):
 
 
 def send_document(path, caption=None):
+    if DRY_RUN:
+        print(f"🔕 [DRY_RUN] Would send Telegram document: {path}")
+        return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
     try:
         with open(path, "rb") as f:
@@ -1298,20 +1337,30 @@ def run():
         print("❌ No Dhan token — aborting")
         return
 
+    timer = StageTimer()
+
     stocks = get_stocks()
     print(f"📋 Universe: {len(stocks)} stocks")
+    if DRY_RUN:
+        print("🔕 DRY_RUN mode ON — Telegram alerts will be skipped")
 
     print("\n" + "=" * 60)
-    print("📥 STAGE 0 — Fetching universe data")
+    print("📥 STAGE 0 — Fetching universe data (Dhan)")
     print("=" * 60)
     all_data = {}
-    for s in stocks:
-        df = fetch(s)
+    fetch_t0 = time.time()
+    for i, s in enumerate(stocks, 1):
+        df = _timed(timer, "fetch_dhan", fetch, s)
         if df is not None and not df.empty:
             all_data[s] = df
-    print(f"   fetched {len(all_data)}/{len(stocks)} stocks")
+        if i % 50 == 0:
+            elapsed = time.time() - fetch_t0
+            rate = i / elapsed if elapsed > 0 else 0
+            eta = (len(stocks) - i) / rate if rate > 0 else 0
+            print(f"   progress: {i}/{len(stocks)} ({rate:.1f}/s, ETA {eta:.0f}s)")
+    print(f"   fetched {len(all_data)}/{len(stocks)} stocks in {time.time()-fetch_t0:.1f}s")
 
-    nifty_df = fetch("NIFTY.NS")
+    nifty_df = _timed(timer, "fetch_dhan", fetch, "NIFTY.NS")
 
     print("\n" + "=" * 60)
     print("🌍 STAGE 0.5 — Regime detection")
@@ -1322,17 +1371,18 @@ def run():
         msg = f"⛔ MARKET IN DECLINE. Scan halted."
         print(msg)
         send_message(msg)
+        timer.report()
         return
 
     funnel = {
         "universe": len(stocks),
         "data_fetched": len(all_data),
         "pass_liquidity": 0,
-        "pass_fundamental": 0,
         "pass_technical": 0,
-        "pass_ifp": 0,
         "pass_base_quality": 0,
         "pass_base_stage": 0,
+        "pass_fundamental": 0,
+        "pass_ifp": 0,
         "pass_entry": 0,
         "pass_aggregate_risk": 0,
     }
@@ -1341,55 +1391,66 @@ def run():
 
     print("\n" + "=" * 60)
     print("🔎 STAGES 1–8 — Per-stock pipeline")
+    print("   Ordering: cheap→expensive (local checks first, yfinance last)")
     print("=" * 60)
 
     for s, df in all_data.items():
         dbg(f"\n--- {s} ---")
 
-        # 1 Liquidity
-        liq_pass, turnover = check_liquidity(df, symbol=s)
+        # --- 1. Liquidity (cheap, local) ---
+        liq_pass, turnover = _timed(timer, "1_liquidity",
+                                    check_liquidity, df, symbol=s)
         if not liq_pass:
             continue
         funnel["pass_liquidity"] += 1
 
-        # 2 Fundamental
-        fund_pass, fund_details = check_fundamentals(s)
-        if not fund_pass:
-            continue
-        funnel["pass_fundamental"] += 1
-
-        # 3 Technical
-        if not filter_technical(df, symbol=s):
+        # --- 2. Technical (cheap, local) — MOVED UP from P2 ---
+        if not _timed(timer, "2_technical", filter_technical, df, symbol=s):
             continue
         funnel["pass_technical"] += 1
 
-        # 4 IFP
-        ifp_score, ifp_pass, _ = compute_ifp_score(df, symbol=s)
-        if not ifp_pass:
-            continue
-        funnel["pass_ifp"] += 1
-
-        # 5 Base quality (P2)
-        bq_pass, bq_score, bq_details = assess_base_quality(df, symbol=s)
+        # --- 3. Base quality (cheap, local) ---
+        bq_pass, bq_score, bq_details = _timed(timer, "3_base_quality",
+                                               assess_base_quality, df, symbol=s)
         if not bq_pass:
             continue
         funnel["pass_base_quality"] += 1
 
-        # 6 Base stage (P2)
-        stage, _ = classify_base_stage(df, symbol=s)
+        # --- 4. Base stage (cheap, local) ---
+        stage, _ = _timed(timer, "4_base_stage",
+                          classify_base_stage, df, symbol=s)
         if stage > BASE_STAGE_MAX_ALLOWED:
             dbg(f"   [{s}] STAGE ⛔ stage={stage} > {BASE_STAGE_MAX_ALLOWED}")
             continue
         funnel["pass_base_stage"] += 1
 
-        # 7 Entry (P0 + P2 triggers) + sizing
-        trade = create_trade(df, symbol=s, base_stage=stage)
+        # --- 5. Fundamental (EXPENSIVE — yfinance network call) ---
+        # Only runs for stocks that passed all 4 cheap gates above.
+        # Based on last run this cuts yfinance calls from ~484 to a handful.
+        fund_pass, fund_details = _timed(timer, "5_fundamental",
+                                         check_fundamentals, s)
+        if not fund_pass:
+            continue
+        funnel["pass_fundamental"] += 1
+
+        # --- 6. IFP (cheap, local) ---
+        ifp_score, ifp_pass, _ = _timed(timer, "6_ifp",
+                                        compute_ifp_score, df, symbol=s)
+        if not ifp_pass:
+            continue
+        funnel["pass_ifp"] += 1
+
+        # --- 7. Entry detection + sizing (cheap, local) ---
+        trade = _timed(timer, "7_entry",
+                       create_trade, df, symbol=s, base_stage=stage)
         if trade is None:
             continue
         funnel["pass_entry"] += 1
 
-        # 8 Aggregate risk
-        allowed, _, _ = check_aggregate_risk(trade["total_risk_inr"], symbol=s)
+        # --- 8. Aggregate risk (cheap, local, 1 DB query) ---
+        allowed, _, _ = _timed(timer, "8_aggregate_risk",
+                               check_aggregate_risk,
+                               trade["total_risk_inr"], symbol=s)
         if not allowed:
             continue
         funnel["pass_aggregate_risk"] += 1
@@ -1424,6 +1485,7 @@ def run():
         msg = f"📭 OHM Scan: 0 qualifying setups.\nRegime: {regime}\nFunnel: {funnel}"
         print(msg)
         send_message(msg)
+        timer.report()
         return
 
     # Deterministic rank and take top N
@@ -1441,14 +1503,15 @@ def run():
     images = []
     for s, _, _ in top_picks:
         img = f"{folder}/{s}.png"
-        plot_chart(s, all_data[s], img)
+        _timed(timer, "chart_plot", plot_chart, s, all_data[s], img)
         if os.path.exists(img):
             images.append(img)
     if not images:
+        timer.report()
         return
 
     pdf_path = f"{folder}/charts.pdf"
-    build_pdf(images, pdf_path)
+    _timed(timer, "chart_pdf", build_pdf, images, pdf_path)
     send_document(pdf_path, f"📄 OHM charts ({regime})")
 
     # GPT confirmation (veto only)
@@ -1460,11 +1523,13 @@ def run():
             "base_stage": m["base_stage"],
             "det_score": det_scores[s],
         } for s, t, m in top_picks]
-        rejected_by_gpt = gpt_confirm(pdf_path, candidates_info)
+        rejected_by_gpt = _timed(timer, "gpt_confirm",
+                                 gpt_confirm, pdf_path, candidates_info)
 
     final = [(s, t, m) for (s, t, m) in top_picks if s not in rejected_by_gpt]
     if not final:
         send_message(f"⚠️ All {len(top_picks)} candidates vetoed by GPT review.")
+        timer.report()
         return
 
     # Alerts
@@ -1538,6 +1603,9 @@ Tick: `₹{trade['tick_size']}`
                f"{len(top_picks) - len(final)} vetoed by GPT)\n"
                f"Funnel: {funnel}")
     send_message(summary)
+
+    # Timing report at the very end so it's always visible
+    timer.report()
 
 
 if __name__ == "__main__":
