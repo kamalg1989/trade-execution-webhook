@@ -1,5 +1,6 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK → VPS ENTRY ENGINE (FINAL)
+# 🚀 TELEGRAM WEBHOOK (app.py) — FINAL CORRECTED
+# Receives Telegram button clicks, validates, calls entry_engine.py
 # ==============================================
 
 import os
@@ -12,13 +13,13 @@ import subprocess
 import json
 
 # ==========================
-# GLOBAL DEDUP STORAGE
+# GLOBAL DEDUP STORAGE (Thread-safe)
 # ==========================
 PROCESSED_CALLBACKS = set()
 PROCESSED_ORDERS = {}
-
 LOCK = threading.Lock()
 ORDER_WINDOW = 300  # 5 minutes
+
 
 # ==========================
 # CONFIG
@@ -28,10 +29,11 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
 
-# Absolute path to entry engine
-ENTRY_ENGINE_PATH = "/root/trade-execution-webhook/Webhook-app/entry_engine.py"
+# Paths (adjust to your setup)
+ENTRY_ENGINE_PATH = "/root/trade-execution-webhook/entry_engine_v2.py"
 PROJECT_ROOT = "/root/trade-execution-webhook"
 VENV_PYTHON = "/root/trade-execution-webhook/venv/bin/python"
+
 
 # ==========================
 # LOGGER
@@ -39,80 +41,89 @@ VENV_PYTHON = "/root/trade-execution-webhook/venv/bin/python"
 def log(*args):
     print(*args, flush=True)
 
+
 # ==========================
-# LOAD INSTRUMENTS
+# LOAD INSTRUMENTS (for symbol validation)
 # ==========================
 def load_instruments():
-    df = pd.read_csv(INSTRUMENT_URL, low_memory=False)
+    try:
+        df = pd.read_csv(INSTRUMENT_URL, low_memory=False)
+        df = df[
+            (df['SEM_EXM_EXCH_ID'] == 'NSE') &
+            (df['SEM_SEGMENT'] == 'E')
+            ]
+        df['SEM_TRADING_SYMBOL'] = (
+            df['SEM_TRADING_SYMBOL']
+            .astype(str)
+            .str.strip()
+            .str.upper()
+        )
+        log(f"✅ Instruments Loaded: {len(df)}")
+        return df
+    except Exception as e:
+        log(f"⚠️ Failed to load instruments: {e}")
+        return pd.DataFrame()
 
-    df = df[
-        (df['SEM_EXM_EXCH_ID'] == 'NSE') &
-        (df['SEM_SEGMENT'] == 'E')
-    ]
 
-    df['SEM_TRADING_SYMBOL'] = (
-        df['SEM_TRADING_SYMBOL']
-        .astype(str)
-        .str.strip()
-        .str.upper()
-    )
+INSTRUMENT_DF = load_instruments()
 
-    log("✅ Instruments Loaded:", len(df))
-    return df
-
-INSTRUMENT_DF = None
-
-# ==========================
-# SYMBOL → SECURITY_ID (optional)
-# ==========================
-def get_security_id(stock):
-    global INSTRUMENT_DF
-    if INSTRUMENT_DF is None:
-        try:
-            INSTRUMENT_DF = load_instruments()
-        except Exception as e:
-            log(f"⚠️ Failed to load instruments: {e}")
-            return None
-
-    symbol = stock.replace(".NS", "").strip().upper()
-
-    row = INSTRUMENT_DF[
-        INSTRUMENT_DF['SEM_TRADING_SYMBOL'] == symbol
-    ]
-
-    if row.empty:
-        log("❌ Mapping NOT FOUND:", symbol)
-        return None
-
-    return str(row.iloc[0]['SEM_SMST_SECURITY_ID'])
 
 # ==========================
-# TELEGRAM
+# TELEGRAM SEND
 # ==========================
 def send_telegram(msg):
+    """Send message to user via Telegram."""
     try:
-        log("📨 TELEGRAM MESSAGE:", msg)
+        log(f"📨 SENDING TELEGRAM: {msg[:100]}...")
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             json={"chat_id": CHAT_ID, "text": msg},
             timeout=10
         )
     except Exception as e:
-        log("❌ Telegram Error:", e)
+        log(f"❌ Telegram Error: {e}")
+
 
 # ==========================
-# 🚀 LOCAL ENTRY ENGINE EXECUTION
+# VALIDATE SYMBOL
 # ==========================
-def execute_trade_locally(payload):
+def validate_symbol(symbol_input):
+    """Check if symbol exists in Dhan instruments."""
+    symbol = symbol_input.replace(".NS", "").strip().upper()
+
+    if INSTRUMENT_DF.empty:
+        log("⚠️ Instruments not loaded, skipping validation")
+        return True  # Allow anyway
+
+    row = INSTRUMENT_DF[INSTRUMENT_DF['SEM_TRADING_SYMBOL'] == symbol]
+    return not row.empty
+
+
+# ==========================
+# SUBPROCESS EXECUTION
+# ==========================
+def execute_entry_engine_subprocess(payload):
     """
-    Executes entry_engine.py on the VPS.
-    Ensures Dhan API calls originate from the VPS static IP.
+    Execute entry_engine.py as subprocess on the VPS.
+
+    This ensures:
+    ✅ API calls originate from VPS static IP (Dhan whitelisting)
+    ✅ Entry engine runs in isolated process
+    ✅ Clear separation: webhook validation vs order placement
+
+    Payload should have:
+    - setup_id, symbol, qty, entry, sl, target, score
     """
+
     try:
-        if not payload.get("sl") or not payload.get("target"):
-            log("❌ BLOCKED: SL/Target missing in payload", payload)
-            return False
+        # Validate required fields
+        required = ["setup_id", "symbol", "qty", "entry", "sl", "target", "score"]
+        for field in required:
+            if field not in payload or payload[field] is None:
+                log(f"❌ Missing field in payload: {field}")
+                return False
 
+        # Prepare environment (passed to subprocess)
         env = os.environ.copy()
         env.update({
             "SYMBOL": str(payload["symbol"]),
@@ -122,133 +133,259 @@ def execute_trade_locally(payload):
             "TARGET": str(payload["target"]),
             "SCORE": str(payload["score"]),
             "SETUP_ID": str(payload["setup_id"]),
+            "BASE_STAGE": str(payload.get("base_stage", "0")),
+            "BASE_QUALITY_SCORE": str(payload.get("base_quality_score", "0")),
+            "TICK_SIZE": str(payload.get("tick_size", "0.05")),
         })
 
-        log("🚀 EXECUTING ENTRY ENGINE WITH PAYLOAD:")
-        log(json.dumps(payload, indent=2))
+        log("🚀 EXECUTING ENTRY ENGINE SUBPROCESS")
+        log(f"   Python: {VENV_PYTHON}")
+        log(f"   Script: {ENTRY_ENGINE_PATH}")
+        log(f"   CWD: {PROJECT_ROOT}")
+        log(f"   Payload: {json.dumps(payload, indent=2)}")
 
+        # Execute entry_engine.py with env vars
         result = subprocess.run(
             [VENV_PYTHON, ENTRY_ENGINE_PATH],
             cwd=PROJECT_ROOT,
             env=env,
             capture_output=True,
-            text=True
+            text=True,
+            timeout=30  # 30 second timeout
         )
 
-        log("📤 ENTRY ENGINE STDOUT:\n", result.stdout)
-        log("📤 ENTRY ENGINE STDERR:\n", result.stderr)
+        log("📤 SUBPROCESS STDOUT:")
+        log(result.stdout)
+
+        if result.stderr:
+            log("📤 SUBPROCESS STDERR:")
+            log(result.stderr)
 
         if result.returncode == 0:
-            log("✅ Trade execution completed successfully.")
+            log("✅ Entry engine subprocess completed successfully")
             return True
         else:
-            log("❌ Trade execution failed with return code:", result.returncode)
+            log(f"❌ Entry engine subprocess failed with code: {result.returncode}")
             return False
 
+    except subprocess.TimeoutExpired:
+        log("❌ Entry engine subprocess timeout (30s exceeded)")
+        return False
     except Exception as e:
-        log("❌ Error executing trade locally:", e)
+        log(f"❌ Error executing entry engine subprocess: {e}")
         return False
 
+
 # ==========================
-# FLASK
+# FLASK APP
 # ==========================
 app = Flask(__name__)
 
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
+    """
+    Receives Telegram callback when user clicks "✅ Confirm Buy" button.
 
-    data = request.get_json(force=True)
-    log("📩 RAW TELEGRAM PAYLOAD:", json.dumps(data, indent=2))
+    Callback format: BUY|setup_id|symbol|qty|entry|sl|target|score
+    """
 
-    if not data or "callback_query" not in data:
-        return "OK"
+    try:
+        data = request.get_json(force=True)
+        log("=" * 70)
+        log("📩 TELEGRAM WEBHOOK RECEIVED")
+        log("=" * 70)
+        log(json.dumps(data, indent=2))
 
-    query = data["callback_query"]
-    callback_id = query["id"]
-
-    # ✅ CALLBACK DEDUP (Telegram duplicate protection)
-    with LOCK:
-        if callback_id in PROCESSED_CALLBACKS:
-            log("⚠️ Duplicate callback ignored:", callback_id)
+        # Check for callback_query
+        if not data or "callback_query" not in data:
+            log("⚠️ No callback_query in payload")
             return "OK"
-        PROCESSED_CALLBACKS.add(callback_id)
 
-    raw_callback = query.get("data", "")
-    log("RAW CALLBACK:", raw_callback)
+        query = data["callback_query"]
+        callback_id = query["id"]
 
-    parts = raw_callback.split("|")
+        # ✅ CALLBACK DEDUP (Telegram may send duplicate callbacks)
+        with LOCK:
+            if callback_id in PROCESSED_CALLBACKS:
+                log(f"⚠️ Duplicate callback ignored: {callback_id}")
+                return "OK"
+            PROCESSED_CALLBACKS.add(callback_id)
 
-    if len(parts) < 8:
-        send_telegram("❌ Invalid payload")
-        return "OK"
+        # Parse callback data
+        raw_callback = query.get("data", "")
+        log(f"📋 RAW CALLBACK: {raw_callback}")
 
-    action, setup_id, symbol, qty, entry, sl, target, score = parts
+        parts = raw_callback.split("|")
 
-    def safe_float(x):
-        try:
-            return float(x)
-        except Exception:
-            return None
+        # Expected format: BUY|setup_id|symbol|qty|entry|sl|target|score
+        if len(parts) < 8:
+            log(f"❌ Invalid callback format (expected 8 parts, got {len(parts)})")
+            send_telegram("❌ Invalid payload format")
+            return "OK"
 
-    stock = symbol
-    qty = int(qty)
-    entry = safe_float(entry)
-    sl = safe_float(sl)
-    target = safe_float(target)
-    score = safe_float(score)
+        action = parts[0]
+        setup_id = parts[1]
+        symbol = parts[2]
 
-    log("✅ PARSED TRADE DATA:", {
-        "action": action,
-        "setup_id": setup_id,
-        "symbol": stock,
-        "qty": qty,
-        "entry": entry,
-        "sl": sl,
-        "target": target,
-        "score": score
-    })
+        def safe_int(x):
+            try:
+                return int(x)
+            except:
+                return None
 
-    if not setup_id:
-        send_telegram(f"❌ Missing setup_id for {stock}")
-        return "OK"
+        def safe_float(x):
+            try:
+                return float(x)
+            except:
+                return None
 
-    if sl is None or target is None:
-        send_telegram(f"❌ Missing SL/Target: {stock}")
-        return "OK"
+        qty = safe_int(parts[3])
+        entry = safe_float(parts[4])
+        sl = safe_float(parts[5])
+        target = safe_float(parts[6])
+        score = safe_float(parts[7])
 
-    if action == "BUY":
+        # Base stage (optional, index 8)
+        base_stage = safe_int(parts[8]) if len(parts) > 8 else 0
+        base_quality_score = safe_float(parts[9]) if len(parts) > 9 else 0.0
+        tick_size = safe_float(parts[10]) if len(parts) > 10 else 0.05
 
+        log("✅ PARSED CALLBACK:")
+        log(f"   Action: {action}")
+        log(f"   Setup ID: {setup_id}")
+        log(f"   Symbol: {symbol}")
+        log(f"   Qty: {qty}")
+        log(f"   Entry: {entry}")
+        log(f"   SL: {sl}")
+        log(f"   Target: {target}")
+        log(f"   Score: {score}")
+        log(f"   Base Stage: {base_stage}")
+        log(f"   Base Quality: {base_quality_score}")
+        log(f"   Tick Size: {tick_size}")
+
+        # ==== VALIDATION (before calling entry engine) ====
+
+        # 1. Setup ID
+        if not setup_id:
+            log(f"❌ VALIDATION: Missing setup_id")
+            send_telegram(f"❌ Missing setup_id")
+            return "OK"
+
+        # 2. Quantities
+        if qty is None or qty <= 0:
+            log(f"❌ VALIDATION: Invalid qty={qty}")
+            send_telegram(f"❌ Invalid qty: {qty}")
+            return "OK"
+
+        # 3. Prices
+        if entry is None or entry <= 0:
+            log(f"❌ VALIDATION: Invalid entry={entry}")
+            send_telegram(f"❌ Invalid entry price: {entry}")
+            return "OK"
+
+        if sl is None or sl <= 0:
+            log(f"❌ VALIDATION: Invalid sl={sl}")
+            send_telegram(f"❌ Invalid SL: {sl}")
+            return "OK"
+
+        if target is None or target <= 0:
+            log(f"❌ VALIDATION: Invalid target={target}")
+            send_telegram(f"❌ Invalid target: {target}")
+            return "OK"
+
+        # 4. Price order validation (CRITICAL)
+        if not (sl < entry < target):
+            log(f"❌ VALIDATION: Invalid price order - SL={sl} ENTRY={entry} TARGET={target}")
+            send_telegram(f"❌ Invalid price order: SL={sl} < ENTRY={entry} < TARGET={target}")
+            return "OK"
+
+        # 5. Symbol validation
+        if not validate_symbol(symbol):
+            log(f"❌ VALIDATION: Symbol not found in Dhan: {symbol}")
+            send_telegram(f"❌ Symbol not found: {symbol}")
+            return "OK"
+
+        # 6. Action check
+        if action != "BUY":
+            log(f"❌ VALIDATION: Unsupported action={action}")
+            send_telegram(f"❌ Unsupported action: {action}")
+            return "OK"
+
+        # 7. Order dedup (check if we already processed this setup_id recently)
         key = setup_id
         now = time.time()
 
-        # ✅ ORDER DEDUP
         with LOCK:
             if key in PROCESSED_ORDERS:
-                if (now - PROCESSED_ORDERS[key]) < ORDER_WINDOW:
-                    log("⚠️ Duplicate order blocked:", key)
+                time_since_last = now - PROCESSED_ORDERS[key]
+                if time_since_last < ORDER_WINDOW:
+                    log(f"⚠️ DEDUP: Order {key} already processed {time_since_last:.1f}s ago")
+                    send_telegram(f"⚠️ Order already processed for {symbol}")
                     return "OK"
+
             PROCESSED_ORDERS[key] = now
 
+        # ==== ALL VALIDATIONS PASSED ====
+        log("✅ ALL VALIDATIONS PASSED")
+
+        # Prepare payload for entry engine
         payload = {
             "setup_id": setup_id,
-            "symbol": stock.replace(".NS", ""),
+            "symbol": symbol,
             "qty": qty,
             "entry": entry,
             "sl": sl,
             "target": target,
-            "score": score
+            "score": score,
+            "base_stage": base_stage,
+            "base_quality_score": base_quality_score,
+            "tick_size": tick_size,
         }
 
-        # 🚀 Execute locally on VPS
-        success = execute_trade_locally(payload)
+        # Send immediate ack to user
+        send_telegram(f"⏳ Processing order for {symbol} | Qty: {qty}")
 
+        # 🚀 Execute entry engine as subprocess
+        # This will place the order on Dhan and save to DB
+        success = execute_entry_engine_subprocess(payload)
+
+        # Notify user of result
         if success:
-            send_telegram(f"🟢 ORDER EXECUTED: {stock} | SL={sl} | TGT={target}")
+            send_telegram(f"✅ ORDER EXECUTED\n{symbol} | Qty: {qty}\nSL: {sl} | Target: {target}")
         else:
-            send_telegram(f"❌ ORDER FAILED: {stock}")
+            send_telegram(f"❌ ORDER FAILED\n{symbol} | Please check logs")
 
-    return "OK"
+        return "OK"
 
-@app.route("/")
+    except Exception as e:
+        log(f"❌ WEBHOOK EXCEPTION: {e}")
+        send_telegram(f"❌ Webhook error: {str(e)[:50]}")
+        return "OK"
+
+
+@app.route("/", methods=["GET"])
 def home():
-    return "Webhook running on VPS"
+    """Health check."""
+    return "Webhook running - ready to accept Telegram callbacks"
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    """Health endpoint for monitoring."""
+    return {"status": "ok", "timestamp": str(pd.Timestamp.now())}, 200
+
+
+if __name__ == "__main__":
+    log("=" * 70)
+    log("🚀 TELEGRAM WEBHOOK (app.py) STARTING")
+    log("=" * 70)
+    log(f"ENTRY_ENGINE_PATH: {ENTRY_ENGINE_PATH}")
+    log(f"PROJECT_ROOT: {PROJECT_ROOT}")
+    log(f"VENV_PYTHON: {VENV_PYTHON}")
+    log(f"TELEGRAM_TOKEN: {TELEGRAM_TOKEN[:20]}...")
+    log(f"CHAT_ID: {CHAT_ID}")
+
+    # Run Flask app
+    # In production, use: gunicorn -w 4 -b 0.0.0.0:5000 app:app
+    app.run(host="0.0.0.0", port=5000, debug=False)
