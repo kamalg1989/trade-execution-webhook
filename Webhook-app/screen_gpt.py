@@ -437,7 +437,6 @@ def get_open_risk():
 # TELEGRAM
 # ==========================
 def escape_markdown_v2(text):
-
     escape_chars = r"_*[]()~`>#+-=|{}.!"
     for ch in escape_chars:
         text = text.replace(ch, f"\\{ch}")
