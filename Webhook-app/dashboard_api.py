@@ -3,7 +3,8 @@
 # Serves P/L data from trades.db to React frontend
 # ==============================================
 
-from flask import Flask, jsonify, request, CORS
+from flask import Flask, jsonify, request
+from flask_cors import CORS
 import sqlite3
 import json
 from datetime import datetime, timedelta, timezone
@@ -12,6 +13,7 @@ import os
 # ==========================
 # CONFIG
 # ==========================
+# CORRECTED: Points to the actual database location
 DB_FILE = "/root/trade-execution-webhook/trades.db"
 FLASK_ENV = os.getenv("FLASK_ENV", "production")
 
@@ -40,7 +42,7 @@ def health():
 # ==========================
 @app.route("/api/summary", methods=["GET"])
 def get_summary():
-    """Get overall P/L summary."""
+    """Get overall P&L summary."""
     try:
         conn = get_db_connection()
 
@@ -96,7 +98,7 @@ def get_summary():
 # ==========================
 @app.route("/api/positions/open", methods=["GET"])
 def get_open_positions():
-    """Get all open positions with unrealized P/L."""
+    """Get all open positions with unrealized P&L."""
     try:
         conn = get_db_connection()
         rows = conn.execute("""
@@ -122,7 +124,7 @@ def get_open_positions():
 # ==========================
 @app.route("/api/positions/closed", methods=["GET"])
 def get_closed_positions():
-    """Get closed positions with realized P/L."""
+    """Get closed positions with realized P&L."""
     try:
         limit = request.args.get("limit", 50, type=int)
 
@@ -151,7 +153,7 @@ def get_closed_positions():
 # ==========================
 @app.route("/api/analytics/daily", methods=["GET"])
 def get_daily_pnl():
-    """Get daily P/L aggregation."""
+    """Get daily P&L aggregation."""
     try:
         days = request.args.get("days", 30, type=int)
 
@@ -183,7 +185,7 @@ def get_daily_pnl():
 # ==========================
 @app.route("/api/analytics/symbols", methods=["GET"])
 def get_symbol_performance():
-    """Get P/L by symbol."""
+    """Get P&L by symbol."""
     try:
         conn = get_db_connection()
         rows = conn.execute("""
@@ -214,7 +216,7 @@ def get_symbol_performance():
 # ==========================
 @app.route("/api/analytics/base-stage", methods=["GET"])
 def get_base_stage_performance():
-    """Get P/L by base stage."""
+    """Get P&L by base stage."""
     try:
         conn = get_db_connection()
         rows = conn.execute("""
@@ -365,9 +367,12 @@ def server_error(error):
 # RUN
 # ==========================
 if __name__ == "__main__":
-    log_level = "DEBUG" if FLASK_ENV == "development" else "INFO"
+    print(f"📊 P/L Dashboard API Starting")
+    print(f"Using database: {DB_FILE}")
+    print(f"Environment: {FLASK_ENV}")
+
     app.run(
         host="0.0.0.0",
-        port=5001,  # Different from app.py which uses 5000
+        port=5001,
         debug=(FLASK_ENV == "development"),
     )
