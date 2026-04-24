@@ -12,7 +12,7 @@ import os
 # ==========================
 # CONFIG
 # ==========================
-DB_FILE = os.getenv("DB_FILE", "/root/trades.db")
+DB_FILE = "/root/trade-execution-webhook/trades.db"
 FLASK_ENV = os.getenv("FLASK_ENV", "production")
 
 app = Flask(__name__)
