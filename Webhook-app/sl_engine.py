@@ -473,57 +473,74 @@ def run():
 
         if not open_orders:
             logger.info("✅ No open orders to manage")
-            return
+        else:
+            logger.info(f"🔍 Managing {len(open_orders)} open orders")
 
-        logger.info(f"🔍 Managing {len(open_orders)} open orders")
+            # Step 3: For each order, manage SL
+            for dhan_order_id, symbol, qty_exec, entry_px, initial_sl, sl_order_id in open_orders:
 
-        # Step 3: For each order, manage SL
-        for dhan_order_id, symbol, qty_exec, entry_px, initial_sl, sl_order_id in open_orders:
+                # Get LTP
+                ltp = get_ltp(symbol)
+                if not ltp:
+                    logger.warning(f"⚠️ Could not fetch LTP for {symbol}")
+                    continue
 
-            # Get LTP
-            ltp = get_ltp(symbol)
-            if not ltp:
-                logger.warning(f"⚠️ Could not fetch LTP for {symbol}")
-                continue
+                # Update P/L
+                update_order_pnl(dhan_order_id, ltp)
 
-            # Update P/L
-            update_order_pnl(dhan_order_id, ltp)
+                # Calculate new SL
+                current_sl = initial_sl  # Use initial if no SL order placed yet
+                new_sl = calculate_sl(entry_px, ltp, current_sl)
 
-            # Calculate new SL
-            current_sl = initial_sl  # Use initial if no SL order placed yet
-            new_sl = calculate_sl(entry_px, ltp, current_sl)
+                pnl = (ltp - entry_px) * qty_exec
+                pnl_pct = ((ltp - entry_px) / entry_px) * 100
 
-            pnl = (ltp - entry_px) * qty_exec
-            pnl_pct = ((ltp - entry_px) / entry_px) * 100
+                logger.info(f"\n{symbol}")
+                logger.info(f"  LTP: ₹{ltp} | Entry: ₹{entry_px} | PnL: ₹{pnl:.2f} ({pnl_pct:.2f}%)")
+                logger.info(f"  Current SL: ₹{current_sl} → New SL: ₹{new_sl}")
 
-            logger.info(f"\n{symbol}")
-            logger.info(f"  LTP: ₹{ltp} | Entry: ₹{entry_px} | PnL: ₹{pnl:.2f} ({pnl_pct:.2f}%)")
-            logger.info(f"  Current SL: ₹{current_sl} → New SL: ₹{new_sl}")
+                # Place or modify SL
+                if not sl_order_id:
+                    # First time: place SL
+                    logger.info(f"  Action: PLACE SL")
 
-            # Place or modify SL
-            if not sl_order_id:
-                # First time: place SL
-                logger.info(f"  Action: PLACE SL")
+                    order_details = get_order_by_dhan_id(dhan_order_id)
+                    if order_details:
+                        setup_id, _, _, _, _, _, _, _ = order_details
+                        # Get sec_id from somewhere (need to query or pass)
+                        # For now, we'll skip sec_id as it's not used in place_sl
+                        # Actually, we DO need it. Let me refactor...
+                        logger.warning(f"  ⚠️ Missing sec_id, skipping SL placement (TODO: add to DB)")
 
-                order_details = get_order_by_dhan_id(dhan_order_id)
-                if order_details:
-                    setup_id, _, _, _, _, _, _, _ = order_details
-                    # Get sec_id from somewhere (need to query or pass)
-                    # For now, we'll skip sec_id as it's not used in place_sl
-                    # Actually, we DO need it. Let me refactor...
-                    logger.warning(f"  ⚠️ Missing sec_id, skipping SL placement (TODO: add to DB)")
+                elif new_sl > current_sl:
+                    # Trail SL upward
+                    logger.info(f"  Action: TRAIL SL")
+                    order_details = get_order_by_dhan_id(dhan_order_id)
+                    if order_details:
+                        setup_id, _, _, _, _, _, _, _ = order_details
+                        # Again, need sec_id
+                        logger.warning(f"  ⚠️ Missing sec_id, skipping SL modification")
 
-            elif new_sl > current_sl:
-                # Trail SL upward
-                logger.info(f"  Action: TRAIL SL")
-                order_details = get_order_by_dhan_id(dhan_order_id)
-                if order_details:
-                    setup_id, _, _, _, _, _, _, _ = order_details
-                    # Again, need sec_id
-                    logger.warning(f"  ⚠️ Missing sec_id, skipping SL modification")
+                else:
+                    logger.info(f"  Action: HOLD (SL not changed)")
 
-            else:
-                logger.info(f"  Action: HOLD (SL not changed)")
+        # ========== NEW: Sync trades with live Dhan data ==========
+        logger.info("\n" + "=" * 60)
+        logger.info("🔄 Starting database sync with Dhan...")
+        logger.info("=" * 60)
+
+        dhan_sync_result = sync_trades_with_dhan(
+            db_file=DB_FILE,
+            session=session,
+            get_token=get_token,
+            DHAN_CLIENT_ID=DHAN_CLIENT_ID
+        )
+
+        if dhan_sync_result:
+            logger.info(f"✅ Database synced: {len(dhan_sync_result)} trades")
+        else:
+            logger.warning("⚠️ Database sync had no updates")
+        # ========================================================
 
         logger.info("\n✅ SL ENGINE COMPLETED")
 
@@ -531,7 +548,6 @@ def run():
         logger.exception("❌ SL ENGINE CRASHED")
         send_telegram(f"❌ SL ENGINE ERROR: {e}")
         raise
-    
 
 
 if __name__ == "__main__":
