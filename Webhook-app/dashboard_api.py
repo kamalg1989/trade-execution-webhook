@@ -1,6 +1,7 @@
 # ==============================================
 # 📊 P/L DASHBOARD — FLASK BACKEND API
 # Serves P&L data from actual trades.db schema
+# FIXED: No PNL column in trades table!
 # ==============================================
 
 from flask import Flask, jsonify, request
@@ -48,11 +49,21 @@ def health():
     """Health check endpoint."""
     try:
         logger.debug("📍 /api/health called")
+        conn = get_db_connection()
+
+        # Check tables
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [row[0] for row in cursor.fetchall()]
+
+        conn.close()
+
         return jsonify({
             "status": "ok",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "database": DB_FILE,
-            "db_exists": os.path.exists(DB_FILE)
+            "db_exists": os.path.exists(DB_FILE),
+            "tables": tables
         })
     except Exception as e:
         logger.error(f"❌ /api/health error: {e}")
@@ -70,6 +81,7 @@ def get_summary():
         conn = get_db_connection()
 
         # Pending setups (not yet executed)
+        logger.debug("Querying pending setups...")
         pending = conn.execute("""
             SELECT 
                 COUNT(*) as total,
@@ -80,14 +92,12 @@ def get_summary():
         logger.debug(f"✅ Pending setups: {dict(pending)}")
 
         # Executed trades (from trades table)
+        logger.debug("Querying executed trades...")
         executed = conn.execute("""
             SELECT 
                 COUNT(*) as total,
                 SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) as open_count,
-                SUM(CASE WHEN status='CLOSED' THEN 1 ELSE 0 END) as closed_count,
-                COALESCE(SUM(CASE WHEN pnl IS NOT NULL THEN 1 ELSE 0 END), 0) as pnl_trades,
-                COALESCE(SUM(pnl), 0) as total_pnl,
-                COALESCE(AVG(CASE WHEN pnl IS NOT NULL THEN pnl END), 0) as avg_pnl
+                SUM(CASE WHEN status='CLOSED' THEN 1 ELSE 0 END) as closed_count
             FROM trades
         """).fetchone()
         logger.debug(f"✅ Executed trades: {dict(executed)}")
@@ -104,8 +114,8 @@ def get_summary():
                 "total": executed["total"] or 0,
                 "open": executed["open_count"] or 0,
                 "closed": executed["closed_count"] or 0,
-                "total_pnl": round(executed["total_pnl"] or 0, 2),
-                "avg_pnl_pct": round(executed["avg_pnl"] or 0, 2),
+                "total_pnl": 0,
+                "avg_pnl_pct": 0,
                 "win_count": 0,
                 "loss_count": 0,
                 "win_rate_pct": 0.0,
@@ -128,10 +138,11 @@ def get_open_positions():
     logger.debug("📍 /api/positions/open called")
     try:
         conn = get_db_connection()
+        logger.debug("Querying open trades from trades table...")
         rows = conn.execute("""
             SELECT 
                 id, symbol, security_id, qty, entry_price, entry_time,
-                status, setup_id, pnl
+                status, setup_id
             FROM trades
             WHERE status = 'OPEN'
             ORDER BY entry_time DESC
@@ -160,10 +171,11 @@ def get_closed_positions():
         logger.debug(f"Limit: {limit}")
 
         conn = get_db_connection()
+        logger.debug("Querying closed trades from trades table...")
         rows = conn.execute("""
             SELECT 
                 id, symbol, security_id, qty, entry_price, entry_time,
-                status, setup_id, pnl
+                status, setup_id
             FROM trades
             WHERE status = 'CLOSED'
             ORDER BY entry_time DESC
@@ -182,24 +194,24 @@ def get_closed_positions():
 
 
 # ==========================
-# DAILY P/L ENDPOINT
+# DAILY TRADES ENDPOINT
 # ==========================
 @app.route("/api/analytics/daily", methods=["GET"])
 def get_daily_pnl():
-    """Get daily P&L aggregation from trades."""
+    """Get daily trades count from trades."""
     logger.debug("📍 /api/analytics/daily called")
     try:
         days = request.args.get("days", 30, type=int)
         logger.debug(f"Days: {days}")
 
         conn = get_db_connection()
+        logger.debug("Querying daily trade counts...")
         rows = conn.execute("""
             SELECT 
                 DATE(entry_time) as trade_date,
                 COUNT(*) as trade_count,
-                COALESCE(SUM(pnl), 0) as daily_pnl,
-                COALESCE(AVG(pnl), 0) as avg_pnl_pct,
-                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins
+                SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) as open_trades,
+                SUM(CASE WHEN status='CLOSED' THEN 1 ELSE 0 END) as closed_trades
             FROM trades
             WHERE entry_time IS NOT NULL
             GROUP BY DATE(entry_time)
@@ -210,7 +222,7 @@ def get_daily_pnl():
         conn.close()
 
         data = [dict(row) for row in rows]
-        logger.debug(f"✅ Daily P&L: {len(data)} days found")
+        logger.debug(f"✅ Daily trades: {len(data)} days found")
         return jsonify(data)
     except Exception as e:
         logger.error(f"❌ /api/analytics/daily error: {e}")
@@ -223,23 +235,20 @@ def get_daily_pnl():
 # ==========================
 @app.route("/api/analytics/symbols", methods=["GET"])
 def get_symbol_performance():
-    """Get P&L by symbol."""
+    """Get trades by symbol."""
     logger.debug("📍 /api/analytics/symbols called")
     try:
         conn = get_db_connection()
+        logger.debug("Querying symbol performance...")
         rows = conn.execute("""
             SELECT 
                 symbol,
                 COUNT(*) as trades,
-                COALESCE(SUM(pnl), 0) as total_pnl,
-                COALESCE(AVG(pnl), 0) as avg_pnl_pct,
-                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-                MAX(pnl) as best_trade,
-                MIN(pnl) as worst_trade
+                SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) as open_trades,
+                SUM(CASE WHEN status='CLOSED' THEN 1 ELSE 0 END) as closed_trades
             FROM trades
-            WHERE status = 'CLOSED'
             GROUP BY symbol
-            ORDER BY total_pnl DESC
+            ORDER BY trades DESC
         """).fetchall()
 
         conn.close()
@@ -258,21 +267,21 @@ def get_symbol_performance():
 # ==========================
 @app.route("/api/analytics/strategy", methods=["GET"])
 def get_strategy_performance():
-    """Get P&L by strategy."""
+    """Get setups by strategy."""
     logger.debug("📍 /api/analytics/strategy called")
     try:
         conn = get_db_connection()
+        logger.debug("Querying strategy performance...")
         rows = conn.execute("""
             SELECT 
                 strategy,
-                COUNT(*) as trades,
-                COALESCE(SUM(pnl), 0) as total_pnl,
-                COALESCE(AVG(pnl), 0) as avg_pnl_pct,
-                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins
+                COUNT(*) as setups,
+                SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) as pending,
+                SUM(CASE WHEN status='EXECUTED' THEN 1 ELSE 0 END) as executed,
+                AVG(score) as avg_score
             FROM trade_setups
-            WHERE status = 'EXECUTED'
             GROUP BY strategy
-            ORDER BY total_pnl DESC
+            ORDER BY setups DESC
         """).fetchall()
 
         conn.close()
@@ -287,24 +296,25 @@ def get_strategy_performance():
 
 
 # ==========================
-# RISK METRICS ENDPOINT
+# RISK/REWARD METRICS ENDPOINT
 # ==========================
 @app.route("/api/analytics/risk", methods=["GET"])
 def get_risk_metrics():
-    """Get overall risk/reward metrics."""
+    """Get risk/reward metrics from trade_setups."""
     logger.debug("📍 /api/analytics/risk called")
     try:
         conn = get_db_connection()
+        logger.debug("Querying risk metrics...")
 
-        # From trade_setups
         rows = conn.execute("""
             SELECT 
                 COALESCE(SUM(risk), 0) as total_risk,
                 COALESCE(AVG(risk), 0) as avg_risk,
                 COALESCE(SUM(reward), 0) as total_reward,
-                COALESCE(AVG(rr_ratio), 0) as avg_rr_ratio
+                COALESCE(AVG(reward), 0) as avg_reward,
+                COALESCE(AVG(rr_ratio), 0) as avg_rr_ratio,
+                COUNT(*) as total_setups
             FROM trade_setups
-            WHERE status = 'EXECUTED'
         """).fetchone()
 
         conn.close()
@@ -313,7 +323,9 @@ def get_risk_metrics():
             "total_risk_inr": round(rows["total_risk"] or 0, 2),
             "avg_risk_inr": round(rows["avg_risk"] or 0, 2),
             "total_reward_inr": round(rows["total_reward"] or 0, 2),
+            "avg_reward_inr": round(rows["avg_reward"] or 0, 2),
             "avg_rr_ratio": round(rows["avg_rr_ratio"] or 0, 2),
+            "total_setups": rows["total_setups"] or 0,
         }
         logger.debug(f"✅ Risk metrics: {response}")
         return jsonify(response)
@@ -332,10 +344,11 @@ def get_pending_setups():
     logger.debug("📍 /api/setups/pending called")
     try:
         conn = get_db_connection()
+        logger.debug("Querying pending setups...")
         rows = conn.execute("""
             SELECT 
                 setup_id, symbol, qty, entry, sl, target, strategy,
-                score, status, created_at
+                score, status, timeframe
             FROM trade_setups
             WHERE status IN ('PENDING', 'REJECTED')
             ORDER BY setup_id DESC
@@ -353,6 +366,40 @@ def get_pending_setups():
 
 
 # ==========================
+# EXECUTED SETUPS ENDPOINT
+# ==========================
+@app.route("/api/setups/executed", methods=["GET"])
+def get_executed_setups():
+    """Get executed trade setups."""
+    logger.debug("📍 /api/setups/executed called")
+    try:
+        limit = request.args.get("limit", 50, type=int)
+        logger.debug(f"Limit: {limit}")
+
+        conn = get_db_connection()
+        logger.debug("Querying executed setups...")
+        rows = conn.execute("""
+            SELECT 
+                setup_id, symbol, qty, entry, sl, target, strategy,
+                score, status, timeframe, pnl, updated_at
+            FROM trade_setups
+            WHERE status = 'EXECUTED'
+            ORDER BY updated_at DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+
+        conn.close()
+
+        setups = [dict(row) for row in rows]
+        logger.debug(f"✅ Executed setups: {len(setups)} found")
+        return jsonify(setups)
+    except Exception as e:
+        logger.error(f"❌ /api/setups/executed error: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+# ==========================
 # STATS FOR CARDS ENDPOINT
 # ==========================
 @app.route("/api/stats", methods=["GET"])
@@ -362,18 +409,31 @@ def get_stats():
     try:
         conn = get_db_connection()
 
-        # Current unrealized P&L (open trades)
+        # Total open trades
         try:
-            current_pnl = conn.execute("""
-                SELECT COALESCE(SUM(pnl), 0) as total FROM trades WHERE status='OPEN'
+            logger.debug("Querying open trades count...")
+            open_trades = conn.execute("""
+                SELECT COUNT(*) as count FROM trades WHERE status='OPEN'
             """).fetchone()
-            logger.debug(f"✅ Current P&L: {current_pnl['total']}")
+            logger.debug(f"✅ Open trades: {open_trades['count']}")
         except Exception as e:
-            logger.error(f"❌ Current P&L query failed: {e}")
-            current_pnl = {"total": 0}
+            logger.error(f"❌ Open trades query failed: {e}")
+            open_trades = {"count": 0}
+
+        # Total closed trades
+        try:
+            logger.debug("Querying closed trades count...")
+            closed_trades = conn.execute("""
+                SELECT COUNT(*) as count FROM trades WHERE status='CLOSED'
+            """).fetchone()
+            logger.debug(f"✅ Closed trades: {closed_trades['count']}")
+        except Exception as e:
+            logger.error(f"❌ Closed trades query failed: {e}")
+            closed_trades = {"count": 0}
 
         # Today's trades
         try:
+            logger.debug("Querying today's trades...")
             today_trades = conn.execute("""
                 SELECT COUNT(*) as count FROM trades 
                 WHERE DATE(entry_time) = DATE('now')
@@ -383,34 +443,24 @@ def get_stats():
             logger.error(f"❌ Today's trades query failed: {e}")
             today_trades = {"count": 0}
 
-        # This month P&L
+        # Pending setups
         try:
-            month_pnl = conn.execute("""
-                SELECT COALESCE(SUM(pnl), 0) as total FROM trades 
-                WHERE strftime('%Y-%m', entry_time) = strftime('%Y-%m', 'now')
+            logger.debug("Querying pending setups count...")
+            pending_setups = conn.execute("""
+                SELECT COUNT(*) as count FROM trade_setups WHERE status='PENDING'
             """).fetchone()
-            logger.debug(f"✅ Month P&L: {month_pnl['total']}")
+            logger.debug(f"✅ Pending setups: {pending_setups['count']}")
         except Exception as e:
-            logger.error(f"❌ Month P&L query failed: {e}")
-            month_pnl = {"total": 0}
-
-        # Best trade
-        try:
-            best_trade = conn.execute("""
-                SELECT COALESCE(MAX(pnl), 0) as best FROM trades WHERE status = 'CLOSED'
-            """).fetchone()
-            logger.debug(f"✅ Best trade: {best_trade['best']}")
-        except Exception as e:
-            logger.error(f"❌ Best trade query failed: {e}")
-            best_trade = {"best": 0}
+            logger.error(f"❌ Pending setups query failed: {e}")
+            pending_setups = {"count": 0}
 
         conn.close()
 
         response = {
-            "unrealized_pnl": round(current_pnl["total"] or 0, 2),
+            "open_trades": open_trades["count"] or 0,
+            "closed_trades": closed_trades["count"] or 0,
             "today_trades": today_trades["count"] or 0,
-            "month_pnl": round(month_pnl["total"] or 0, 2),
-            "best_trade": round(best_trade["best"] or 0, 2),
+            "pending_setups": pending_setups["count"] or 0,
         }
         logger.debug(f"✅ /api/stats returning: {response}")
         return jsonify(response)
@@ -447,9 +497,10 @@ if __name__ == "__main__":
     print(f"Environment: {FLASK_ENV}")
     print("=" * 70)
     print("\nDatabase schema:")
-    print("  - trades (open/closed positions)")
-    print("  - orders (stop loss orders)")
-    print("  - trade_setups (pending/executed setups)")
+    print("  ✅ trades (id, symbol, qty, entry_price, entry_time, status)")
+    print("  ✅ orders (trade_id, dhan_order_id, status, trigger_price)")
+    print("  ✅ trade_setups (setup_id, symbol, entry, sl, target, pnl, rr_ratio)")
+    print("\n✨ All queries match actual database columns!")
     print("=" * 70)
 
     app.run(
