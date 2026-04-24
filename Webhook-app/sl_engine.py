@@ -13,6 +13,7 @@ import logging
 import yfinance as yf
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
+from sync_trades_with_dhan import sync_trades_with_dhan
 
 # ==========================
 # LOAD ENVIRONMENT VARIABLES
