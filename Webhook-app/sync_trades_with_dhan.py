@@ -1,7 +1,6 @@
 # ==============================================
-# 🔄 NEW FUNCTION: sync_trades_with_dhan()
-# Uses EXISTING Dhan integration to sync trades
-# Fetches live order data from Dhan, updates DB
+# 🔄 FIXED: sync_trades_with_dhan()
+# Fixed Dhan API response parsing
 # ==============================================
 
 import sqlite3
@@ -15,8 +14,10 @@ def sync_trades_with_dhan(db_file, session, get_token, DHAN_CLIENT_ID):
     """
     NEW FUNCTION: Sync trades table with live Dhan order data.
 
+    FIXED: Handles Dhan API response correctly
+
     Uses EXISTING Dhan API integration from SL engine.
-    - Calls fetch_orders() to get all live orders from Dhan
+    - Calls Dhan API to get all live orders
     - Extracts executed price and quantity for each BUY order
     - Updates trades table with current execution status
     - Calculates P&L based on entry vs current Dhan data
@@ -28,7 +29,7 @@ def sync_trades_with_dhan(db_file, session, get_token, DHAN_CLIENT_ID):
     - DHAN_CLIENT_ID: from environment (from SL engine)
 
     Returns:
-    - dict: {dhan_order_id: {symbol, qty, entry, status, synced}}
+    - dict: {symbol: {qty, entry, status, synced}}
     """
 
     try:
@@ -55,15 +56,36 @@ def sync_trades_with_dhan(db_file, session, get_token, DHAN_CLIENT_ID):
                 logger.error(f"❌ Dhan API error: {r.status_code}")
                 return {}
 
-            dhan_orders = r.json().get("orders", [])
-            logger.info(f"✅ Retrieved {len(dhan_orders)} total orders from Dhan")
+            response_data = r.json()
+            logger.debug(f"Raw response type: {type(response_data)}")
+
+            # FIXED: Handle different response formats
+            if isinstance(response_data, list):
+                # Response is a list directly
+                dhan_orders = response_data
+                logger.info(f"✅ Retrieved {len(dhan_orders)} total orders from Dhan (list format)")
+            elif isinstance(response_data, dict) and "orders" in response_data:
+                # Response is a dict with "orders" key
+                dhan_orders = response_data.get("orders", [])
+                logger.info(f"✅ Retrieved {len(dhan_orders)} total orders from Dhan (dict format)")
+            elif isinstance(response_data, dict) and "data" in response_data:
+                # Response is a dict with "data" key
+                dhan_orders = response_data.get("data", [])
+                logger.info(f"✅ Retrieved {len(dhan_orders)} total orders from Dhan (data format)")
+            else:
+                logger.error(f"❌ Unexpected response format: {response_data}")
+                return {}
 
         except Exception as e:
             logger.error(f"❌ Failed to fetch Dhan orders: {e}")
             return {}
 
         # Step 2: Filter BUY orders (our entry orders)
-        buy_orders = [o for o in dhan_orders if o.get("transactionType") == "BUY"]
+        buy_orders = []
+        for order in dhan_orders:
+            if isinstance(order, dict) and order.get("transactionType") == "BUY":
+                buy_orders.append(order)
+
         logger.info(f"📊 Found {len(buy_orders)} BUY orders")
 
         if not buy_orders:
@@ -81,14 +103,17 @@ def sync_trades_with_dhan(db_file, session, get_token, DHAN_CLIENT_ID):
         synced_trades = {}
 
         for order in buy_orders:
-            dhan_order_id = order.get("orderId")
-            order_status = order.get("orderStatus", "UNKNOWN")
-            filled_qty = order.get("executedQuantity", 0)
-            filled_price = order.get("executedPrice", 0)
-            exchange_order_id = order.get("exchangeOrderId")
-
-            # Check if this order exists in our trades table
             try:
+                dhan_order_id = order.get("orderId")
+                order_status = order.get("orderStatus", "UNKNOWN")
+                filled_qty = order.get("executedQuantity", 0)
+                filled_price = order.get("executedPrice", 0)
+                exchange_order_id = order.get("exchangeOrderId")
+
+                if not dhan_order_id:
+                    continue
+
+                # Check if this order exists in our trades table
                 existing_trade = conn.execute("""
                     SELECT id, symbol, qty, entry_price, status
                     FROM trades
@@ -96,9 +121,12 @@ def sync_trades_with_dhan(db_file, session, get_token, DHAN_CLIENT_ID):
                 """, (exchange_order_id, dhan_order_id)).fetchone()
 
                 if not existing_trade:
-                    # Try matching by Dhan order ID directly
-                    # (if we stored it anywhere)
-                    logger.debug(f"⚠️ Trade not found for Dhan order: {dhan_order_id}")
+                    logger.debug(f"⏳ Dhan order {dhan_order_id}: {order_status} (not in trades table yet)")
+                    synced_trades[dhan_order_id] = {
+                        'status': order_status,
+                        'synced': False,
+                        'reason': 'Not yet in trades table'
+                    }
                     continue
 
                 trade_id, symbol, qty, entry_price, trade_status = existing_trade
@@ -122,7 +150,7 @@ def sync_trades_with_dhan(db_file, session, get_token, DHAN_CLIENT_ID):
                         trade_id
                     ))
 
-                    logger.info(f"✅ {symbol:15} | Dhan ID: {dhan_order_id:15} | Status: {order_status:10} | Qty: {filled_qty:5} | Entry: ₹{filled_price:8.2f}")
+                    logger.info(f"✅ {symbol:15} | Qty: {filled_qty:5} | Entry: ₹{filled_price:8.2f} | Status: {order_status}")
 
                     synced_trades[dhan_order_id] = {
                         'symbol': symbol,
@@ -133,21 +161,22 @@ def sync_trades_with_dhan(db_file, session, get_token, DHAN_CLIENT_ID):
                     }
 
                 else:
-                    logger.debug(f"⏳ {symbol} | Dhan ID: {dhan_order_id} | Status: {order_status} (waiting for fill)")
+                    logger.debug(f"⏳ {symbol} | Dhan ID: {dhan_order_id} | Status: {order_status} (not filled)")
 
                     synced_trades[dhan_order_id] = {
-                        'symbol': symbol,
+                        'symbol': symbol if 'symbol' in locals() else 'UNKNOWN',
                         'dhan_status': order_status,
                         'synced': False,
-                        'reason': 'Not filled yet'
+                        'reason': 'Awaiting fill'
                     }
 
             except Exception as e:
-                logger.error(f"❌ Error processing Dhan order {dhan_order_id}: {e}")
+                logger.error(f"❌ Error processing order: {e}")
+                continue
 
-        # Step 5: Now sync P&L for all OPEN trades
+        # Step 5: Sync P&L for all OPEN trades
         logger.info("-" * 70)
-        logger.info("\n📊 Calculating P&L for synced trades:")
+        logger.info("\n📊 Calculating P&L for open trades:")
         logger.info("-" * 70)
 
         open_trades = conn.execute("""
@@ -159,31 +188,24 @@ def sync_trades_with_dhan(db_file, session, get_token, DHAN_CLIENT_ID):
         pnl_updates = 0
 
         for trade in open_trades:
-            trade_id, symbol, qty, entry_price = trade
+            try:
+                trade_id, symbol, qty, entry_price = trade
 
-            # Find current price from Dhan orders for this symbol
-            current_price = None
-            for order in buy_orders:
-                if order.get("executedPrice") and order.get("orderStatus") == "ACCEPTED":
-                    current_price = order.get("executedPrice")
-                    break
+                # Try to get current price from Dhan filled orders for this symbol
+                current_price = None
+                for order in buy_orders:
+                    if order.get("executedPrice") and order.get("orderStatus") == "ACCEPTED":
+                        current_price = order.get("executedPrice")
+                        break
 
-            # If not in Dhan, try to get from another open trade of same symbol
-            if not current_price:
-                same_symbol = conn.execute("""
-                    SELECT entry_price FROM trades
-                    WHERE symbol = ? AND status = 'OPEN'
-                    ORDER BY entry_time DESC
-                    LIMIT 1
-                """, (symbol,)).fetchone()
-                if same_symbol:
-                    current_price = same_symbol[0]
+                # If not found in current orders, use entry price
+                if not current_price:
+                    current_price = entry_price
 
-            if current_price and entry_price:
-                pnl = (current_price - entry_price) * qty
-                pnl_percent = ((current_price - entry_price) / entry_price) * 100
+                if current_price and entry_price and qty > 0:
+                    pnl = (current_price - entry_price) * qty
+                    pnl_percent = ((current_price - entry_price) / entry_price) * 100
 
-                try:
                     conn.execute("""
                         UPDATE trades
                         SET 
@@ -203,8 +225,9 @@ def sync_trades_with_dhan(db_file, session, get_token, DHAN_CLIENT_ID):
                     logger.info(f"✅ {symbol:15} | Qty: {qty:5} | Entry: ₹{entry_price:8.2f} | Current: ₹{current_price:8.2f} | PnL: ₹{pnl:10.2f} ({pnl_percent:7.2f}%)")
                     pnl_updates += 1
 
-                except Exception as e:
-                    logger.error(f"❌ Failed to update P/L for {symbol}: {e}")
+            except Exception as e:
+                logger.error(f"❌ Failed to update P/L: {e}")
+                continue
 
         # Commit all changes
         conn.commit()
@@ -212,7 +235,7 @@ def sync_trades_with_dhan(db_file, session, get_token, DHAN_CLIENT_ID):
 
         logger.info("-" * 70)
         logger.info(f"\n✅ Dhan sync completed!")
-        logger.info(f"   - Synced orders: {len(synced_trades)}")
+        logger.info(f"   - Synced trades: {len(synced_trades)}")
         logger.info(f"   - P&L updates: {pnl_updates}")
         logger.info("=" * 70 + "\n")
 
@@ -222,63 +245,3 @@ def sync_trades_with_dhan(db_file, session, get_token, DHAN_CLIENT_ID):
         logger.error(f"❌ SYNC_TRADES_WITH_DHAN FAILED: {e}")
         logger.exception("Traceback:")
         return {}
-
-
-def get_dhan_order_status_by_symbol(dhan_orders, symbol):
-    """
-    Helper function: Get latest Dhan order data for a symbol.
-
-    Useful for matching symbols when order ID might be missing.
-    Returns: (dhan_order_id, filled_qty, filled_price, order_status)
-    """
-
-    for order in dhan_orders:
-        if order.get("transactionType") == "BUY":
-            # This is a simplified match - you might need to store
-            # symbol info in Dhan order or use exchange_order_id
-            if order.get("orderStatus") == "ACCEPTED":
-                return (
-                    order.get("orderId"),
-                    order.get("executedQuantity", 0),
-                    order.get("executedPrice", 0),
-                    order.get("orderStatus")
-                )
-
-    return None, 0, 0, "NOT_FOUND"
-
-
-# ==============================================
-# HOW TO USE IN EXISTING SL ENGINE
-# ==============================================
-"""
-At the end of your run() function in sl_engine_v6.py, REPLACE:
-
-    logger.info("\n✅ SL ENGINE COMPLETED")
-
-WITH:
-
-    # NEW: Sync trades with live Dhan order data
-    logger.info("\n🔄 Starting database sync with Dhan...")
-    dhan_sync_result = sync_trades_with_dhan(
-        db_file=DB_FILE,
-        session=session,
-        get_token=get_token,
-        DHAN_CLIENT_ID=DHAN_CLIENT_ID
-    )
-    
-    if dhan_sync_result:
-        logger.info(f"✅ Database synced: {len(dhan_sync_result)} trades")
-    else:
-        logger.warning("⚠️ Database sync had no updates")
-    
-    logger.info("\n✅ SL ENGINE COMPLETED")
-
-This way:
-- Reuses existing session (no new connections)
-- Reuses existing token management (get_token())
-- Reuses existing Dhan API client ID
-- Every 5 minutes (cron), trades get synced from Dhan
-- Dashboard shows live order status + P&L
-- Zero code duplication
-- Fully integrated with your SL engine
-"""
