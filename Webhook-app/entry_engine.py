@@ -429,6 +429,11 @@ def run():
     base_quality_score = float(os.getenv("BASE_QUALITY_SCORE", "0") or "0.0")
     tick_size = float(os.getenv("TICK_SIZE", "0.05") or "0.05")
 
+    log("🔍 ENV DEBUG ------------------------")
+    for key in ["SYMBOL", "QTY", "ENTRY", "SL", "TARGET", "SCORE", "SETUP_ID",
+                "BASE_STAGE", "BASE_QUALITY_SCORE", "TICK_SIZE"]:
+        log(f"{key} =", os.getenv(key))
+    log("-------------------------------------")
     log(f"Input: symbol={symbol}, qty={qty}, entry={entry}, sl={sl}, target={target}")
     log(f"       setup_id={setup_id}, base_stage={base_stage}, score={score}")
 
