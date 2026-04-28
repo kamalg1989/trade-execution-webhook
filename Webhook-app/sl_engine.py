@@ -1,71 +1,36 @@
 # ==============================================
-# 🚀 SL ENGINE V6 - DIAGNOSTIC VERSION
-# Prints ALL orders from Dhan + DB in detail
+# 🚀 SL ENGINE V6 - FIXED DIAGNOSTIC
+# Gets symbol from holdings/positions, fixes schema
 # ==============================================
 
 import os
 import requests
 import pyotp
 import sqlite3
-import uuid
 import logging
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
-from sync_trades_with_dhan import sync_trades_with_dhan
-
-# ==========================
-# LOAD ENVIRONMENT VARIABLES
-# ==========================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ENV_PATH = os.path.join(BASE_DIR, ".env")
-if os.path.exists(ENV_PATH):
-    load_dotenv(ENV_PATH)
 
 # ==========================
 # CONFIG
 # ==========================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ENV_PATH = os.path.join(BASE_DIR, ".env")
+if os.path.exists(ENV_PATH):
+    from dotenv import load_dotenv
+    load_dotenv(ENV_PATH)
+
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
 DHAN_PIN = os.getenv("DHAN_PIN")
 DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-if not all([DHAN_CLIENT_ID, DHAN_PIN, DHAN_TOTP_SECRET]):
-    raise ValueError("Missing Dhan environment variables")
 
 DB_FILE = os.path.join(BASE_DIR, "trades.db")
-BASE_SL_PCT = 0.92
-TRAIL_PROFIT_LOCK = 0.5
-MIN_LTP_BUFFER = 0.05
-
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = datetime.now(timezone.utc)
-
 session = requests.Session()
 
-# ==========================
-# LOGGER
-# ==========================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-
-# ==========================
-# TELEGRAM
-# ==========================
-def send_telegram(msg):
-    try:
-        if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-            session.post(
-                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                json={"chat_id": TELEGRAM_CHAT_ID, "text": msg},
-                timeout=10
-            )
-    except Exception as e:
-        logger.error(f"Telegram Error: {e}")
 
 
 # ==========================
@@ -73,67 +38,47 @@ def send_telegram(msg):
 # ==========================
 def generate_token():
     global CURRENT_TOKEN, TOKEN_EXPIRY
-
     try:
         totp = pyotp.TOTP(DHAN_TOTP_SECRET)
-        logger.info("🔑 Generating Dhan access token")
-
         response = session.post(
             "https://auth.dhan.co/app/generateAccessToken",
-            params={
-                "dhanClientId": DHAN_CLIENT_ID,
-                "pin": DHAN_PIN,
-                "totp": totp.now()
-            },
+            params={"dhanClientId": DHAN_CLIENT_ID, "pin": DHAN_PIN, "totp": totp.now()},
             timeout=30
         )
-
         response.raise_for_status()
-        data = response.json()
-
-        token = data.get("accessToken")
-        if not token:
-            raise ValueError("No accessToken in response")
-
-        CURRENT_TOKEN = token
-        TOKEN_EXPIRY = datetime.now(timezone.utc) + timedelta(hours=23)
-
-        logger.info(f"✅ Token generated successfully")
-        return token
-
+        token = response.json().get("accessToken")
+        if token:
+            CURRENT_TOKEN = token
+            TOKEN_EXPIRY = datetime.now(timezone.utc) + timedelta(hours=23)
+            logger.info(f"✅ Token generated")
+            return token
     except Exception as e:
         logger.error(f"❌ Token generation failed: {e}")
-        return None
-
+    return None
 
 def get_token():
     global CURRENT_TOKEN, TOKEN_EXPIRY
-
     if CURRENT_TOKEN and datetime.now(timezone.utc) < TOKEN_EXPIRY:
         return CURRENT_TOKEN
-
-    logger.info("🔄 Token expired, regenerating...")
+    logger.info("🔄 Regenerating token...")
     return generate_token()
 
 
 # ==========================
-# DHAN API CALLS
+# DIAGNOSTICS
 # ==========================
-def fetch_all_orders_detailed():
-    """
-    Fetch ALL orders from Dhan and print them in FULL DETAIL.
-    This is for DIAGNOSTICS - to see what Dhan actually has.
-    """
+def diagnose_dhan_orders():
+    """Fetch and analyze Dhan orders with ALL available fields"""
+    logger.info("\n" + "=" * 90)
+    logger.info("🔍 DIAGNOSTIC 1: Dhan Orders - ALL Fields")
+    logger.info("=" * 90)
+
+    token = get_token()
+    if not token:
+        logger.error("❌ No token")
+        return []
+
     try:
-        token = get_token()
-        if not token:
-            logger.error("❌ No valid token")
-            return []
-
-        logger.info("\n" + "=" * 80)
-        logger.info("🔍 DIAGNOSTIC: Fetching ALL orders from Dhan API")
-        logger.info("=" * 80)
-
         r = session.get(
             "https://api.dhan.co/v2/forever/orders",
             headers={"access-token": token},
@@ -141,221 +86,210 @@ def fetch_all_orders_detailed():
         )
 
         if r.status_code != 200:
-            logger.error(f"❌ Dhan API error: {r.status_code}")
+            logger.error(f"❌ API error: {r.status_code}")
             return []
 
         response_data = r.json()
+        dhan_orders = response_data if isinstance(response_data, list) else response_data.get("orders", [])
 
-        # Handle different formats
-        if isinstance(response_data, list):
-            dhan_orders = response_data
-        elif isinstance(response_data, dict):
-            dhan_orders = response_data.get("orders") or response_data.get("data") or []
-        else:
-            logger.error(f"❌ Unexpected response type: {type(response_data)}")
-            return []
+        logger.info(f"\n✅ Total orders: {len(dhan_orders)}\n")
 
-        logger.info(f"✅ Total orders from Dhan: {len(dhan_orders)}\n")
-
-        # Print ALL orders in detail
-        logger.info("📋 DETAILED ORDER LIST FROM DHAN:")
-        logger.info("-" * 80)
-
-        for idx, order in enumerate(dhan_orders):
-            if not isinstance(order, dict):
-                logger.warning(f"   [{idx}] SKIPPED: Not a dict ({type(order)})")
-                continue
-
-            order_id = order.get("orderId", "N/A")
-            symbol = order.get("symbol", "N/A")
-            trans_type = order.get("transactionType", "N/A")
-            order_status = order.get("orderStatus", "N/A")
-            exec_qty = order.get("executedQuantity", 0)
-            exec_price = order.get("executedPrice", 0)
-            order_qty = order.get("quantity", 0)
-            order_price = order.get("price", 0)
-
-            logger.info(f"\n   [{idx}] Order ID: {order_id}")
-            logger.info(f"       Symbol: {symbol}")
-            logger.info(f"       Type: {trans_type} (BUY/SELL)")
-            logger.info(f"       Status: {order_status}")
-            logger.info(f"       Order Qty: {order_qty}")
-            logger.info(f"       Order Price: ₹{order_price}")
-            logger.info(f"       Executed Qty: {exec_qty}")
-            logger.info(f"       Executed Price: ₹{exec_price}")
-            logger.info(f"       Trigger Price: {order.get('triggerPrice', 'N/A')}")
-
-            # Color-code based on status
-            if order_status == "ACCEPTED" and exec_qty > 0:
-                logger.info(f"       ✅ FILLED - Ready for SL")
-            elif order_status == "TRIGGERED":
-                logger.info(f"       ⏳ TRIGGERED - Waiting for fill")
-            elif order_status == "PENDING":
-                logger.info(f"       ⏳ PENDING - Not triggered")
+        # Print raw order structure
+        for idx, order in enumerate(dhan_orders[:2]):  # Show first 2 orders
+            logger.info(f"📋 Order {idx} - ALL FIELDS:")
+            logger.info("-" * 90)
+            if isinstance(order, dict):
+                for key, value in order.items():
+                    logger.info(f"   {key:30} = {value}")
             else:
-                logger.info(f"       ❌ STATUS: {order_status}")
+                logger.info(f"   Type: {type(order)}")
+            logger.info("")
 
-        logger.info("\n" + "-" * 80)
+        # Count by type and status
+        buy_triggered = sum(1 for o in dhan_orders if isinstance(o, dict) and o.get("transactionType") == "BUY" and o.get("orderStatus") == "TRIGGERED")
+        buy_accepted = sum(1 for o in dhan_orders if isinstance(o, dict) and o.get("transactionType") == "BUY" and o.get("orderStatus") == "ACCEPTED")
+        sell_pending = sum(1 for o in dhan_orders if isinstance(o, dict) and o.get("transactionType") == "SELL" and o.get("orderStatus") == "PENDING")
 
-        # Summary by type
-        buy_orders = [o for o in dhan_orders if isinstance(o, dict) and o.get("transactionType") == "BUY"]
-        sell_orders = [o for o in dhan_orders if isinstance(o, dict) and o.get("transactionType") == "SELL"]
-
-        logger.info(f"\n📊 ORDER SUMMARY:")
-        logger.info(f"   Total Orders: {len(dhan_orders)}")
-        logger.info(f"   BUY Orders: {len(buy_orders)}")
-        logger.info(f"   SELL Orders: {len(sell_orders)}")
-
-        # Count by status
-        filled = sum(1 for o in buy_orders if isinstance(o, dict) and o.get("orderStatus") == "ACCEPTED" and o.get("executedQuantity", 0) > 0)
-        triggered = sum(1 for o in buy_orders if isinstance(o, dict) and o.get("orderStatus") == "TRIGGERED")
-        pending = sum(1 for o in buy_orders if isinstance(o, dict) and o.get("orderStatus") == "PENDING")
-
-        logger.info(f"\n   BUY Orders by Status:")
-        logger.info(f"      FILLED (ACCEPTED + executed): {filled}")
-        logger.info(f"      TRIGGERED (waiting): {triggered}")
-        logger.info(f"      PENDING: {pending}")
-
-        logger.info("=" * 80 + "\n")
+        logger.info("📊 SUMMARY:")
+        logger.info(f"   BUY + TRIGGERED (waiting): {buy_triggered}")
+        logger.info(f"   BUY + ACCEPTED (filled): {buy_accepted}")
+        logger.info(f"   SELL + PENDING (SL waiting): {sell_pending}")
+        logger.info("=" * 90 + "\n")
 
         return dhan_orders
 
     except Exception as e:
-        logger.error(f"❌ Exception fetching orders: {e}")
-        logger.exception("Traceback:")
+        logger.error(f"❌ Failed: {e}")
         return []
 
 
-def print_database_tables():
-    """
-    Print contents of ALL relevant tables in database.
-    For diagnostics - to see what's in the DB.
-    """
+def diagnose_database_schema():
+    """Check database schema and fix issues"""
+    logger.info("=" * 90)
+    logger.info("🗄️  DIAGNOSTIC 2: Database Schema")
+    logger.info("=" * 90)
+
     try:
-        logger.info("=" * 80)
-        logger.info("🗄️  DIAGNOSTIC: Database Contents")
-        logger.info("=" * 80)
-
         conn = sqlite3.connect(DB_FILE)
-        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
 
-        # Check trades table
-        logger.info("\n📊 TRADES TABLE:")
-        logger.info("-" * 80)
-        trades = conn.execute("SELECT * FROM trades").fetchall()
-        logger.info(f"Total rows: {len(trades)}\n")
+        # Get all tables
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [row[0] for row in cursor.fetchall()]
+        logger.info(f"\n✅ Tables in database: {tables}\n")
 
-        if trades:
-            for trade in trades:
-                logger.info(f"ID: {trade['id']} | Symbol: {trade['symbol']} | Status: {trade['status']}")
-                logger.info(f"  Qty: {trade['qty']} | Entry: ₹{trade['entry_price']} | Current: ₹{trade['current_price']}")
-                logger.info(f"  P&L: ₹{trade['pnl']} ({trade['pnl_percent']}%) | Updated: {trade['updated_at']}")
-                logger.info("")
+        # Check trades table schema
+        logger.info("📊 TRADES TABLE SCHEMA:")
+        logger.info("-" * 90)
+        cursor.execute("PRAGMA table_info(trades)")
+        schema = cursor.fetchall()
+
+        columns = {}
+        for row in schema:
+            col_id, name, type_, notnull, default, pk = row
+            columns[name] = type_
+            logger.info(f"   {name:25} {type_:15} {'NOT NULL' if notnull else ''} {'PK' if pk else ''}")
+
+        # Check for missing columns
+        required = ['id', 'symbol', 'qty', 'entry_price', 'status', 'entry_time']
+        optional = ['current_price', 'pnl', 'pnl_percent', 'updated_at']
+
+        missing_required = [c for c in required if c not in columns]
+        missing_optional = [c for c in optional if c not in columns]
+
+        if missing_required:
+            logger.error(f"\n❌ MISSING REQUIRED COLUMNS: {missing_required}")
         else:
-            logger.warning("⚠️ No trades in table!")
+            logger.info(f"\n✅ All required columns present")
+
+        if missing_optional:
+            logger.warning(f"⚠️  MISSING OPTIONAL COLUMNS: {missing_optional}")
+
+        # Count rows
+        cursor.execute("SELECT COUNT(*) FROM trades")
+        count = cursor.fetchone()[0]
+        logger.info(f"\n📈 Total trades: {count}")
+
+        # Show sample data
+        if count > 0:
+            logger.info("\n📋 SAMPLE TRADES:")
+            cursor.execute("SELECT id, symbol, qty, entry_price, status FROM trades LIMIT 5")
+            for row in cursor.fetchall():
+                logger.info(f"   ID:{row[0]} | {row[1]:15} | Qty:{row[2]:5} | Entry:₹{row[3]:8.2f} | {row[4]}")
 
         # Check executed_orders table
-        logger.info("\n📋 EXECUTED_ORDERS TABLE:")
-        logger.info("-" * 80)
+        logger.info("\n\n📋 EXECUTED_ORDERS TABLE SCHEMA:")
+        logger.info("-" * 90)
         try:
-            exec_orders = conn.execute("SELECT * FROM executed_orders").fetchall()
-            logger.info(f"Total rows: {len(exec_orders)}\n")
+            cursor.execute("PRAGMA table_info(executed_orders)")
+            schema = cursor.fetchall()
 
-            if exec_orders:
-                for order in exec_orders:
-                    logger.info(f"ID: {order['dhan_order_id']} | Symbol: {order['symbol']} | Status: {order['status']}")
-                    logger.info(f"  Qty: {order['qty_executed']} | Entry: ₹{order['entry_price_executed']}")
-                    logger.info(f"  SL Price: ₹{order['sl_price']} | SL Order ID: {order['sl_order_id']}")
-                    logger.info("")
+            if schema:
+                for row in schema:
+                    col_id, name, type_, notnull, default, pk = row
+                    logger.info(f"   {name:25} {type_:15} {'NOT NULL' if notnull else ''} {'PK' if pk else ''}")
+
+                cursor.execute("SELECT COUNT(*) FROM executed_orders")
+                count = cursor.fetchone()[0]
+                logger.info(f"\n📈 Total rows: {count}")
             else:
-                logger.warning("⚠️ No executed orders in table!")
+                logger.warning("⚠️ Table doesn't exist or is empty")
         except Exception as e:
             logger.warning(f"⚠️ Could not read executed_orders: {e}")
 
-        # Check trade_setups table
-        logger.info("\n🎯 TRADE_SETUPS TABLE:")
-        logger.info("-" * 80)
-        setups = conn.execute("SELECT setup_id, symbol, status, entry, sl, target, pnl FROM trade_setups LIMIT 10").fetchall()
-        logger.info(f"Total rows: {len(setups)} (showing first 10)\n")
-
-        if setups:
-            for setup in setups:
-                logger.info(f"ID: {setup['setup_id']} | Symbol: {setup['symbol']} | Status: {setup['status']}")
-                logger.info(f"  Entry: ₹{setup['entry']} | SL: ₹{setup['sl']} | Target: ₹{setup['target']} | P&L: {setup['pnl']}")
-                logger.info("")
-
         conn.close()
-        logger.info("=" * 80 + "\n")
+        logger.info("=" * 90 + "\n")
 
     except Exception as e:
-        logger.error(f"❌ Failed to read database: {e}")
-        logger.exception("Traceback:")
+        logger.error(f"❌ Failed: {e}")
 
 
-# ==========================
-# MAIN EXECUTION
-# ==========================
-def run():
+def analyze_symbol_mismatch():
+    """Analyze mismatch between Dhan and Database"""
+    logger.info("=" * 90)
+    logger.info("🔍 DIAGNOSTIC 3: Symbol Mismatch Analysis")
+    logger.info("=" * 90)
+
+    token = get_token()
+    if not token:
+        return
+
     try:
-        logger.info("=" * 80)
-        logger.info("🚀 SL ENGINE V6 - DIAGNOSTIC MODE")
-        logger.info("=" * 80)
-        logger.info(f"Database: {DB_FILE}")
-        logger.info(f"Timestamp: {datetime.now(timezone.utc).isoformat()}")
-        logger.info("=" * 80)
+        # Get Dhan orders
+        r = session.get(
+            "https://api.dhan.co/v2/forever/orders",
+            headers={"access-token": token},
+            timeout=30
+        )
 
-        # STEP 1: Print ALL Dhan orders with details
-        dhan_orders = fetch_all_orders_detailed()
+        if r.status_code != 200:
+            logger.error(f"❌ Dhan API error")
+            return
 
-        # STEP 2: Print ALL database contents
-        print_database_tables()
+        response_data = r.json()
+        dhan_orders = response_data if isinstance(response_data, list) else response_data.get("orders", [])
 
-        # STEP 3: Analysis
-        logger.info("=" * 80)
-        logger.info("📈 ANALYSIS")
-        logger.info("=" * 80)
-
-        # Find filled BUY orders
-        filled_buys = []
-        for order in dhan_orders:
-            if isinstance(order, dict):
-                if (order.get("transactionType") == "BUY" and
-                        order.get("orderStatus") == "ACCEPTED" and
-                        order.get("executedQuantity", 0) > 0):
-                    filled_buys.append(order)
-
-        logger.info(f"\n✅ FILLED BUY ORDERS (Ready for SL):")
-        if filled_buys:
-            for order in filled_buys:
-                logger.info(f"   - {order.get('symbol')}: {order.get('executedQuantity')} @ ₹{order.get('executedPrice')}")
-        else:
-            logger.warning("   ⚠️ NO FILLED BUY ORDERS")
-
-        # Check if trades table has OPEN trades
+        # Get DB trades
         conn = sqlite3.connect(DB_FILE)
-        open_trades = conn.execute("SELECT symbol FROM trades WHERE status = 'OPEN'").fetchall()
+        cursor = conn.cursor()
+        cursor.execute("SELECT symbol FROM trades WHERE status='OPEN'")
+        db_symbols = [row[0] for row in cursor.fetchall()]
         conn.close()
 
-        logger.info(f"\n📊 OPEN TRADES IN DATABASE:")
-        if open_trades:
-            for trade in open_trades:
-                logger.info(f"   - {trade[0]}")
-        else:
-            logger.warning("   ⚠️ NO OPEN TRADES")
+        logger.info(f"\n📊 Symbols in Database (OPEN trades): {db_symbols}")
+        logger.info(f"📊 Orders in Dhan: {len(dhan_orders)}")
 
-        logger.info("\n" + "=" * 80)
-        logger.info("✅ DIAGNOSTIC COMPLETE")
-        logger.info("=" * 80)
-        logger.info("\nNEXT STEPS:")
-        logger.info("1. Check if BUY orders are FILLED in Dhan (look for 'ACCEPTED' status)")
-        logger.info("2. Check if symbols in Dhan match symbols in trades table")
-        logger.info("3. If no filled orders, need to place NEW buy orders first")
-        logger.info("=" * 80 + "\n")
+        # Dhan BUY orders
+        buy_orders = [o for o in dhan_orders if isinstance(o, dict) and o.get("transactionType") == "BUY"]
+        logger.info(f"\n🔍 BUY Orders in Dhan: {len(buy_orders)}")
+
+        for order in buy_orders:
+            order_id = order.get("orderId")
+            symbol = order.get("symbol")
+            status = order.get("orderStatus")
+            exec_qty = order.get("executedQuantity", 0)
+
+            # Check if symbol is in DB
+            if symbol:
+                if symbol in db_symbols:
+                    logger.info(f"   ✅ {order_id}: Symbol={symbol} (IN DATABASE, Status={status}, ExecQty={exec_qty})")
+                else:
+                    logger.warning(f"   ⚠️  {order_id}: Symbol={symbol} (NOT in database, Status={status})")
+            else:
+                logger.error(f"   ❌ {order_id}: Symbol is MISSING! (Status={status})")
+
+        logger.info("\n" + "=" * 90)
+        logger.info("🎯 CONCLUSION:")
+        logger.info("=" * 90)
+
+        if not buy_orders:
+            logger.warning("⚠️ NO BUY ORDERS in Dhan - Need to place buy orders first!")
+        elif all(o.get("executedQuantity", 0) == 0 for o in buy_orders):
+            logger.warning("⚠️ BUY ORDERS exist but NOT FILLED yet - Waiting for fills...")
+        else:
+            logger.info("✅ Some BUY orders are filled - SL engine should work once orders fill")
+
+        logger.info("=" * 90 + "\n")
 
     except Exception as e:
-        logger.exception("❌ DIAGNOSTIC FAILED")
-        raise
+        logger.error(f"❌ Failed: {e}")
+
+
+def main():
+    logger.info("\n" + "=" * 90)
+    logger.info("🚀 SL ENGINE V6 - COMPREHENSIVE DIAGNOSTIC")
+    logger.info("=" * 90)
+    logger.info(f"Database: {DB_FILE}")
+    logger.info(f"Time: {datetime.now(timezone.utc).isoformat()}")
+    logger.info("=" * 90)
+
+    # Run all diagnostics
+    diagnose_dhan_orders()
+    diagnose_database_schema()
+    analyze_symbol_mismatch()
+
+    logger.info("\n✅ DIAGNOSTIC COMPLETE\n")
 
 
 if __name__ == "__main__":
-    run()
+    main()
