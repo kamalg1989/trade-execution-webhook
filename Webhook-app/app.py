@@ -30,7 +30,7 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
 
 # Paths (adjust to your setup)
-ENTRY_ENGINE_PATH = "/root/trade-execution-webhook/entry_engine_v2.py"
+ENTRY_ENGINE_PATH = "/root/trade-execution-webhook/entry_engine.py"
 PROJECT_ROOT = "/root/trade-execution-webhook"
 VENV_PYTHON = "/root/trade-execution-webhook/venv/bin/python"
 
