@@ -1,8 +1,5 @@
 # ==============================================
-# 🚀 SL ENGINE V8.1 (FINAL STABLE)
-# - Correct LTP API (POST)
-# - Token reuse
-# - Reliable SL placement
+# 🚀 SL ENGINE V8.2 (FINAL FIXED)
 # ==============================================
 
 import os
@@ -61,13 +58,14 @@ def send_telegram(msg):
         logger.error(f"Telegram Error: {e}")
 
 # ==========================
-# TOKEN MANAGEMENT
+# TOKEN
 # ==========================
 def generate_token():
     global CURRENT_TOKEN, TOKEN_EXPIRY
 
     try:
         totp = pyotp.TOTP(DHAN_TOTP_SECRET)
+
         logger.info("🔑 Generating Dhan token")
 
         r = session.post(
@@ -105,18 +103,18 @@ def get_token():
     return generate_token()
 
 # ==========================
-# ✅ CORRECT LTP FETCH
+# ✅ FIXED LTP API
 # ==========================
 def get_ltp(security_id):
     try:
         token = get_token()
         if not token:
+            logger.error("❌ No token")
             return 0
 
         payload = {
-            "securityId": [str(security_id)],
-            "exchangeSegment": "NSE_EQ",
-            "dhanClientId": DHAN_CLIENT_ID
+            "securityId": [int(security_id)],   # MUST be int
+            "exchangeSegment": "NSE_EQ"
         }
 
         r = session.post(
@@ -137,10 +135,14 @@ def get_ltp(security_id):
 
         data = r.json()
 
-        if "data" in data and len(data["data"]) > 0:
-            ltp = data["data"][0].get("ltp", 0)
-            logger.info(f"✅ LTP: {ltp}")
-            return ltp
+        # Correct parsing
+        if "data" in data:
+            sec_key = str(security_id)
+
+            if sec_key in data["data"]:
+                ltp = data["data"][sec_key].get("lastPrice", 0)
+                logger.info(f"✅ LTP: {ltp}")
+                return ltp
 
         logger.error(f"❌ Unexpected LTP response: {data}")
         return 0
@@ -148,6 +150,7 @@ def get_ltp(security_id):
     except Exception as e:
         logger.error(f"❌ LTP fetch failed: {e}")
         return 0
+
 # ==========================
 # DB
 # ==========================
@@ -282,7 +285,7 @@ def run():
     for t in trades:
         trade_id = t["id"]
         symbol = t["symbol"]
-        sec_id = t["security_id"]
+        sec_id = int(t["security_id"])   # FIX
         qty = t["qty"]
         entry = t["entry_price"]
         current_sl = t["sl_price"]
