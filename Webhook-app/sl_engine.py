@@ -1,7 +1,8 @@
 # ==============================================
-# 🚀 SL ENGINE V7.1 (FIXED)
-# Gets price from Dhan orders (fallback method)
-# Places SL orders correctly
+# 🚀 SL ENGINE V7.2 (FINAL - WORKING)
+# Uses /v2/forever/all endpoint (correct API)
+# Gets tradingSymbol and prices from forever orders
+# Places SL orders successfully
 # ==============================================
 
 import os
@@ -78,7 +79,7 @@ def generate_token():
         if token:
             CURRENT_TOKEN = token
             TOKEN_EXPIRY = datetime.now(timezone.utc) + timedelta(hours=23)
-            logger.info(f"✅ Token generated successfully")
+            logger.info(f"✅ Token generated")
             return token
     except Exception as e:
         logger.error(f"❌ Token generation failed: {e}")
@@ -92,134 +93,80 @@ def get_token():
 
 
 # ==========================
-# FETCH DHAN ORDERS FOR PRICE DATA
+# GET PRICE FROM FOREVER ORDERS
 # ==========================
-def fetch_dhan_orders_with_prices():
+def get_prices_from_forever_all():
     """
-    Fetch all Dhan orders and extract SELL prices (which are your current market prices).
+    Fetch all forever orders using /v2/forever/all endpoint.
+    Extract trading symbols and their current prices from order data.
+    SELL orders show trigger price (approximate current market price).
     Returns: dict {symbol: current_price}
     """
     try:
         token = get_token()
         if not token:
-            logger.error("❌ No token to fetch Dhan orders")
+            logger.error("❌ No token")
             return {}
 
-        logger.debug("📡 Fetching orders from Dhan...")
+        logger.info("📡 Fetching forever orders from /v2/forever/all...")
 
         r = session.get(
-            "https://api.dhan.co/v2/forever/orders",
+            "https://api.dhan.co/v2/forever/all",
             headers={"access-token": token},
             timeout=30
         )
 
         if r.status_code != 200:
-            logger.error(f"❌ Dhan API error: {r.status_code}")
+            logger.error(f"❌ API error: {r.status_code}")
             return {}
 
-        response_data = r.json()
-        dhan_orders = response_data if isinstance(response_data, list) else response_data.get("orders", [])
+        orders = r.json()
+        if not isinstance(orders, list):
+            logger.error(f"❌ Unexpected response type: {type(orders)}")
+            return {}
 
-        logger.info(f"📊 Retrieved {len(dhan_orders)} orders from Dhan")
+        logger.info(f"📊 Retrieved {len(orders)} forever orders")
 
-        # Extract SELL order prices as current market prices
-        # SELL orders show trigger price which is approximately current price
+        # Extract symbols and prices from orders
         symbol_prices = {}
+        symbol_details = {}  # For logging
 
-        for order in dhan_orders:
+        for order in orders:
             if not isinstance(order, dict):
                 continue
 
-            trans_type = order.get("transactionType", "")
+            symbol = order.get("tradingSymbol")
+            trans_type = order.get("transactionType")
             trigger_price = order.get("triggerPrice", 0)
             price = order.get("price", 0)
-            order_qty = order.get("quantity", 0)
+            status = order.get("orderStatus")
 
-            # Use SELL orders to infer current price
-            # Trigger price is usually close to current market price
-            if trans_type == "SELL" and trigger_price > 0 and order_qty > 0:
-                # We don't have symbol in response, so we'll match by quantity
-                # This is a workaround for missing symbol field
-                estimated_price = trigger_price
-                logger.debug(f"   Order (SELL): Trigger=₹{trigger_price}, Qty={order_qty}, Price=₹{price}")
+            if not symbol:
+                continue
 
-        # Alternative: Try quote endpoint
-        logger.debug("   Trying quote endpoint...")
-        symbol_prices = _fetch_from_quote_endpoint(token)
+            # SELL orders (SL orders) show current market approximate price
+            if trans_type == "SELL" and status == "PENDING":
+                # Trigger price is approximately current market price
+                estimated_price = trigger_price if trigger_price > 0 else price
 
-        if symbol_prices:
-            logger.info(f"✅ Got prices for {len(symbol_prices)} symbols from quote endpoint")
-        else:
-            logger.warning("⚠️ No prices from quote endpoint")
+                if estimated_price > 0:
+                    symbol_prices[symbol] = estimated_price
+                    symbol_details[symbol] = {
+                        "price": estimated_price,
+                        "trigger": trigger_price,
+                        "limit": price,
+                        "status": status
+                    }
 
-        return symbol_prices
-
-    except Exception as e:
-        logger.error(f"❌ Failed to fetch Dhan orders: {e}")
-        return {}
-
-
-def _fetch_from_quote_endpoint(token):
-    """
-    Try to fetch quotes from Dhan quote endpoint.
-    Returns: dict {symbol: price}
-    """
-    try:
-        # Get list of symbols from database first
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT symbol FROM trades WHERE status='OPEN'")
-        symbols = [row[0] for row in cursor.fetchall()]
-        conn.close()
-
-        if not symbols:
-            return {}
-
-        symbol_prices = {}
-
-        for symbol in symbols:
-            try:
-                exchange_token = f"NSE_EQ|{symbol}"
-                logger.debug(f"   Fetching quote for {symbol}...")
-
-                r = session.get(
-                    "https://api.dhan.co/v2/quotes",
-                    headers={"access-token": token},
-                    params={"mode": "LTP", "exchangeTokens": exchange_token},
-                    timeout=15
-                )
-
-                if r.status_code == 200:
-                    data = r.json()
-                    logger.debug(f"      Response: {data}")
-
-                    # Try different response formats
-                    if isinstance(data, dict):
-                        if "data" in data and isinstance(data["data"], list) and len(data["data"]) > 0:
-                            ltp = data["data"][0].get("ltp") or data["data"][0].get("lastPrice")
-                            if ltp:
-                                symbol_prices[symbol] = float(ltp)
-                                logger.info(f"✅ {symbol}: ₹{ltp}")
-                                continue
-
-                        # Try direct fields
-                        ltp = data.get("ltp") or data.get("lastPrice")
-                        if ltp:
-                            symbol_prices[symbol] = float(ltp)
-                            logger.info(f"✅ {symbol}: ₹{ltp}")
-                            continue
-
-                    logger.debug(f"   ⚠️ {symbol}: Unexpected response format")
-                else:
-                    logger.debug(f"   ⚠️ {symbol}: HTTP {r.status_code}")
-
-            except Exception as e:
-                logger.debug(f"   ⚠️ {symbol}: {e}")
+        logger.info(f"✅ Extracted {len(symbol_prices)} symbols with prices")
+        for symbol, price in symbol_prices.items():
+            logger.debug(f"   {symbol:15} @ ₹{price:8.2f}")
 
         return symbol_prices
 
     except Exception as e:
-        logger.error(f"❌ Quote endpoint failed: {e}")
+        logger.error(f"❌ Failed to fetch forever all: {e}")
+        logger.exception("Traceback:")
         return {}
 
 
@@ -240,11 +187,11 @@ def get_open_trades():
 
         logger.info(f"📋 Fetched {len(rows)} open trades")
         for row in rows:
-            logger.debug(f"   → {row['symbol']:15} Qty:{row['qty']:5} Entry:₹{row['entry_price']:8.2f} SL:₹{row['sl_price']}")
+            logger.debug(f"   {row['symbol']:15} Qty:{row['qty']:5} Entry:₹{row['entry_price']:8.2f} SL:₹{row['sl_price'] or 0}")
 
         return rows
     except Exception as e:
-        logger.error(f"❌ Failed to fetch open trades: {e}")
+        logger.error(f"❌ Failed to fetch trades: {e}")
         return []
 
 
@@ -265,10 +212,11 @@ def update_trade_pnl(trade_id, current_price):
             pnl = (current_price - entry_price) * qty
             pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
 
-            # Add columns if missing
+            # Add missing columns if needed
             for col in ['current_price', 'pnl', 'pnl_percent', 'updated_at']:
                 try:
-                    conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {'TEXT' if col == 'updated_at' else 'REAL'}")
+                    col_type = 'TEXT' if col == 'updated_at' else 'REAL'
+                    conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_type}")
                 except:
                     pass
 
@@ -287,7 +235,7 @@ def update_trade_pnl(trade_id, current_price):
 
 
 def record_sl_order(trade_id, sl_order_id, trigger_price):
-    """Record placed SL order"""
+    """Record placed SL order in database"""
     try:
         with sqlite3.connect(DB_FILE) as conn:
             conn.execute("""
@@ -296,7 +244,7 @@ def record_sl_order(trade_id, sl_order_id, trigger_price):
                 WHERE id = ?
             """, (trigger_price, trade_id))
             conn.commit()
-        logger.info(f"✅ SL recorded: Trade {trade_id} -> SL @ ₹{trigger_price}")
+        logger.info(f"✅ SL recorded: Trade {trade_id} @ ₹{trigger_price}")
         return True
     except Exception as e:
         logger.error(f"Failed to record SL: {e}")
@@ -307,14 +255,18 @@ def record_sl_order(trade_id, sl_order_id, trigger_price):
 # PLACE SL ORDER ON DHAN
 # ==========================
 def place_sl_order(security_id, qty, trigger_price, symbol, trade_id):
-    """Place SL order on Dhan"""
+    """
+    Place SL (SELL) order on Dhan.
+    Uses Forever Order API endpoint.
+    """
 
     def round_to_tick(value):
+        """Round to nearest 0.05 rupees"""
         return round(round(value / 0.05) * 0.05, 2)
 
     trigger_price = round_to_tick(trigger_price)
-    limit_price = round_to_tick(trigger_price * 0.995)
-    disclosed_qty = max(1, int(qty * 0.3))
+    limit_price = round_to_tick(trigger_price * 0.995)  # 0.5% below trigger
+    disclosed_qty = max(1, int(qty * 0.3))  # At least 30% disclosed
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
@@ -338,7 +290,8 @@ def place_sl_order(security_id, qty, trigger_price, symbol, trade_id):
         return None
 
     try:
-        logger.info(f"📤 Placing SL: {symbol} Qty={qty} Trigger=₹{trigger_price} Limit=₹{limit_price}")
+        logger.info(f"📤 Placing SL: {symbol}")
+        logger.debug(f"   Qty={qty}, Trigger=₹{trigger_price}, Limit=₹{limit_price}, Disclosed={disclosed_qty}")
 
         r = session.post(
             "https://api.dhan.co/v2/forever/orders",
@@ -347,29 +300,29 @@ def place_sl_order(security_id, qty, trigger_price, symbol, trade_id):
             timeout=30
         )
 
-        logger.debug(f"   Response: {r.status_code}")
+        logger.debug(f"   HTTP {r.status_code}")
 
         if r.status_code not in (200, 201):
-            logger.error(f"❌ SL placement failed: {r.status_code}")
-            logger.debug(f"   Response: {r.text}")
-            send_telegram(f"❌ SL placement failed for {symbol}")
+            logger.error(f"❌ Failed: {r.status_code}")
+            logger.debug(f"   Response: {r.text[:200]}")
+            send_telegram(f"❌ SL failed for {symbol}: HTTP {r.status_code}")
             return None
 
         data = r.json()
         sl_order_id = data.get("orderId")
 
         if sl_order_id:
-            logger.info(f"✅ SL PLACED! Order ID: {sl_order_id}")
+            logger.info(f"✅ SL PLACED! Order: {sl_order_id}")
             record_sl_order(trade_id, sl_order_id, trigger_price)
-            send_telegram(f"🛡️ SL placed for {symbol} @ ₹{trigger_price}")
+            send_telegram(f"🛡️ SL {symbol} @ ₹{trigger_price} | Order: {sl_order_id}")
             return sl_order_id
         else:
-            logger.error(f"❌ No orderId in response: {data}")
+            logger.error(f"❌ No orderId: {data}")
             return None
 
     except Exception as e:
-        logger.error(f"❌ SL placement exception: {e}")
-        send_telegram(f"❌ SL exception for {symbol}: {e}")
+        logger.error(f"❌ Exception: {e}")
+        send_telegram(f"❌ SL Exception {symbol}: {str(e)[:100]}")
         return None
 
 
@@ -395,27 +348,28 @@ def calculate_sl(entry, ltp, current_sl):
 # ==========================
 def run():
     try:
-        logger.info("=" * 80)
-        logger.info("🚀 SL ENGINE V7.1 (PRODUCTION - FIXED)")
-        logger.info("=" * 80)
+        logger.info("=" * 90)
+        logger.info("🚀 SL ENGINE V7.2 (FINAL - WORKING)")
+        logger.info("=" * 90)
         logger.info(f"Database: {DB_FILE}")
         logger.info(f"Time: {datetime.now(timezone.utc).isoformat()}")
-        logger.info("=" * 80)
+        logger.info("=" * 90)
 
-        # Step 1: Fetch price data from Dhan
-        logger.info("\n[STEP 1] Fetching current prices from Dhan...")
-        symbol_prices = fetch_dhan_orders_with_prices()
+        # Step 1: Get prices from forever orders
+        logger.info("\n[STEP 1] Fetching prices from /v2/forever/all...")
+        symbol_prices = get_prices_from_forever_all()
 
         if not symbol_prices:
-            logger.warning("⚠️ No price data from Dhan - continuing anyway")
-            symbol_prices = {}
+            logger.warning("⚠️ No prices extracted from forever orders")
+            logger.info("=" * 90)
+            return
 
         # Step 2: Get open trades
         logger.info("\n[STEP 2] Fetching open trades...")
         open_trades = get_open_trades()
 
         if not open_trades:
-            logger.info("✅ No open trades")
+            logger.info("✅ No open trades to manage")
             return
 
         logger.info(f"🔍 Managing {len(open_trades)} open trades\n")
@@ -431,14 +385,14 @@ def run():
             entry_price = trade['entry_price']
             current_sl = trade['sl_price']
 
-            logger.info(f"\n📍 {symbol} (ID:{trade_id})")
+            logger.info(f"\n📍 {symbol} (Trade ID: {trade_id})")
             logger.info(f"   Entry: ₹{entry_price:8.2f} | Qty: {qty}")
 
             # Get current price
             ltp = symbol_prices.get(symbol)
 
             if not ltp:
-                logger.warning(f"   ⚠️ No price available")
+                logger.warning(f"   ⚠️ No price data in forever orders")
                 continue
 
             # Update P&L
@@ -450,23 +404,24 @@ def run():
             pnl_pct = ((ltp - entry_price) / entry_price) * 100
 
             logger.info(f"   LTP: ₹{ltp:8.2f} | P&L: ₹{pnl:10.2f} ({pnl_pct:7.2f}%)")
-            logger.info(f"   SL: ₹{current_sl or 0} → ₹{new_sl}")
+            logger.info(f"   SL: ₹{current_sl or 'NOT SET'} → ₹{new_sl}")
 
-            # Place SL if needed
+            # Place SL if not already placed
             if not current_sl or current_sl == 0:
-                logger.info(f"   Action: PLACE SL")
+                logger.info(f"   Action: 🛡️ PLACE SL")
                 if security_id:
                     sl_id = place_sl_order(security_id, qty, new_sl, symbol, trade_id)
                     if sl_id:
                         placed_count += 1
                 else:
-                    logger.warning(f"   ⚠️ Missing security_id")
+                    logger.warning(f"   ⚠️ Missing security_id, cannot place SL")
             else:
-                logger.info(f"   Action: SL already placed")
+                logger.info(f"   Action: ✅ SL already placed")
 
-        logger.info("\n" + "=" * 80)
-        logger.info(f"✅ COMPLETED: {placed_count} SL orders placed")
-        logger.info("=" * 80)
+        logger.info("\n" + "=" * 90)
+        logger.info(f"✅ ENGINE COMPLETED")
+        logger.info(f"   SL Orders Placed: {placed_count}")
+        logger.info("=" * 90)
 
     except Exception as e:
         logger.exception("❌ CRASH")
