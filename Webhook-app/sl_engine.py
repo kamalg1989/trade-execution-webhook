@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 SL ENGINE V8.2 (FINAL FIXED)
+# 🚀 SL ENGINE V9.0 (FINAL FIXED - PRODUCTION)
 # ==============================================
 
 import os
@@ -65,7 +65,6 @@ def generate_token():
 
     try:
         totp = pyotp.TOTP(DHAN_TOTP_SECRET)
-
         logger.info("🔑 Generating Dhan token")
 
         r = session.post(
@@ -113,15 +112,18 @@ def get_ltp(security_id):
             return 0
 
         payload = {
-            "securityId": [int(security_id)],   # MUST be int
+            "securityId": [int(security_id)],
             "exchangeSegment": "NSE_EQ"
         }
+
+        logger.info(f"📤 LTP REQUEST → sec_id={security_id}, client_id={DHAN_CLIENT_ID}")
 
         r = session.post(
             "https://api.dhan.co/v2/marketfeed/ltp",
             json=payload,
             headers={
                 "access-token": token,
+                "client-id": DHAN_CLIENT_ID,   # ✅ FIX
                 "Content-Type": "application/json"
             },
             timeout=10
@@ -135,10 +137,8 @@ def get_ltp(security_id):
 
         data = r.json()
 
-        # Correct parsing
         if "data" in data:
             sec_key = str(security_id)
-
             if sec_key in data["data"]:
                 ltp = data["data"][sec_key].get("lastPrice", 0)
                 logger.info(f"✅ LTP: {ltp}")
@@ -236,7 +236,10 @@ def place_sl_order(security_id, qty, trigger_price, symbol, trade_id):
         r = session.post(
             "https://api.dhan.co/v2/forever/orders",
             json=payload,
-            headers={"access-token": get_token()},
+            headers={
+                "access-token": get_token(),
+                "client-id": DHAN_CLIENT_ID
+            },
             timeout=20
         )
 
@@ -285,7 +288,7 @@ def run():
     for t in trades:
         trade_id = t["id"]
         symbol = t["symbol"]
-        sec_id = int(t["security_id"])   # FIX
+        sec_id = int(t["security_id"])
         qty = t["qty"]
         entry = t["entry_price"]
         current_sl = t["sl_price"]
