@@ -115,7 +115,8 @@ def get_ltp(security_id):
 
         payload = {
             "securityId": [str(security_id)],
-            "exchangeSegment": "NSE_EQ"
+            "exchangeSegment": "NSE_EQ",
+            "dhanClientId": DHAN_CLIENT_ID
         }
 
         r = session.post(
@@ -147,7 +148,6 @@ def get_ltp(security_id):
     except Exception as e:
         logger.error(f"❌ LTP fetch failed: {e}")
         return 0
-
 # ==========================
 # DB
 # ==========================
