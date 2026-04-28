@@ -161,12 +161,32 @@ def execute_entry_engine_subprocess(payload):
             log("📤 SUBPROCESS STDERR:")
             log(result.stderr)
 
-        if result.returncode == 0:
-            log("✅ Entry engine subprocess completed successfully")
+        stdout = result.stdout or ""
+
+        log(f"🔍 STDOUT length: {len(stdout)}")
+
+        # --- Preferred: JSON-based success detection ---
+        try:
+            last_line = stdout.strip().split("\n")[-1]
+            parsed = json.loads(last_line)
+
+            if parsed.get("success"):
+                log(f"✅ Order success confirmed via JSON: {parsed.get('order_id')}")
+                return True
+        except Exception as e:
+            log(f"⚠️ JSON parse failed: {e}")
+
+        # --- Fallback: string-based detection ---
+        if "Order placed successfully" in stdout:
+            log("✅ Order success detected via stdout string match")
             return True
-        else:
-            log(f"❌ Entry engine subprocess failed with code: {result.returncode}")
-            return False
+
+        log("❌ Order NOT confirmed from entry engine output")
+
+        if result.returncode != 0:
+            log(f"❌ Subprocess failed with code: {result.returncode}")
+
+        return False
 
     except subprocess.TimeoutExpired:
         log("❌ Entry engine subprocess timeout (30s exceeded)")
