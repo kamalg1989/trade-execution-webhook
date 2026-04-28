@@ -145,6 +145,7 @@ def execute_entry_engine_subprocess(payload):
         log(f"   Payload: {json.dumps(payload, indent=2)}")
 
         # Execute entry_engine.py with env vars
+        log(f"🔧 ENV CHECK → SYMBOL={env.get('SYMBOL')}, QTY={env.get('QTY')}, ENTRY={env.get('ENTRY')}")
         result = subprocess.run(
             [VENV_PYTHON, ENTRY_ENGINE_PATH],
             cwd=PROJECT_ROOT,
