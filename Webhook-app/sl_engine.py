@@ -75,9 +75,17 @@ def get_token():
 # ==========================
 def fetch_forever_orders():
     try:
+        token = get_token()
+
         r = session.get(
             "https://api.dhan.co/v2/forever/orders",
-            headers={"access-token": get_token()},
+            headers={
+                "access-token": token,
+                "Accept": "application/json"
+            },
+            params={
+                "dhanClientId": DHAN_CLIENT_ID   # ✅ critical fix
+            },
             timeout=15
         )
 
@@ -90,13 +98,13 @@ def fetch_forever_orders():
         data = r.json()
 
         logger.info(f"📊 Orders fetched: {len(data)}")
+        logger.info(data)
 
         return data
 
     except Exception as e:
         logger.error(f"Forever fetch error: {e}")
         return []
-
 # ==========================
 # BUILD LTP MAP
 # ==========================
