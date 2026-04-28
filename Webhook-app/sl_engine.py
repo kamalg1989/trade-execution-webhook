@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 SL ENGINE V9.0 (FINAL FIXED - PRODUCTION)
+# 🚀 SL ENGINE V10.0 (FINAL — FULLY SYNCED)
 # ==============================================
 
 import os
@@ -8,6 +8,7 @@ import pyotp
 import sqlite3
 import uuid
 import logging
+import time
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
@@ -23,11 +24,9 @@ if os.path.exists(ENV_PATH):
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
 DHAN_PIN = os.getenv("DHAN_PIN")
 DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-if not all([DHAN_CLIENT_ID, DHAN_PIN, DHAN_TOTP_SECRET]):
-    raise ValueError("Missing Dhan credentials")
 
 DB_FILE = os.path.join(BASE_DIR, "trades.db")
 
@@ -55,7 +54,7 @@ def send_telegram(msg):
                 timeout=10
             )
     except Exception as e:
-        logger.error(f"Telegram Error: {e}")
+        logger.error(f"Telegram error: {e}")
 
 # ==========================
 # TOKEN
@@ -102,107 +101,91 @@ def get_token():
     return generate_token()
 
 # ==========================
-# ✅ FIXED LTP API
+# ✅ BATCH LTP FETCH (RATE LIMIT SAFE)
 # ==========================
-def get_ltp(security_id):
+def get_ltp_batch(security_ids):
     try:
         token = get_token()
         if not token:
-            logger.error("❌ No token")
-            return 0
+            return {}
 
         payload = {
-            "securityId": [int(security_id)],
+            "securityId": [int(x) for x in security_ids],
             "exchangeSegment": "NSE_EQ"
         }
-
-        logger.info(f"📤 LTP REQUEST → sec_id={security_id}, client_id={DHAN_CLIENT_ID}")
 
         r = session.post(
             "https://api.dhan.co/v2/marketfeed/ltp",
             json=payload,
             headers={
                 "access-token": token,
-                "client-id": DHAN_CLIENT_ID,   # ✅ FIX
+                "client-id": DHAN_CLIENT_ID,
                 "Content-Type": "application/json"
             },
             timeout=10
         )
 
-        logger.info(f"📡 LTP Status: {r.status_code}")
+        logger.info(f"📡 LTP batch status: {r.status_code}")
 
         if r.status_code != 200:
-            logger.error(f"❌ LTP error: {r.text}")
-            return 0
+            logger.error(f"LTP error: {r.text}")
+            return {}
 
-        data = r.json()
-
-        if "data" in data:
-            sec_key = str(security_id)
-            if sec_key in data["data"]:
-                ltp = data["data"][sec_key].get("lastPrice", 0)
-                logger.info(f"✅ LTP: {ltp}")
-                return ltp
-
-        logger.error(f"❌ Unexpected LTP response: {data}")
-        return 0
+        data = r.json().get("data", {})
+        return {
+            int(k): v.get("lastPrice", 0)
+            for k, v in data.items()
+        }
 
     except Exception as e:
-        logger.error(f"❌ LTP fetch failed: {e}")
-        return 0
+        logger.error(f"LTP batch failed: {e}")
+        return {}
 
 # ==========================
 # DB
 # ==========================
 def get_open_trades():
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute("""
-                SELECT id, symbol, security_id, qty, entry_price, sl_price
-                FROM trades
-                WHERE status='OPEN'
-            """).fetchall()
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT id, symbol, security_id, qty_ordered, entry_price,
+                   sl_price, sl_order_id
+            FROM executed_orders
+            WHERE status='OPEN'
+        """).fetchall()
 
-        logger.info(f"📋 Open trades: {len(rows)}")
-        return rows
-
-    except Exception as e:
-        logger.error(f"DB error: {e}")
-        return []
+    logger.info(f"📋 Open trades: {len(rows)}")
+    return rows
 
 
 def update_trade_pnl(trade_id, ltp):
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            trade = conn.execute(
-                "SELECT entry_price, qty FROM trades WHERE id=?",
-                (trade_id,)
-            ).fetchone()
-
-            if not trade:
-                return
-
-            pnl = (ltp - trade[0]) * trade[1]
-
-            conn.execute("""
-                UPDATE trades
-                SET current_price=?, pnl=?
-                WHERE id=?
-            """, (ltp, pnl, trade_id))
-
-            conn.commit()
-
-    except Exception as e:
-        logger.error(f"P&L update failed: {e}")
-
-
-def record_sl(trade_id, sl_price):
     with sqlite3.connect(DB_FILE) as conn:
-        conn.execute(
-            "UPDATE trades SET sl_price=? WHERE id=?",
-            (sl_price, trade_id)
-        )
+        trade = conn.execute(
+            "SELECT entry_price, qty_ordered FROM executed_orders WHERE id=?",
+            (trade_id,)
+        ).fetchone()
+
+        if not trade:
+            return
+
+        pnl = (ltp - trade[0]) * trade[1]
+
+        conn.execute("""
+            UPDATE executed_orders
+            SET current_price=?, pnl=?, updated_at=?
+            WHERE id=?
+        """, (ltp, pnl, datetime.now(timezone.utc).isoformat(), trade_id))
+
+        conn.commit()
+
+
+def record_sl(trade_id, sl_price, order_id):
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute("""
+            UPDATE executed_orders
+            SET sl_price=?, sl_order_id=?, updated_at=?
+            WHERE id=?
+        """, (sl_price, order_id, datetime.now(timezone.utc).isoformat(), trade_id))
         conn.commit()
 
 # ==========================
@@ -215,8 +198,6 @@ def place_sl_order(security_id, qty, trigger_price, symbol, trade_id):
 
     trigger = round_tick(trigger_price)
     limit = round_tick(trigger * 0.995)
-
-    logger.info(f"📤 SL ORDER → {symbol} trigger={trigger}")
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
@@ -240,18 +221,18 @@ def place_sl_order(security_id, qty, trigger_price, symbol, trade_id):
                 "access-token": get_token(),
                 "client-id": DHAN_CLIENT_ID
             },
-            timeout=20
+            timeout=15
         )
 
         if r.status_code not in (200, 201):
-            logger.error(f"❌ SL failed: {r.text}")
+            logger.error(f"SL failed: {r.text}")
             return None
 
         order_id = r.json().get("orderId")
 
         if order_id:
             logger.info(f"✅ SL placed: {order_id}")
-            record_sl(trade_id, trigger)
+            record_sl(trade_id, trigger, order_id)
             send_telegram(f"🛡️ SL {symbol} @ ₹{trigger}")
             return order_id
 
@@ -285,20 +266,26 @@ def run():
     if not trades:
         return
 
+    security_ids = [t["security_id"] for t in trades]
+    ltp_map = get_ltp_batch(security_ids)
+
+    placed = 0
+
     for t in trades:
         trade_id = t["id"]
         symbol = t["symbol"]
         sec_id = int(t["security_id"])
-        qty = t["qty"]
+        qty = t["qty_ordered"]
         entry = t["entry_price"]
         current_sl = t["sl_price"]
+        sl_order_id = t["sl_order_id"]
 
         logger.info(f"\n📍 {symbol}")
 
-        ltp = get_ltp(sec_id)
+        ltp = ltp_map.get(sec_id)
 
         if not ltp:
-            logger.error("❌ Skipping due to LTP failure")
+            logger.error("❌ No LTP")
             continue
 
         update_trade_pnl(trade_id, ltp)
@@ -307,12 +294,16 @@ def run():
 
         logger.info(f"LTP={ltp} | SL={new_sl}")
 
-        if not current_sl or current_sl == 0:
-            place_sl_order(sec_id, qty, new_sl, symbol, trade_id)
+        # ✅ PLACE SL ONLY IF NOT ALREADY PLACED
+        if not sl_order_id:
+            logger.info("🛡️ Placing SL")
+            if place_sl_order(sec_id, qty, new_sl, symbol, trade_id):
+                placed += 1
+                time.sleep(0.3)  # prevent rate limit
         else:
             logger.info("SL already exists")
 
-    logger.info("✅ SL ENGINE DONE")
+    logger.info(f"✅ DONE | SL placed: {placed}")
 
 
 if __name__ == "__main__":
