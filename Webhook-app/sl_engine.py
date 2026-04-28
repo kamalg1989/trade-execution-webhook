@@ -1,7 +1,8 @@
 # ==============================================
-# 🚀 SL ENGINE V8.0 (FIXED & RELIABLE)
-# Uses LTP API (correct approach)
-# Places SL orders correctly
+# 🚀 SL ENGINE V8.1 (FINAL STABLE)
+# - Correct LTP API (POST)
+# - Token reuse
+# - Reliable SL placement
 # ==============================================
 
 import os
@@ -18,6 +19,7 @@ from dotenv import load_dotenv
 # ==========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_PATH = os.path.join(BASE_DIR, ".env")
+
 if os.path.exists(ENV_PATH):
     load_dotenv(ENV_PATH)
 
@@ -28,7 +30,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 if not all([DHAN_CLIENT_ID, DHAN_PIN, DHAN_TOTP_SECRET]):
-    raise ValueError("Missing Dhan environment variables")
+    raise ValueError("Missing Dhan credentials")
 
 DB_FILE = os.path.join(BASE_DIR, "trades.db")
 
@@ -59,13 +61,14 @@ def send_telegram(msg):
         logger.error(f"Telegram Error: {e}")
 
 # ==========================
-# TOKEN
+# TOKEN MANAGEMENT
 # ==========================
 def generate_token():
     global CURRENT_TOKEN, TOKEN_EXPIRY
+
     try:
         totp = pyotp.TOTP(DHAN_TOTP_SECRET)
-        logger.info("🔑 Generating Dhan access token")
+        logger.info("🔑 Generating Dhan token")
 
         r = session.post(
             "https://auth.dhan.co/app/generateAccessToken",
@@ -74,7 +77,7 @@ def generate_token():
                 "pin": DHAN_PIN,
                 "totp": totp.now()
             },
-            timeout=30
+            timeout=20
         )
 
         r.raise_for_status()
@@ -87,19 +90,22 @@ def generate_token():
             return token
 
     except Exception as e:
-        logger.error(f"❌ Token generation failed: {e}")
+        logger.error(f"❌ Token error: {e}")
 
     return None
 
 
 def get_token():
     global CURRENT_TOKEN, TOKEN_EXPIRY
+
     if CURRENT_TOKEN and datetime.now(timezone.utc) < TOKEN_EXPIRY:
         return CURRENT_TOKEN
+
+    logger.info("⏳ Token expired or missing")
     return generate_token()
 
 # ==========================
-# ✅ LTP FETCH (CRITICAL FIX)
+# ✅ CORRECT LTP FETCH
 # ==========================
 def get_ltp(security_id):
     try:
@@ -107,20 +113,40 @@ def get_ltp(security_id):
         if not token:
             return 0
 
-        r = session.get(
-            f"https://api.dhan.co/v2/marketfeed/ltp?securityId={security_id}&exchangeSegment=NSE_EQ",
-            headers={"access-token": token},
+        payload = {
+            "securityId": [str(security_id)],
+            "exchangeSegment": "NSE_EQ"
+        }
+
+        r = session.post(
+            "https://api.dhan.co/v2/marketfeed/ltp",
+            json=payload,
+            headers={
+                "access-token": token,
+                "Content-Type": "application/json"
+            },
             timeout=10
         )
 
-        if r.status_code == 200:
-            return r.json().get("ltp", 0)
+        logger.info(f"📡 LTP Status: {r.status_code}")
 
-        logger.error(f"LTP API error: {r.status_code}")
+        if r.status_code != 200:
+            logger.error(f"❌ LTP error: {r.text}")
+            return 0
+
+        data = r.json()
+
+        if "data" in data and len(data["data"]) > 0:
+            ltp = data["data"][0].get("ltp", 0)
+            logger.info(f"✅ LTP: {ltp}")
+            return ltp
+
+        logger.error(f"❌ Unexpected LTP response: {data}")
+        return 0
+
     except Exception as e:
-        logger.error(f"LTP fetch failed: {e}")
-
-    return 0
+        logger.error(f"❌ LTP fetch failed: {e}")
+        return 0
 
 # ==========================
 # DB
@@ -142,10 +168,15 @@ def get_open_trades():
         logger.error(f"DB error: {e}")
         return []
 
+
 def update_trade_pnl(trade_id, ltp):
     try:
         with sqlite3.connect(DB_FILE) as conn:
-            trade = conn.execute("SELECT entry_price, qty FROM trades WHERE id=?", (trade_id,)).fetchone()
+            trade = conn.execute(
+                "SELECT entry_price, qty FROM trades WHERE id=?",
+                (trade_id,)
+            ).fetchone()
+
             if not trade:
                 return
 
@@ -156,28 +187,33 @@ def update_trade_pnl(trade_id, ltp):
                 SET current_price=?, pnl=?
                 WHERE id=?
             """, (ltp, pnl, trade_id))
+
             conn.commit()
 
     except Exception as e:
         logger.error(f"P&L update failed: {e}")
 
-def record_sl_order(trade_id, sl_price):
+
+def record_sl(trade_id, sl_price):
     with sqlite3.connect(DB_FILE) as conn:
-        conn.execute("UPDATE trades SET sl_price=? WHERE id=?", (sl_price, trade_id))
+        conn.execute(
+            "UPDATE trades SET sl_price=? WHERE id=?",
+            (sl_price, trade_id)
+        )
         conn.commit()
 
 # ==========================
-# PLACE SL
+# SL ORDER
 # ==========================
 def place_sl_order(security_id, qty, trigger_price, symbol, trade_id):
 
-    def round_to_tick(v):
-        return round(round(v / 0.05) * 0.05, 2)
+    def round_tick(x):
+        return round(round(x / 0.05) * 0.05, 2)
 
-    trigger_price = round_to_tick(trigger_price)
-    limit_price = round_to_tick(trigger_price * 0.995)
+    trigger = round_tick(trigger_price)
+    limit = round_tick(trigger * 0.995)
 
-    logger.info(f"DEBUG → security_id={security_id}, qty={qty}, trigger={trigger_price}")
+    logger.info(f"📤 SL ORDER → {symbol} trigger={trigger}")
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
@@ -189,8 +225,8 @@ def place_sl_order(security_id, qty, trigger_price, symbol, trade_id):
         "validity": "DAY",
         "securityId": str(security_id),
         "quantity": int(qty),
-        "price": limit_price,
-        "triggerPrice": trigger_price
+        "price": limit,
+        "triggerPrice": trigger
     }
 
     try:
@@ -198,7 +234,7 @@ def place_sl_order(security_id, qty, trigger_price, symbol, trade_id):
             "https://api.dhan.co/v2/forever/orders",
             json=payload,
             headers={"access-token": get_token()},
-            timeout=30
+            timeout=20
         )
 
         if r.status_code not in (200, 201):
@@ -209,12 +245,12 @@ def place_sl_order(security_id, qty, trigger_price, symbol, trade_id):
 
         if order_id:
             logger.info(f"✅ SL placed: {order_id}")
-            record_sl_order(trade_id, trigger_price)
-            send_telegram(f"🛡️ SL {symbol} @ ₹{trigger_price}")
+            record_sl(trade_id, trigger)
+            send_telegram(f"🛡️ SL {symbol} @ ₹{trigger}")
             return order_id
 
     except Exception as e:
-        logger.error(f"SL exception: {e}")
+        logger.error(f"SL error: {e}")
 
     return None
 
@@ -222,14 +258,14 @@ def place_sl_order(security_id, qty, trigger_price, symbol, trade_id):
 # SL CALC
 # ==========================
 def calculate_sl(entry, ltp, current_sl):
-    base_sl = entry * BASE_SL_PCT
-    new_sl = max(current_sl or 0, base_sl)
+    base = entry * BASE_SL_PCT
+    new_sl = max(current_sl or 0, base)
 
     if ltp > entry:
         profit = ltp - entry
-        trailing = entry + profit * TRAIL_PROFIT_LOCK
-        max_sl = ltp * (1 - MIN_LTP_BUFFER)
-        new_sl = max(new_sl, min(trailing, max_sl))
+        trail = entry + profit * TRAIL_PROFIT_LOCK
+        cap = ltp * (1 - MIN_LTP_BUFFER)
+        new_sl = max(new_sl, min(trail, cap))
 
     return round(new_sl, 2)
 
@@ -256,7 +292,7 @@ def run():
         ltp = get_ltp(sec_id)
 
         if not ltp:
-            logger.error("❌ LTP fetch failed")
+            logger.error("❌ Skipping due to LTP failure")
             continue
 
         update_trade_pnl(trade_id, ltp)
@@ -270,7 +306,8 @@ def run():
         else:
             logger.info("SL already exists")
 
-    logger.info("✅ DONE")
+    logger.info("✅ SL ENGINE DONE")
+
 
 if __name__ == "__main__":
     run()
