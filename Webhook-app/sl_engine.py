@@ -1,12 +1,11 @@
 # ==============================================
-# 🚀 SL ENGINE V12 (FINAL FIXED - CORRECT API)
+# 🚀 SL ENGINE V10 (POSITIONS + FOREVER SYNC)
 # ==============================================
 
 import os
 import requests
 import pyotp
 import sqlite3
-import uuid
 import logging
 import time
 from datetime import datetime, timezone, timedelta
@@ -24,33 +23,35 @@ DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
 
 DB_FILE = os.path.join(BASE_DIR, "trades.db")
 
-CURRENT_TOKEN = None
-TOKEN_EXPIRY = datetime.now(timezone.utc)
+BASE_SL_PCT = 0.92
 
 session = requests.Session()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+CURRENT_TOKEN = None
+TOKEN_EXPIRY = datetime.now(timezone.utc)
+
 # ==========================
 # TOKEN
 # ==========================
 def generate_token():
     global CURRENT_TOKEN, TOKEN_EXPIRY
-
     try:
-        totp = pyotp.TOTP(DHAN_TOTP_SECRET)
+        totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
 
         r = session.post(
             "https://auth.dhan.co/app/generateAccessToken",
             params={
                 "dhanClientId": DHAN_CLIENT_ID,
                 "pin": DHAN_PIN,
-                "totp": totp.now()
+                "totp": totp
             },
             timeout=15
         )
 
+        r.raise_for_status()
         token = r.json().get("accessToken")
 
         if token:
@@ -60,212 +61,224 @@ def generate_token():
             return token
 
     except Exception as e:
-        logger.error(f"Token error: {e}")
+        logger.error(f"❌ Token error: {e}")
 
     return None
 
 
 def get_token():
+    global CURRENT_TOKEN, TOKEN_EXPIRY
     if CURRENT_TOKEN and datetime.now(timezone.utc) < TOKEN_EXPIRY:
         return CURRENT_TOKEN
     return generate_token()
 
+
 # ==========================
-# ✅ CORRECT FOREVER FETCH
+# GET POSITIONS
 # ==========================
-def fetch_forever_orders():
+def get_positions():
+    token = get_token()
+    if not token:
+        return []
+
     try:
-        token = get_token()
+        logger.info("📡 Fetching positions...")
 
         r = session.get(
-            "https://api.dhan.co/v2/forever/orders",
+            "https://api.dhan.co/v2/positions",
             headers={
                 "access-token": token,
-                "Accept": "application/json"
-            },
-            params={
-                "dhanClientId": DHAN_CLIENT_ID   # ✅ critical fix
+                "client-id": DHAN_CLIENT_ID
             },
             timeout=15
         )
 
-        logger.info(f"📡 Forever API status: {r.status_code}")
+        logger.info(f"📡 Positions status: {r.status_code}")
 
         if r.status_code != 200:
-            logger.error(f"❌ Forever API failed: {r.text}")
+            logger.error(r.text)
             return []
 
         data = r.json()
 
-        logger.info(f"📊 Orders fetched: {len(data)}")
-        logger.info(data)
+        logger.info(f"📊 Raw positions: {data}")
+
+        positions = []
+
+        for p in data:
+            qty = p.get("netQty", 0)
+
+            if qty > 0:
+                positions.append({
+                    "securityId": str(p["securityId"]),
+                    "symbol": p.get("tradingSymbol"),
+                    "qty": qty,
+                    "avgPrice": p.get("avgPrice")
+                })
+
+        logger.info(f"✅ Active positions: {len(positions)}")
+        return positions
+
+    except Exception as e:
+        logger.error(f"❌ Positions fetch failed: {e}")
+        return []
+
+
+# ==========================
+# GET FOREVER SL ORDERS
+# ==========================
+def get_forever_orders():
+    token = get_token()
+    if not token:
+        return []
+
+    try:
+        logger.info("📡 Fetching forever orders...")
+
+        r = session.get(
+            "https://api.dhan.co/v2/forever/orders",
+            headers={"access-token": token},
+            timeout=15
+        )
+
+        logger.info(f"📡 Forever status: {r.status_code}")
+
+        if r.status_code != 200:
+            logger.error(r.text)
+            return []
+
+        data = r.json()
+
+        logger.info(f"📊 Total forever orders: {len(data)}")
 
         return data
 
     except Exception as e:
-        logger.error(f"Forever fetch error: {e}")
+        logger.error(f"❌ Forever fetch failed: {e}")
         return []
-# ==========================
-# BUILD LTP MAP
-# ==========================
-def build_ltp_map(orders):
-    ltp_map = {}
 
-    for o in orders:
-        symbol = o.get("tradingSymbol")
-        trigger = o.get("triggerPrice", 0)
-        price = o.get("price", 0)
-
-        if symbol:
-            ltp = trigger if trigger > 0 else price
-            if ltp > 0:
-                ltp_map[symbol] = ltp
-
-    logger.info(f"📊 LTP map: {ltp_map}")
-    return ltp_map
-
-# ==========================
-# DB
-# ==========================
-def get_open_trades():
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("""
-            SELECT id, symbol, security_id, qty_ordered,
-                   entry_price, sl_price, sl_order_id, dhan_order_id
-            FROM executed_orders
-            WHERE status='OPEN'
-        """).fetchall()
-
-    logger.info(f"📋 Open trades: {len(rows)}")
-    return rows
-
-# ==========================
-# DB SYNC
-# ==========================
-def sync_db(dhan_orders):
-    dhan_ids = set([o.get("orderId") for o in dhan_orders])
-
-    with sqlite3.connect(DB_FILE) as conn:
-        rows = conn.execute("""
-            SELECT id, dhan_order_id FROM executed_orders
-            WHERE status='OPEN'
-        """).fetchall()
-
-        for r in rows:
-            if r[1] not in dhan_ids:
-                logger.warning(f"❌ Closing stale trade: {r[1]}")
-                conn.execute("""
-                    UPDATE executed_orders
-                    SET status='CLOSED'
-                    WHERE id=?
-                """, (r[0],))
-
-        conn.commit()
-
-# ==========================
-# SL CALC
-# ==========================
-def calculate_sl(entry, ltp, current_sl):
-    base = entry * 0.92
-    new_sl = max(current_sl or 0, base)
-
-    if ltp > entry:
-        profit = ltp - entry
-        trail = entry + profit * 0.5
-        cap = ltp * 0.95
-        new_sl = max(new_sl, min(trail, cap))
-
-    return round(new_sl, 2)
 
 # ==========================
 # PLACE SL
 # ==========================
-def place_sl(sec_id, qty, trigger, symbol, trade_id):
+def place_sl(security_id, qty, avg_price):
+
+    def round_tick(x):
+        return round(round(x / 0.05) * 0.05, 2)
+
+    trigger = round_tick(avg_price * BASE_SL_PCT)
+    price = round_tick(trigger * 0.995)
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
-        "correlationId": str(uuid.uuid4()).replace("-", "")[:20],
+        "correlationId": str(int(time.time())),
+        "orderFlag": "SINGLE",
         "transactionType": "SELL",
         "exchangeSegment": "NSE_EQ",
         "productType": "CNC",
         "orderType": "LIMIT",
         "validity": "DAY",
-        "securityId": str(sec_id),
-        "quantity": int(qty),
-        "price": round(trigger * 0.995, 2),
+        "securityId": security_id,
+        "quantity": qty,
+        "price": price,
         "triggerPrice": trigger
     }
 
     try:
+        logger.info(f"📤 PLACING SL → {security_id} @ {trigger}")
+
         r = session.post(
             "https://api.dhan.co/v2/forever/orders",
             json=payload,
-            headers={"access-token": get_token()},
-            timeout=10
+            headers={
+                "access-token": get_token(),
+                "client-id": DHAN_CLIENT_ID
+            },
+            timeout=15
         )
 
+        logger.info(f"📡 SL status: {r.status_code}")
+
         if r.status_code not in (200, 201):
-            logger.error(f"❌ SL failed: {r.text}")
-            return None
+            logger.error(r.text)
+            return False
 
-        order_id = r.json().get("orderId")
-
-        if order_id:
-            logger.info(f"✅ SL placed: {order_id}")
-
-            with sqlite3.connect(DB_FILE) as conn:
-                conn.execute("""
-                    UPDATE executed_orders
-                    SET sl_order_id=?, sl_price=?
-                    WHERE id=?
-                """, (order_id, trigger, trade_id))
-                conn.commit()
-
-            return order_id
+        logger.info(f"✅ SL PLACED: {r.json()}")
+        return True
 
     except Exception as e:
-        logger.error(f"SL error: {e}")
+        logger.error(f"❌ SL placement failed: {e}")
+        return False
 
-    return None
 
 # ==========================
-# MAIN
+# SYNC DB (CLEANUP)
+# ==========================
+def sync_db_with_positions(positions):
+    try:
+        ids = [p["securityId"] for p in positions]
+
+        with sqlite3.connect(DB_FILE) as conn:
+            if not ids:
+                conn.execute("DELETE FROM executed_orders")
+            else:
+                q = ",".join("?" * len(ids))
+                conn.execute(f"""
+                    DELETE FROM executed_orders
+                    WHERE security_id NOT IN ({q})
+                """, ids)
+
+            conn.commit()
+
+        logger.info("🧹 DB synced with positions")
+
+    except Exception as e:
+        logger.error(f"❌ DB sync failed: {e}")
+
+
+# ==========================
+# MAIN LOGIC
 # ==========================
 def run():
     logger.info("🚀 SL ENGINE START")
 
-    dhan_orders = fetch_forever_orders()
-
-    if not dhan_orders:
-        logger.error("❌ No Dhan orders")
+    positions = get_positions()
+    if not positions:
+        logger.error("❌ No positions found")
         return
 
-    sync_db(dhan_orders)
+    forever_orders = get_forever_orders()
 
-    ltp_map = build_ltp_map(dhan_orders)
+    sl_map = {
+        o["securityId"]: o
+        for o in forever_orders
+        if o.get("transactionType") == "SELL"
+           and o.get("orderStatus") == "PENDING"
+    }
 
-    trades = get_open_trades()
+    logger.info(f"📊 Existing SL orders: {len(sl_map)}")
 
-    for t in trades:
-        symbol = t["symbol"]
-        trade_id = t["id"]
+    placed = 0
 
-        ltp = ltp_map.get(symbol)
+    for pos in positions:
+        sec_id = pos["securityId"]
+        symbol = pos["symbol"]
 
-        logger.info(f"\n📍 {symbol} | LTP={ltp}")
+        logger.info(f"\n📍 {symbol}")
 
-        if not ltp:
+        if sec_id in sl_map:
+            logger.info("✅ SL already exists")
             continue
 
-        if not t["sl_order_id"]:
-            new_sl = calculate_sl(t["entry_price"], ltp, t["sl_price"])
-            place_sl(t["security_id"], t["qty_ordered"], new_sl, symbol, trade_id)
-            time.sleep(0.3)
-        else:
-            logger.info("SL already exists")
+        logger.warning("⚠️ Missing SL → placing")
 
-    logger.info("✅ DONE")
+        if place_sl(sec_id, pos["qty"], pos["avgPrice"]):
+            placed += 1
+            time.sleep(0.3)  # rate limit safety
+
+    sync_db_with_positions(positions)
+
+    logger.info(f"✅ DONE | SL placed: {placed}")
 
 
 if __name__ == "__main__":
