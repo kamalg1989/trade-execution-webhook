@@ -1,6 +1,6 @@
 # ==============================================
-# 🚀 SL ENGINE V6 (DUAL-TABLE + DHAN SYNC)
-# FIXED: Better error handling + debug logs
+# 🚀 SL ENGINE V6 - DIAGNOSTIC VERSION
+# Prints ALL orders from Dhan + DB in detail
 # ==============================================
 
 import os
@@ -9,7 +9,6 @@ import pyotp
 import sqlite3
 import uuid
 import logging
-import yfinance as yf
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from sync_trades_with_dhan import sync_trades_with_dhan
@@ -35,21 +34,20 @@ if not all([DHAN_CLIENT_ID, DHAN_PIN, DHAN_TOTP_SECRET]):
     raise ValueError("Missing Dhan environment variables")
 
 DB_FILE = os.path.join(BASE_DIR, "trades.db")
-BASE_SL_PCT = 0.92        # 8% initial SL
-TRAIL_PROFIT_LOCK = 0.5   # Lock 50% of profit
-MIN_LTP_BUFFER = 0.05     # Maintain 5% gap from LTP
+BASE_SL_PCT = 0.92
+TRAIL_PROFIT_LOCK = 0.5
+MIN_LTP_BUFFER = 0.05
 
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = datetime.now(timezone.utc)
 
-# Reusable session
 session = requests.Session()
 
 # ==========================
 # LOGGER
 # ==========================
 logging.basicConfig(
-    level=logging.DEBUG,  # Changed to DEBUG for more logs
+    level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
@@ -100,7 +98,7 @@ def generate_token():
         CURRENT_TOKEN = token
         TOKEN_EXPIRY = datetime.now(timezone.utc) + timedelta(hours=23)
 
-        logger.info(f"✅ Token generated successfully. Expiry: {TOKEN_EXPIRY}")
+        logger.info(f"✅ Token generated successfully")
         return token
 
     except Exception as e:
@@ -112,7 +110,6 @@ def get_token():
     global CURRENT_TOKEN, TOKEN_EXPIRY
 
     if CURRENT_TOKEN and datetime.now(timezone.utc) < TOKEN_EXPIRY:
-        logger.debug("🔑 Using cached token")
         return CURRENT_TOKEN
 
     logger.info("🔄 Token expired, regenerating...")
@@ -120,125 +117,22 @@ def get_token():
 
 
 # ==========================
-# DATABASE OPERATIONS
-# ==========================
-def get_open_orders():
-    """
-    Fetch all OPEN orders from executed_orders table that need SL management.
-    DEBUG: Added detailed logging
-    """
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            rows = conn.execute("""
-                SELECT dhan_order_id, symbol, qty_executed, entry_price_executed, sl_price, sl_order_id
-                FROM executed_orders
-                WHERE status IN ('OPEN', 'FILLED')
-                  AND qty_executed > 0
-                  AND entry_price_executed IS NOT NULL
-                ORDER BY executed_timestamp ASC
-            """).fetchall()
-
-        logger.info(f"📋 Database query: Fetched {len(rows)} open orders from executed_orders table")
-
-        for row in rows:
-            logger.debug(f"   → {row[1]} (qty={row[2]}, entry=₹{row[3]})")
-
-        return rows
-    except Exception as e:
-        logger.error(f"❌ Failed to fetch open orders: {e}")
-        return []
-
-
-def get_order_by_dhan_id(dhan_order_id):
-    """Fetch single order details."""
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            row = conn.execute("""
-                SELECT setup_id, symbol, dhan_order_id, qty_executed, entry_price_executed, 
-                       sl_price, sl_order_id, target_price
-                FROM executed_orders
-                WHERE dhan_order_id = ?
-            """, (dhan_order_id,)).fetchone()
-
-        logger.debug(f"📋 Fetched order details for {dhan_order_id}: {row}")
-        return row
-    except Exception as e:
-        logger.error(f"Failed to fetch order {dhan_order_id}: {e}")
-        return None
-
-
-def update_sl_order_id(dhan_order_id, sl_order_id):
-    """Link placed SL order."""
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            conn.execute("""
-                UPDATE executed_orders
-                SET sl_order_id = ?,
-                    updated_at = ?
-                WHERE dhan_order_id = ?
-            """, (sl_order_id, datetime.now(timezone.utc).isoformat(), dhan_order_id))
-            conn.commit()
-        logger.info(f"✅ SL order linked: {dhan_order_id} → {sl_order_id}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to update SL order: {e}")
-        return False
-
-
-def update_order_pnl(dhan_order_id, current_price):
-    """Update P/L for dashboard."""
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            row = conn.execute("""
-                SELECT entry_price_executed, qty_executed, symbol
-                FROM executed_orders
-                WHERE dhan_order_id = ?
-            """, (dhan_order_id,)).fetchone()
-
-            if not row:
-                logger.warning(f"⚠️ No row found for {dhan_order_id}")
-                return False
-
-            entry_px, qty_exec, symbol = row
-            if not entry_px or qty_exec == 0:
-                logger.warning(f"⚠️ Invalid data: {symbol} entry={entry_px}, qty={qty_exec}")
-                return False
-
-            pnl = (current_price - entry_px) * qty_exec
-            pnl_pct = ((current_price - entry_px) / entry_px) * 100
-
-            conn.execute("""
-                UPDATE executed_orders
-                SET current_price = ?,
-                    pnl = ?,
-                    pnl_percent = ?,
-                    current_price_update_at = ?
-                WHERE dhan_order_id = ?
-            """, (current_price, pnl, pnl_pct, datetime.now(timezone.utc).isoformat(), dhan_order_id))
-            conn.commit()
-
-            logger.info(f"💰 {symbol}: LTP=₹{current_price}, PnL=₹{pnl:.2f} ({pnl_pct:.2f}%)")
-            return True
-    except Exception as e:
-        logger.error(f"Failed to update P/L: {e}")
-        return False
-
-
-# ==========================
 # DHAN API CALLS
 # ==========================
-def fetch_orders():
+def fetch_all_orders_detailed():
     """
-    Get all orders from Dhan (for status sync).
-    FIXED: Handle different response formats correctly
+    Fetch ALL orders from Dhan and print them in FULL DETAIL.
+    This is for DIAGNOSTICS - to see what Dhan actually has.
     """
     try:
         token = get_token()
         if not token:
-            logger.error("❌ No valid token for fetch_orders")
+            logger.error("❌ No valid token")
             return []
 
-        logger.debug("🔗 Calling Dhan API: GET /v2/forever/orders")
+        logger.info("\n" + "=" * 80)
+        logger.info("🔍 DIAGNOSTIC: Fetching ALL orders from Dhan API")
+        logger.info("=" * 80)
 
         r = session.get(
             "https://api.dhan.co/v2/forever/orders",
@@ -246,34 +140,85 @@ def fetch_orders():
             timeout=30
         )
 
-        logger.debug(f"📡 Dhan response status: {r.status_code}")
-
         if r.status_code != 200:
-            logger.error(f"❌ Dhan API returned {r.status_code}: {r.text[:200]}")
+            logger.error(f"❌ Dhan API error: {r.status_code}")
             return []
 
         response_data = r.json()
-        logger.debug(f"📡 Response type: {type(response_data)}")
 
-        # FIXED: Handle different response formats
+        # Handle different formats
         if isinstance(response_data, list):
-            logger.info(f"✅ Dhan returned list format: {len(response_data)} orders")
-            return response_data
+            dhan_orders = response_data
         elif isinstance(response_data, dict):
-            if "orders" in response_data:
-                orders = response_data.get("orders", [])
-                logger.info(f"✅ Dhan returned dict with 'orders': {len(orders)} orders")
-                return orders
-            elif "data" in response_data:
-                data = response_data.get("data", [])
-                logger.info(f"✅ Dhan returned dict with 'data': {len(data)} orders")
-                return data
-            else:
-                logger.error(f"❌ Dict response but no 'orders' or 'data' key: {response_data.keys()}")
-                return []
+            dhan_orders = response_data.get("orders") or response_data.get("data") or []
         else:
             logger.error(f"❌ Unexpected response type: {type(response_data)}")
             return []
+
+        logger.info(f"✅ Total orders from Dhan: {len(dhan_orders)}\n")
+
+        # Print ALL orders in detail
+        logger.info("📋 DETAILED ORDER LIST FROM DHAN:")
+        logger.info("-" * 80)
+
+        for idx, order in enumerate(dhan_orders):
+            if not isinstance(order, dict):
+                logger.warning(f"   [{idx}] SKIPPED: Not a dict ({type(order)})")
+                continue
+
+            order_id = order.get("orderId", "N/A")
+            symbol = order.get("symbol", "N/A")
+            trans_type = order.get("transactionType", "N/A")
+            order_status = order.get("orderStatus", "N/A")
+            exec_qty = order.get("executedQuantity", 0)
+            exec_price = order.get("executedPrice", 0)
+            order_qty = order.get("quantity", 0)
+            order_price = order.get("price", 0)
+
+            logger.info(f"\n   [{idx}] Order ID: {order_id}")
+            logger.info(f"       Symbol: {symbol}")
+            logger.info(f"       Type: {trans_type} (BUY/SELL)")
+            logger.info(f"       Status: {order_status}")
+            logger.info(f"       Order Qty: {order_qty}")
+            logger.info(f"       Order Price: ₹{order_price}")
+            logger.info(f"       Executed Qty: {exec_qty}")
+            logger.info(f"       Executed Price: ₹{exec_price}")
+            logger.info(f"       Trigger Price: {order.get('triggerPrice', 'N/A')}")
+
+            # Color-code based on status
+            if order_status == "ACCEPTED" and exec_qty > 0:
+                logger.info(f"       ✅ FILLED - Ready for SL")
+            elif order_status == "TRIGGERED":
+                logger.info(f"       ⏳ TRIGGERED - Waiting for fill")
+            elif order_status == "PENDING":
+                logger.info(f"       ⏳ PENDING - Not triggered")
+            else:
+                logger.info(f"       ❌ STATUS: {order_status}")
+
+        logger.info("\n" + "-" * 80)
+
+        # Summary by type
+        buy_orders = [o for o in dhan_orders if isinstance(o, dict) and o.get("transactionType") == "BUY"]
+        sell_orders = [o for o in dhan_orders if isinstance(o, dict) and o.get("transactionType") == "SELL"]
+
+        logger.info(f"\n📊 ORDER SUMMARY:")
+        logger.info(f"   Total Orders: {len(dhan_orders)}")
+        logger.info(f"   BUY Orders: {len(buy_orders)}")
+        logger.info(f"   SELL Orders: {len(sell_orders)}")
+
+        # Count by status
+        filled = sum(1 for o in buy_orders if isinstance(o, dict) and o.get("orderStatus") == "ACCEPTED" and o.get("executedQuantity", 0) > 0)
+        triggered = sum(1 for o in buy_orders if isinstance(o, dict) and o.get("orderStatus") == "TRIGGERED")
+        pending = sum(1 for o in buy_orders if isinstance(o, dict) and o.get("orderStatus") == "PENDING")
+
+        logger.info(f"\n   BUY Orders by Status:")
+        logger.info(f"      FILLED (ACCEPTED + executed): {filled}")
+        logger.info(f"      TRIGGERED (waiting): {triggered}")
+        logger.info(f"      PENDING: {pending}")
+
+        logger.info("=" * 80 + "\n")
+
+        return dhan_orders
 
     except Exception as e:
         logger.error(f"❌ Exception fetching orders: {e}")
@@ -281,236 +226,70 @@ def fetch_orders():
         return []
 
 
-def sync_order_status():
+def print_database_tables():
     """
-    Sync Dhan order statuses back to DB.
-    DEBUG: Added logging for each step
+    Print contents of ALL relevant tables in database.
+    For diagnostics - to see what's in the DB.
     """
     try:
-        logger.info("🔄 Syncing order statuses from Dhan...")
+        logger.info("=" * 80)
+        logger.info("🗄️  DIAGNOSTIC: Database Contents")
+        logger.info("=" * 80)
 
-        dhan_orders = fetch_orders()
-        logger.info(f"📡 Syncing {len(dhan_orders)} orders from Dhan")
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
 
-        if not dhan_orders:
-            logger.warning("⚠️ No orders received from Dhan")
-            return False
+        # Check trades table
+        logger.info("\n📊 TRADES TABLE:")
+        logger.info("-" * 80)
+        trades = conn.execute("SELECT * FROM trades").fetchall()
+        logger.info(f"Total rows: {len(trades)}\n")
 
-        # Filter BUY orders
-        buy_orders = []
-        for order in dhan_orders:
-            if isinstance(order, dict) and order.get("transactionType") == "BUY":
-                buy_orders.append(order)
-
-        logger.info(f"📊 Filtered {len(buy_orders)} BUY orders")
-
-        for order in buy_orders:
-            dhan_id = order.get("orderId")
-            status = order.get("orderStatus", "UNKNOWN")
-            filled_qty = order.get("executedQuantity", 0)
-            filled_price = order.get("executedPrice", 0)
-
-            logger.debug(f"   Order {dhan_id}: status={status}, qty={filled_qty}, price={filled_price}")
-
-            # Update in DB if filled
-            if status == "ACCEPTED" and filled_qty > 0 and filled_price > 0:
-                with sqlite3.connect(DB_FILE) as conn:
-                    existing = conn.execute(
-                        "SELECT qty_executed FROM executed_orders WHERE dhan_order_id = ?",
-                        (dhan_id,)
-                    ).fetchone()
-
-                    if existing:
-                        if existing[0] != filled_qty:
-                            conn.execute("""
-                                UPDATE executed_orders
-                                SET qty_executed = ?,
-                                    entry_price_executed = ?,
-                                    status = 'FILLED'
-                                WHERE dhan_order_id = ?
-                            """, (filled_qty, filled_price, dhan_id))
-                            conn.commit()
-                            logger.info(f"✅ Order updated: {dhan_id} {filled_qty}@{filled_price}")
-                    else:
-                        logger.debug(f"⏳ Order {dhan_id} not found in DB yet")
-
-        return True
-    except Exception as e:
-        logger.error(f"❌ Failed to sync order status: {e}")
-        logger.exception("Traceback:")
-        return False
-
-
-# ==========================
-# LTP FETCH (yfinance)
-# ==========================
-def get_ltp(symbol):
-    """Fetch last traded price."""
-    try:
-        ticker = symbol if symbol.endswith(".NS") else symbol + ".NS"
-        logger.debug(f"📊 Fetching LTP for {ticker}")
-
-        ltp = yf.Ticker(ticker).fast_info.get("lastPrice")
-        if ltp:
-            logger.debug(f"✅ {symbol} LTP: ₹{ltp}")
-            return float(ltp)
-
-        logger.warning(f"⚠️ No LTP for {symbol}")
-        return None
-    except Exception as e:
-        logger.warning(f"⚠️ LTP fetch failed for {symbol}: {e}")
-        return None
-
-
-# ==========================
-# SL CALCULATION
-# ==========================
-def calculate_sl(entry, ltp, current_sl):
-    """
-    Calculate new SL with trailing logic.
-
-    Initial SL: 8% below entry
-    If in profit: lock 50% of profit, maintain 5% gap from LTP
-    """
-
-    # Base SL: 8% below entry
-    base_sl = entry * BASE_SL_PCT
-
-    # Start with max of current or base SL
-    new_sl = max(current_sl or 0, base_sl)
-
-    # Trailing logic: once in profit
-    if ltp > entry:
-        profit = ltp - entry
-        trailing_sl = entry + (profit * TRAIL_PROFIT_LOCK)
-
-        # Ensure SL not closer than 5% to LTP
-        max_allowed_sl = ltp * (1 - MIN_LTP_BUFFER)
-
-        # Take the safer (higher) SL
-        new_sl = max(new_sl, min(trailing_sl, max_allowed_sl))
-
-    return round(new_sl, 2)
-
-
-# ==========================
-# DHAN SL PLACEMENT / MODIFICATION
-# ==========================
-def place_sl(sec_id, qty, trigger, symbol, dhan_order_id):
-    """Place new SL order (SELL side)."""
-
-    def round_to_tick(value):
-        return round(round(value / 0.05) * 0.05, 2)
-
-    trigger_price = round_to_tick(trigger)
-    limit_price = round_to_tick(trigger_price * 0.995)  # Limit < trigger for SL
-    disclosed_qty = max(1, int(qty * 0.3))
-
-    payload = {
-        "dhanClientId": DHAN_CLIENT_ID,
-        "correlationId": str(uuid.uuid4()).replace("-", "")[:20],
-        "orderFlag": "SINGLE",
-        "transactionType": "SELL",
-        "exchangeSegment": "NSE_EQ",
-        "productType": "CNC",
-        "orderType": "LIMIT",
-        "validity": "DAY",
-        "securityId": str(sec_id),
-        "quantity": int(qty),
-        "price": limit_price,
-        "triggerPrice": trigger_price,
-        "disclosedQuantity": disclosed_qty
-    }
-
-    token = get_token()
-    if not token:
-        logger.error("❌ No valid token for SL placement")
-        return None
-
-    try:
-        logger.info(f"📤 Placing SL for {symbol}: trigger={trigger_price}, limit={limit_price}, qty={qty}")
-
-        r = session.post(
-            "https://api.dhan.co/v2/forever/orders",
-            json=payload,
-            headers={"access-token": token, "Content-Type": "application/json"},
-            timeout=30
-        )
-
-        if r.status_code not in (200, 201):
-            logger.error(f"❌ SL placement failed: {r.status_code} {r.text}")
-            send_telegram(f"❌ SL placement failed for {symbol}: {r.text[:100]}")
-            return None
-
-        data = r.json()
-        sl_order_id = data.get("orderId")
-
-        if sl_order_id:
-            logger.info(f"✅ SL placed: {sl_order_id}")
-            update_sl_order_id(dhan_order_id, sl_order_id)
-            send_telegram(f"🛡️ SL placed for {symbol} @ ₹{trigger_price}")
-            return sl_order_id
+        if trades:
+            for trade in trades:
+                logger.info(f"ID: {trade['id']} | Symbol: {trade['symbol']} | Status: {trade['status']}")
+                logger.info(f"  Qty: {trade['qty']} | Entry: ₹{trade['entry_price']} | Current: ₹{trade['current_price']}")
+                logger.info(f"  P&L: ₹{trade['pnl']} ({trade['pnl_percent']}%) | Updated: {trade['updated_at']}")
+                logger.info("")
         else:
-            logger.error(f"⚠️ No SL orderId in response: {data}")
-            return None
+            logger.warning("⚠️ No trades in table!")
+
+        # Check executed_orders table
+        logger.info("\n📋 EXECUTED_ORDERS TABLE:")
+        logger.info("-" * 80)
+        try:
+            exec_orders = conn.execute("SELECT * FROM executed_orders").fetchall()
+            logger.info(f"Total rows: {len(exec_orders)}\n")
+
+            if exec_orders:
+                for order in exec_orders:
+                    logger.info(f"ID: {order['dhan_order_id']} | Symbol: {order['symbol']} | Status: {order['status']}")
+                    logger.info(f"  Qty: {order['qty_executed']} | Entry: ₹{order['entry_price_executed']}")
+                    logger.info(f"  SL Price: ₹{order['sl_price']} | SL Order ID: {order['sl_order_id']}")
+                    logger.info("")
+            else:
+                logger.warning("⚠️ No executed orders in table!")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not read executed_orders: {e}")
+
+        # Check trade_setups table
+        logger.info("\n🎯 TRADE_SETUPS TABLE:")
+        logger.info("-" * 80)
+        setups = conn.execute("SELECT setup_id, symbol, status, entry, sl, target, pnl FROM trade_setups LIMIT 10").fetchall()
+        logger.info(f"Total rows: {len(setups)} (showing first 10)\n")
+
+        if setups:
+            for setup in setups:
+                logger.info(f"ID: {setup['setup_id']} | Symbol: {setup['symbol']} | Status: {setup['status']}")
+                logger.info(f"  Entry: ₹{setup['entry']} | SL: ₹{setup['sl']} | Target: ₹{setup['target']} | P&L: {setup['pnl']}")
+                logger.info("")
+
+        conn.close()
+        logger.info("=" * 80 + "\n")
 
     except Exception as e:
-        logger.error(f"❌ SL placement exception: {e}")
-        send_telegram(f"❌ SL exception for {symbol}: {e}")
-        return None
-
-
-def modify_sl(sl_order_id, sec_id, qty, trigger, symbol):
-    """Modify existing SL order (trailing)."""
-
-    def round_to_tick(value):
-        return round(round(value / 0.05) * 0.05, 2)
-
-    trigger_price = round_to_tick(trigger)
-    limit_price = round_to_tick(trigger_price * 0.995)
-    disclosed_qty = max(1, int(qty * 0.3))
-
-    payload = {
-        "dhanClientId": DHAN_CLIENT_ID,
-        "orderId": sl_order_id,
-        "orderFlag": "SINGLE",
-        "orderType": "LIMIT",
-        "legName": "STOP_LOSS_LEG",
-        "quantity": int(qty),
-        "price": limit_price,
-        "triggerPrice": trigger_price,
-        "disclosedQuantity": disclosed_qty,
-        "validity": "DAY"
-    }
-
-    token = get_token()
-    if not token:
-        logger.error("❌ No valid token for SL modification")
-        return False
-
-    try:
-        logger.info(f"🔄 Trailing SL for {symbol}: new trigger={trigger_price}")
-
-        r = session.put(
-            f"https://api.dhan.co/v2/forever/orders/{sl_order_id}",
-            json=payload,
-            headers={"access-token": token, "Content-Type": "application/json"},
-            timeout=30
-        )
-
-        if r.status_code not in (200, 201):
-            logger.error(f"❌ SL modification failed: {r.status_code} {r.text}")
-            send_telegram(f"❌ SL trail failed for {symbol}: {r.text[:100]}")
-            return False
-
-        logger.info(f"✅ SL trailed: {symbol} → ₹{trigger_price}")
-        send_telegram(f"🔄 SL trailed for {symbol} to ₹{trigger_price}")
-        return True
-
-    except Exception as e:
-        logger.error(f"❌ SL modification exception: {e}")
-        send_telegram(f"❌ SL trail exception for {symbol}: {e}")
-        return False
+        logger.error(f"❌ Failed to read database: {e}")
+        logger.exception("Traceback:")
 
 
 # ==========================
@@ -518,86 +297,63 @@ def modify_sl(sl_order_id, sec_id, qty, trigger, symbol):
 # ==========================
 def run():
     try:
-        logger.info("=" * 70)
-        logger.info("🚀 SL ENGINE V6 STARTED")
-        logger.info("=" * 70)
-        logger.info(f"📁 Database: {DB_FILE}")
-        logger.info(f"⏰ Timestamp: {datetime.now(timezone.utc).isoformat()}")
-        logger.info("=" * 70)
+        logger.info("=" * 80)
+        logger.info("🚀 SL ENGINE V6 - DIAGNOSTIC MODE")
+        logger.info("=" * 80)
+        logger.info(f"Database: {DB_FILE}")
+        logger.info(f"Timestamp: {datetime.now(timezone.utc).isoformat()}")
+        logger.info("=" * 80)
 
-        # Step 1: Sync order statuses from Dhan
-        logger.info("\n[STEP 1] Syncing order statuses from Dhan...")
-        sync_order_status()
+        # STEP 1: Print ALL Dhan orders with details
+        dhan_orders = fetch_all_orders_detailed()
 
-        # Step 2: Get all open orders
-        logger.info("\n[STEP 2] Fetching open orders from database...")
-        open_orders = get_open_orders()
+        # STEP 2: Print ALL database contents
+        print_database_tables()
 
-        if not open_orders:
-            logger.info("✅ No open orders to manage")
+        # STEP 3: Analysis
+        logger.info("=" * 80)
+        logger.info("📈 ANALYSIS")
+        logger.info("=" * 80)
+
+        # Find filled BUY orders
+        filled_buys = []
+        for order in dhan_orders:
+            if isinstance(order, dict):
+                if (order.get("transactionType") == "BUY" and
+                        order.get("orderStatus") == "ACCEPTED" and
+                        order.get("executedQuantity", 0) > 0):
+                    filled_buys.append(order)
+
+        logger.info(f"\n✅ FILLED BUY ORDERS (Ready for SL):")
+        if filled_buys:
+            for order in filled_buys:
+                logger.info(f"   - {order.get('symbol')}: {order.get('executedQuantity')} @ ₹{order.get('executedPrice')}")
         else:
-            logger.info(f"🔍 Managing {len(open_orders)} open orders\n")
+            logger.warning("   ⚠️ NO FILLED BUY ORDERS")
 
-            # Step 3: For each order, manage SL
-            for dhan_order_id, symbol, qty_exec, entry_px, initial_sl, sl_order_id in open_orders:
+        # Check if trades table has OPEN trades
+        conn = sqlite3.connect(DB_FILE)
+        open_trades = conn.execute("SELECT symbol FROM trades WHERE status = 'OPEN'").fetchall()
+        conn.close()
 
-                logger.info(f"\n📍 Processing {symbol} (Order: {dhan_order_id})")
-
-                # Get LTP
-                ltp = get_ltp(symbol)
-                if not ltp:
-                    logger.warning(f"⚠️ Could not fetch LTP for {symbol}, skipping...")
-                    continue
-
-                # Update P/L
-                update_order_pnl(dhan_order_id, ltp)
-
-                # Calculate new SL
-                current_sl = initial_sl
-                new_sl = calculate_sl(entry_px, ltp, current_sl)
-
-                pnl = (ltp - entry_px) * qty_exec
-                pnl_pct = ((ltp - entry_px) / entry_px) * 100
-
-                logger.info(f"  Entry: ₹{entry_px:8.2f} | LTP: ₹{ltp:8.2f} | PnL: ₹{pnl:10.2f} ({pnl_pct:7.2f}%)")
-                logger.info(f"  SL: ₹{current_sl} → ₹{new_sl}")
-
-                # Place or modify SL
-                if not sl_order_id:
-                    logger.info(f"  Action: PLACE SL")
-                    logger.warning(f"  ⚠️ Missing sec_id in DB, cannot place SL yet")
-
-                elif new_sl > current_sl:
-                    logger.info(f"  Action: TRAIL SL")
-                    logger.warning(f"  ⚠️ Missing sec_id in DB, cannot modify SL yet")
-
-                else:
-                    logger.info(f"  Action: HOLD")
-
-        # Step 4: Sync trades with Dhan
-        logger.info("\n" + "=" * 70)
-        logger.info("[STEP 3] Syncing trades with live Dhan data...")
-        logger.info("=" * 70)
-
-        dhan_sync_result = sync_trades_with_dhan(
-            db_file=DB_FILE,
-            session=session,
-            get_token=get_token,
-            DHAN_CLIENT_ID=DHAN_CLIENT_ID
-        )
-
-        if dhan_sync_result:
-            logger.info(f"✅ Dashboard synced: {len(dhan_sync_result)} trades updated")
+        logger.info(f"\n📊 OPEN TRADES IN DATABASE:")
+        if open_trades:
+            for trade in open_trades:
+                logger.info(f"   - {trade[0]}")
         else:
-            logger.warning("⚠️ Database sync had no updates")
+            logger.warning("   ⚠️ NO OPEN TRADES")
 
-        logger.info("\n" + "=" * 70)
-        logger.info("✅ SL ENGINE COMPLETED SUCCESSFULLY")
-        logger.info("=" * 70)
+        logger.info("\n" + "=" * 80)
+        logger.info("✅ DIAGNOSTIC COMPLETE")
+        logger.info("=" * 80)
+        logger.info("\nNEXT STEPS:")
+        logger.info("1. Check if BUY orders are FILLED in Dhan (look for 'ACCEPTED' status)")
+        logger.info("2. Check if symbols in Dhan match symbols in trades table")
+        logger.info("3. If no filled orders, need to place NEW buy orders first")
+        logger.info("=" * 80 + "\n")
 
     except Exception as e:
-        logger.exception("❌ SL ENGINE CRASHED")
-        send_telegram(f"❌ SL ENGINE ERROR: {e}")
+        logger.exception("❌ DIAGNOSTIC FAILED")
         raise
 
 
