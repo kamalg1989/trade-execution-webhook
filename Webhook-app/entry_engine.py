@@ -1,24 +1,16 @@
 # ==============================================
-# 🚀 ENTRY ENGINE v2.3 (CORRECT ENDPOINT)
-# Uses /v2/forever/orders (TESTED & WORKING)
+# 🚀 ENTRY ENGINE v2.4 (TOKEN FROM PARENT)
+# Accepts token via env var from app.py
+# Avoids double token generation = no rate limit!
 # ==============================================
 
 import os
 import requests
-import pyotp
 import sqlite3
-from datetime import datetime, timezone, timedelta
-import time
+from datetime import datetime, timezone
 import uuid
 import pandas as pd
 import json
-
-# ==========================
-# GLOBAL TOKEN
-# ==========================
-CURRENT_TOKEN = None
-TOKEN_EXPIRY = None
-session = requests.Session()
 
 # ==========================
 # CONFIG
@@ -27,8 +19,11 @@ INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades.db")
 
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
-DHAN_PIN = os.getenv("DHAN_PIN")
-DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
+
+# Get token from parent (app.py) - AVOIDS REGENERATION!
+DHAN_TOKEN = os.getenv("DHAN_TOKEN")
+
+session = requests.Session()
 
 
 # ==========================
@@ -109,76 +104,19 @@ def init_db():
 
 
 # ==========================
-# TOKEN MANAGEMENT
+# CHECK DHAN FOR EXISTING ORDERS
 # ==========================
-def generate_token():
-    global CURRENT_TOKEN, TOKEN_EXPIRY
-
-    try:
-        log(f"🔐 Generating token...")
-
-        totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
-
-        response = session.post(
-            "https://auth.dhan.co/app/generateAccessToken",
-            params={
-                "dhanClientId": DHAN_CLIENT_ID,
-                "pin": DHAN_PIN,
-                "totp": totp
-            },
-            timeout=15
-        )
-
-        if response.status_code != 200:
-            log(f"❌ Token generation failed: {response.status_code}")
-            return None
-
-        data = response.json()
-        token = data.get("accessToken")
-
-        if not token:
-            log(f"❌ No accessToken in response")
-            return None
-
-        CURRENT_TOKEN = token
-        TOKEN_EXPIRY = datetime.now(timezone.utc) + timedelta(hours=23)
-
-        log(f"✅ Token generated: {token[:30]}...")
-        return token
-
-    except Exception as e:
-        log(f"❌ Token generation exception: {e}")
-        return None
-
-
-def get_token():
-    global CURRENT_TOKEN, TOKEN_EXPIRY
-
-    now = datetime.now(timezone.utc)
-
-    if CURRENT_TOKEN and TOKEN_EXPIRY and now < TOKEN_EXPIRY:
-        log(f"✅ Using cached token")
-        return CURRENT_TOKEN
-
-    log(f"⏳ Token expired/missing, generating...")
-    return generate_token()
-
-
-# ==========================
-# CHECK DHAN FOR EXISTING ORDERS (CORRECT ENDPOINT)
-# ==========================
-def check_dhan_for_existing_buy(symbol):
+def check_dhan_for_existing_buy(symbol, token):
     """
     Check /v2/forever/orders for existing BUY orders on this symbol.
-    ✅ TESTED ENDPOINT - RETURNS 17 ORDERS
+    Uses token from parent (app.py) - avoids regeneration!
     """
     try:
-        token = get_token()
         if not token:
-            log("❌ Cannot get token")
+            log("❌ No token provided from parent")
             return False
 
-        log(f"📡 GET /v2/forever/orders (check for {symbol})...")
+        log(f"📡 GET /v2/forever/orders (using parent token)...")
 
         r = session.get(
             "https://api.dhan.co/v2/forever/orders",
@@ -249,9 +187,9 @@ def save_trade(symbol, sec_id, qty, entry_price, sl_price, target_price, setup_i
 # ==========================
 # PLACE ORDER
 # ==========================
-def place_order(sec_id, qty, entry):
+def place_order(sec_id, qty, entry, token):
     """
-    Place BUY order on Dhan.
+    Place BUY order on Dhan using token from parent.
     """
 
     def round_to_tick(value):
@@ -278,9 +216,8 @@ def place_order(sec_id, qty, entry):
         "triggerPrice": trigger
     }
 
-    token = get_token()
     if not token:
-        log("❌ No valid token")
+        log("❌ No token provided from parent")
         return False, {"error": "no_token"}
 
     try:
@@ -318,7 +255,7 @@ def run():
     init_db()
 
     log("=" * 80)
-    log("🚀 ENTRY ENGINE v2.3 (CORRECT ENDPOINT) - Called by webhook")
+    log("🚀 ENTRY ENGINE v2.4 (TOKEN FROM PARENT) - Called by webhook")
     log("=" * 80)
 
     # Read env vars
@@ -330,7 +267,11 @@ def run():
     score = float(os.getenv("SCORE", "0") or "0.0")
     setup_id = os.getenv("SETUP_ID", "")
 
+    # GET TOKEN FROM PARENT - KEY FIX!
+    token = os.getenv("DHAN_TOKEN")
+
     log(f"Input: {symbol} | Qty={qty} | Entry={entry} | SL={sl} | Target={target}")
+    log(f"Token from parent: {token[:30] if token else 'NOT PROVIDED'}...")
 
     # ==== VALIDATION ====
     if not symbol or qty <= 0 or entry <= 0:
@@ -345,6 +286,10 @@ def run():
         log(f"❌ Invalid price order: SL={sl} < ENTRY={entry} < TARGET={target}")
         return
 
+    if not token:
+        log("❌ No token provided from parent!")
+        return
+
     # ==== GET SECURITY ID ====
     sec_id = get_security_id(symbol)
     if not sec_id:
@@ -354,7 +299,7 @@ def run():
     # ==== CHECK DHAN FOR EXISTING ORDERS ====
     log(f"\n🔍 Checking Dhan for existing orders on {symbol}...")
 
-    if check_dhan_for_existing_buy(symbol):
+    if check_dhan_for_existing_buy(symbol, token):
         log(f"⚠️ {symbol} already has open BUY order - SKIPPING")
         return
 
@@ -365,7 +310,7 @@ def run():
     log("📤 PLACING ORDER ON DHAN")
     log("=" * 80)
 
-    success, response = place_order(sec_id, qty, entry)
+    success, response = place_order(sec_id, qty, entry, token)
 
     if not success:
         log(f"❌ Order placement failed")
