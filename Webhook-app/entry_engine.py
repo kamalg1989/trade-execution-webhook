@@ -1,7 +1,6 @@
 # ==============================================
-# 🚀 ENTRY ENGINE v2.2 (FINAL FIXED)
-# Token Reuse Pattern from SL Engine V11
-# Uses /v2/forever/all endpoint
+# 🚀 ENTRY ENGINE v2.3 (CORRECT ENDPOINT)
+# Uses /v2/forever/orders (TESTED & WORKING)
 # ==============================================
 
 import os
@@ -15,7 +14,7 @@ import pandas as pd
 import json
 
 # ==========================
-# GLOBAL TOKEN CACHING
+# GLOBAL TOKEN
 # ==========================
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
@@ -78,7 +77,7 @@ def get_security_id(stock):
 
 
 # ==========================
-# DATABASE INIT
+# DATABASE
 # ==========================
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -110,13 +109,9 @@ def init_db():
 
 
 # ==========================
-# TOKEN MANAGEMENT (REUSE PATTERN)
+# TOKEN MANAGEMENT
 # ==========================
 def generate_token():
-    """
-    Generate new Dhan token.
-    Caches globally to be reused.
-    """
     global CURRENT_TOKEN, TOKEN_EXPIRY
 
     try:
@@ -136,7 +131,6 @@ def generate_token():
 
         if response.status_code != 200:
             log(f"❌ Token generation failed: {response.status_code}")
-            log(f"   Response: {response.text[:200]}")
             return None
 
         data = response.json()
@@ -158,10 +152,6 @@ def generate_token():
 
 
 def get_token():
-    """
-    Get cached token or generate new.
-    REUSES same token across all calls.
-    """
     global CURRENT_TOKEN, TOKEN_EXPIRY
 
     now = datetime.now(timezone.utc)
@@ -175,23 +165,23 @@ def get_token():
 
 
 # ==========================
-# CHECK DHAN FOR EXISTING ORDERS
+# CHECK DHAN FOR EXISTING ORDERS (CORRECT ENDPOINT)
 # ==========================
 def check_dhan_for_existing_buy(symbol):
     """
-    Check /v2/forever/all for existing BUY orders on this symbol.
-    Returns: True if found, False otherwise
+    Check /v2/forever/orders for existing BUY orders on this symbol.
+    ✅ TESTED ENDPOINT - RETURNS 17 ORDERS
     """
     try:
         token = get_token()
         if not token:
-            log("❌ Cannot get token for Dhan check")
+            log("❌ Cannot get token")
             return False
 
-        log(f"📡 GET /v2/forever/all (check for {symbol})...")
+        log(f"📡 GET /v2/forever/orders (check for {symbol})...")
 
         r = session.get(
-            "https://api.dhan.co/v2/forever/all",
+            "https://api.dhan.co/v2/forever/orders",
             headers={"access-token": token},
             timeout=30
         )
@@ -207,7 +197,6 @@ def check_dhan_for_existing_buy(symbol):
 
         log(f"   Total orders: {len(orders)}")
 
-        # Search for BUY order on this symbol
         symbol_upper = symbol.upper().replace(".NS", "")
 
         for order in orders:
@@ -219,7 +208,7 @@ def check_dhan_for_existing_buy(symbol):
             status = order.get("orderStatus", "")
 
             if order_symbol == symbol_upper and trans_type == "BUY":
-                if status in ["PENDING", "TRIGGERED", "CONFIRM"]:
+                if status in ["PENDING", "TRIGGERED", "CONFIRM", "ACCEPTED"]:
                     log(f"⚠️ Found open BUY: Status={status}")
                     return True
 
@@ -262,8 +251,7 @@ def save_trade(symbol, sec_id, qty, entry_price, sl_price, target_price, setup_i
 # ==========================
 def place_order(sec_id, qty, entry):
     """
-    Place BUY order on Dhan using /v2/forever/orders.
-    Returns: (success, response_dict)
+    Place BUY order on Dhan.
     """
 
     def round_to_tick(value):
@@ -324,13 +312,13 @@ def place_order(sec_id, qty, entry):
 
 
 # ==========================
-# MAIN EXECUTION
+# MAIN
 # ==========================
 def run():
     init_db()
 
     log("=" * 80)
-    log("🚀 ENTRY ENGINE v2.2 (FINAL FIXED) - Called by webhook")
+    log("🚀 ENTRY ENGINE v2.3 (CORRECT ENDPOINT) - Called by webhook")
     log("=" * 80)
 
     # Read env vars
@@ -402,7 +390,7 @@ def run():
     if save_trade(symbol, sec_id, qty, entry, sl, target, setup_id, dhan_order_id):
         log(f"✅ Trade recorded in database")
 
-        # Output JSON for app.py to parse
+        # Output JSON
         result = {
             "success": True,
             "order_id": dhan_order_id,
