@@ -1,6 +1,7 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK (app.py) — FINAL v5 (CORRECT ENDPOINT)
-# Uses /v2/forever/orders (TESTED & WORKING)
+# 🚀 TELEGRAM WEBHOOK (app.py) v6 - PASSES TOKEN TO SUBPROCESS
+# Token is generated ONCE in parent, passed to entry_engine
+# Entry_engine uses it WITHOUT regenerating
 # ==============================================
 
 import os
@@ -77,13 +78,13 @@ INSTRUMENT_DF = load_instruments()
 
 
 # ==========================
-# TOKEN MANAGEMENT
+# TOKEN MANAGEMENT - ONLY GENERATES ONCE
 # ==========================
 def generate_token():
     global CURRENT_TOKEN, TOKEN_EXPIRY
 
     try:
-        log("🔐 Generating Dhan token...")
+        log("🔐 Generating Dhan token (ONE TIME)...")
 
         totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
 
@@ -111,7 +112,7 @@ def generate_token():
         CURRENT_TOKEN = token
         TOKEN_EXPIRY = datetime.now(timezone.utc) + timedelta(hours=23)
 
-        log(f"✅ Token generated: {token[:30]}...")
+        log(f"✅ Token generated & cached: {token[:30]}...")
         return token
 
     except Exception as e:
@@ -125,28 +126,27 @@ def get_token():
     now = datetime.now(timezone.utc)
 
     if CURRENT_TOKEN and TOKEN_EXPIRY and now < TOKEN_EXPIRY:
-        log(f"✅ Using cached token")
+        log(f"✅ Reusing cached token (expires in 23h)")
         return CURRENT_TOKEN
 
-    log(f"⏳ Token expired/missing, generating new one...")
+    log(f"⏳ Token missing/expired, generating...")
     return generate_token()
 
 
 # ==========================
-# CHECK DHAN FOR OPEN ORDERS (CORRECT ENDPOINT)
+# CHECK DHAN FOR OPEN ORDERS (USING CACHED TOKEN)
 # ==========================
-def get_dhan_forever_orders():
+def get_dhan_forever_orders(token):
     """
     Fetch ALL forever orders from Dhan using /v2/forever/orders endpoint.
-    ✅ TESTED ENDPOINT - RETURNS 17 ORDERS
+    Uses provided token (already cached from parent)
     """
     try:
-        token = get_token()
         if not token:
-            log("❌ Cannot get Dhan token")
+            log("❌ No token provided to get_dhan_forever_orders")
             return []
 
-        log(f"📡 GET /v2/forever/orders (using cached token)...")
+        log(f"📡 GET /v2/forever/orders...")
 
         r = session.get(
             "https://api.dhan.co/v2/forever/orders",
@@ -173,12 +173,13 @@ def get_dhan_forever_orders():
         return []
 
 
-def check_for_existing_buy_order(symbol):
+def check_for_existing_buy_order(symbol, token):
     """
     Check if symbol already has an open BUY order on Dhan.
+    Uses cached token from parent.
     """
     try:
-        orders = get_dhan_forever_orders()
+        orders = get_dhan_forever_orders(token)
 
         if not orders:
             log(f"✅ {symbol}: No orders on Dhan (empty list)")
@@ -237,7 +238,11 @@ def validate_symbol(symbol_input):
 # ==========================
 # EXECUTE ENTRY ENGINE
 # ==========================
-def execute_entry_engine_subprocess(payload):
+def execute_entry_engine_subprocess(payload, token):
+    """
+    Execute entry_engine.py with token passed via env var.
+    Token is generated ONCE in parent, reused in subprocess.
+    """
     try:
         required = ["setup_id", "symbol", "qty", "entry", "sl", "target", "score"]
         for field in required:
@@ -254,10 +259,12 @@ def execute_entry_engine_subprocess(payload):
             "TARGET": str(payload["target"]),
             "SCORE": str(payload["score"]),
             "SETUP_ID": str(payload["setup_id"]),
+            "DHAN_TOKEN": token,  # 🔑 PASS TOKEN TO SUBPROCESS!
         })
 
         log("🚀 EXECUTING ENTRY ENGINE SUBPROCESS")
         log(f"   Symbol: {payload['symbol']}, Qty: {payload['qty']}")
+        log(f"   Token passed: {token[:30]}...")
 
         result = subprocess.run(
             [VENV_PYTHON, ENTRY_ENGINE_PATH],
@@ -407,10 +414,21 @@ def webhook():
             send_telegram(f"❌ Invalid action: {action}")
             return "OK"
 
+        # ==== GET TOKEN (ONCE) ====
+        log(f"\n🔐 Getting token for API calls...")
+        token = get_token()
+
+        if not token:
+            log(f"❌ Failed to get token")
+            send_telegram(f"❌ Token generation failed")
+            return "OK"
+
+        log(f"✅ Token ready: {token[:30]}...")
+
         # ==== CHECK DHAN FOR EXISTING ORDERS ====
         log(f"\n🔍 Checking Dhan for existing orders on {symbol}...")
 
-        if check_for_existing_buy_order(symbol):
+        if check_for_existing_buy_order(symbol, token):
             log(f"⚠️ {symbol} already has open BUY order on Dhan")
             send_telegram(f"⚠️ {symbol} already has open order on Dhan - skipping")
             return "OK"
@@ -432,8 +450,8 @@ def webhook():
 
         send_telegram(f"⏳ Processing {symbol} | Qty: {qty}")
 
-        # Execute entry engine
-        success = execute_entry_engine_subprocess(payload)
+        # Execute entry engine (PASS TOKEN!)
+        success = execute_entry_engine_subprocess(payload, token)
 
         if success:
             send_telegram(f"✅ ORDER EXECUTED\n{symbol} | Qty: {qty}\nSL: {sl} | Target: {target}")
@@ -460,10 +478,11 @@ def health():
 
 if __name__ == "__main__":
     log("=" * 80)
-    log("🚀 TELEGRAM WEBHOOK (app.py) v5 - FINAL FIXED")
+    log("🚀 TELEGRAM WEBHOOK (app.py) v6 - FINAL")
     log("=" * 80)
-    log("✅ Using /v2/forever/orders endpoint (TESTED)")
-    log("✅ Token reuse enabled")
+    log("✅ Token generated ONCE in parent")
+    log("✅ Token passed to subprocess via env var")
+    log("✅ NO double generation = NO rate limit!")
     log("=" * 80)
 
     app.run(host="0.0.0.0", port=5000, debug=False)
