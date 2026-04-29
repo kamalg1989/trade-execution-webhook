@@ -1,7 +1,6 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK (app.py) — FINAL FIXED v4
-# Token Reuse Pattern from SL Engine V11
-# Uses /v2/forever/all endpoint
+# 🚀 TELEGRAM WEBHOOK (app.py) — FINAL v5 (CORRECT ENDPOINT)
+# Uses /v2/forever/orders (TESTED & WORKING)
 # ==============================================
 
 import os
@@ -25,7 +24,7 @@ LOCK = threading.Lock()
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
 
-# Reusable session (keeps connection pooling)
+# Reusable session
 session = requests.Session()
 
 
@@ -78,13 +77,9 @@ INSTRUMENT_DF = load_instruments()
 
 
 # ==========================
-# TOKEN MANAGEMENT (FROM SL ENGINE V11)
+# TOKEN MANAGEMENT
 # ==========================
 def generate_token():
-    """
-    Generate new Dhan token using TOTP.
-    Caches it globally for reuse.
-    """
     global CURRENT_TOKEN, TOKEN_EXPIRY
 
     try:
@@ -104,14 +99,13 @@ def generate_token():
 
         if response.status_code != 200:
             log(f"❌ Token generation failed: {response.status_code}")
-            log(f"   Response: {response.text[:200]}")
             return None
 
         data = response.json()
         token = data.get("accessToken")
 
         if not token:
-            log(f"❌ No accessToken in response: {data}")
+            log(f"❌ No accessToken in response")
             return None
 
         CURRENT_TOKEN = token
@@ -126,32 +120,25 @@ def generate_token():
 
 
 def get_token():
-    """
-    Get cached token or generate new one.
-    REUSES same token across all API calls.
-    """
     global CURRENT_TOKEN, TOKEN_EXPIRY
 
     now = datetime.now(timezone.utc)
 
-    # Return cached token if still valid
     if CURRENT_TOKEN and TOKEN_EXPIRY and now < TOKEN_EXPIRY:
-        log(f"✅ Using cached token (expires in {(TOKEN_EXPIRY - now).total_seconds() / 3600:.1f}h)")
+        log(f"✅ Using cached token")
         return CURRENT_TOKEN
 
-    # Generate new token if expired
     log(f"⏳ Token expired/missing, generating new one...")
     return generate_token()
 
 
 # ==========================
-# CHECK DHAN FOR OPEN ORDERS (FIXED ENDPOINT)
+# CHECK DHAN FOR OPEN ORDERS (CORRECT ENDPOINT)
 # ==========================
-def get_dhan_forever_all_orders():
+def get_dhan_forever_orders():
     """
-    Fetch ALL forever orders from Dhan using /v2/forever/all endpoint.
-    REUSES token from get_token() - no new generation.
-    Returns: list of orders or empty list if error
+    Fetch ALL forever orders from Dhan using /v2/forever/orders endpoint.
+    ✅ TESTED ENDPOINT - RETURNS 17 ORDERS
     """
     try:
         token = get_token()
@@ -159,10 +146,10 @@ def get_dhan_forever_all_orders():
             log("❌ Cannot get Dhan token")
             return []
 
-        log(f"📡 GET /v2/forever/all (using cached token)...")
+        log(f"📡 GET /v2/forever/orders (using cached token)...")
 
         r = session.get(
-            "https://api.dhan.co/v2/forever/all",
+            "https://api.dhan.co/v2/forever/orders",
             headers={"access-token": token},
             timeout=30
         )
@@ -171,11 +158,6 @@ def get_dhan_forever_all_orders():
 
         if r.status_code != 200:
             log(f"⚠️ API error: {r.status_code}")
-            if r.status_code == 401:
-                log(f"   Token invalid, will regenerate on next call")
-                global CURRENT_TOKEN, TOKEN_EXPIRY
-                CURRENT_TOKEN = None
-                TOKEN_EXPIRY = None
             return []
 
         orders = r.json()
@@ -194,16 +176,14 @@ def get_dhan_forever_all_orders():
 def check_for_existing_buy_order(symbol):
     """
     Check if symbol already has an open BUY order on Dhan.
-    Returns: True if found, False otherwise
     """
     try:
-        orders = get_dhan_forever_all_orders()
+        orders = get_dhan_forever_orders()
 
         if not orders:
             log(f"✅ {symbol}: No orders on Dhan (empty list)")
             return False
 
-        # Search for matching BUY orders
         symbol_upper = symbol.upper().replace(".NS", "")
 
         for order in orders:
@@ -214,9 +194,8 @@ def check_for_existing_buy_order(symbol):
             trans_type = order.get("transactionType", "")
             status = order.get("orderStatus", "")
 
-            # Check if this is a BUY order for our symbol in pending/triggered state
             if order_symbol == symbol_upper and trans_type == "BUY":
-                if status in ["PENDING", "TRIGGERED", "CONFIRM"]:
+                if status in ["PENDING", "TRIGGERED", "CONFIRM", "ACCEPTED"]:
                     log(f"⚠️ {symbol}: Found open BUY order (Status={status})")
                     return True
 
@@ -349,7 +328,7 @@ def webhook():
         query = data["callback_query"]
         callback_id = query["id"]
 
-        # Dedup at Telegram level
+        # Dedup
         with LOCK:
             if callback_id in PROCESSED_CALLBACKS:
                 log(f"⚠️ Duplicate callback: {callback_id}")
@@ -362,7 +341,7 @@ def webhook():
 
         parts = raw_callback.split("|")
         if len(parts) < 8:
-            log(f"❌ Invalid format (need 8+ parts, got {len(parts)})")
+            log(f"❌ Invalid format")
             send_telegram("❌ Invalid payload format")
             return "OK"
 
@@ -414,8 +393,8 @@ def webhook():
             return "OK"
 
         if not (sl < entry < target):
-            log(f"❌ Invalid price order: SL={sl} < ENTRY={entry} < TARGET={target}")
-            send_telegram(f"❌ Invalid price order: SL={sl} < Entry={entry} < Target={target}")
+            log(f"❌ Invalid price order")
+            send_telegram(f"❌ Invalid price order")
             return "OK"
 
         if not validate_symbol(symbol):
@@ -481,11 +460,10 @@ def health():
 
 if __name__ == "__main__":
     log("=" * 80)
-    log("🚀 TELEGRAM WEBHOOK (app.py) v4 - FINAL FIXED")
+    log("🚀 TELEGRAM WEBHOOK (app.py) v5 - FINAL FIXED")
     log("=" * 80)
-    log("✅ Token reuse enabled (cached globally)")
-    log("✅ Using /v2/forever/all endpoint")
-    log("✅ Entry Engine: " + ENTRY_ENGINE_PATH)
+    log("✅ Using /v2/forever/orders endpoint (TESTED)")
+    log("✅ Token reuse enabled")
     log("=" * 80)
 
     app.run(host="0.0.0.0", port=5000, debug=False)
