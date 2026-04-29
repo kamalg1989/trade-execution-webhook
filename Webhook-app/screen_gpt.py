@@ -1,18 +1,11 @@
 # ==============================================
-# 🚀 OHM SYSTEM — P2.2 (threshold tuning + base-quality bugfix)
-# Builds on P0 + P1 + P2 + P2.1.
+# 🚀 OHM SYSTEM — P2.2 (FIXED TICK SIZE)
+# Builds on P0 + P1 + P2 + P2.1 + P2.2
 #
-# P2.2 changes:
-#   - TECH_MAX_BASE_RANGE: 0.15 → 0.20 (suits Distribution regimes)
-#   - Trend alignment: relaxed from strict sort (close>EMA50>SMA200)
-#     to medium (close>SMA200 AND close>EMA50). Exposed via config.
-#   - BUGFIX: base-quality giveback now uses current close (not worst
-#     intraday wick in base) — fixes false rejections for stocks near highs
-#   - BUGFIX: prior_high_at_base_start uses full prior window max
-#     (was: only last 5 bars — missed earlier peaks)
-#   - BASE_VOL_DRYUP_MAX_RATIO: 1.0 → 1.3
-#   - Base-quality per-gate failure counters in pipeline funnel
-#   - Compact 1-line base-quality failure log (verbose behind flag)
+# P2.2 FIXED changes:
+#   - TICK SIZE now fetched from Dhan CSV (SEM_TICK_SIZE column)
+#   - Removed hardcoded TICK_SIZE_BANDS and TICK_SIZE_OVERRIDES
+#   - Cache TICK_SIZES globally after first load
 # ==============================================
 
 import os
@@ -91,37 +84,82 @@ def _timed(timer, stage, fn, *args, **kwargs):
 
 
 # ==========================================================
-# TICK SIZE CONFIG (NEW — fixes Atul-style rejections)
+# 🆕 TICK SIZE FETCHING (from Dhan CSV)
 # ==========================================================
-# NSE uses different tick sizes based on price band.
-# Format: list of (price_upper_bound, tick_size) — matched on first price <= bound.
-# We err conservative and set ₹0.10 for stocks above ₹1000 as default.
-# If a stock has a non-standard tick (rare), add a symbol override below.
-TICK_SIZE_BANDS = [
-    (250,    0.05),   # price ≤ 250  → tick 0.05
-    (1000,   0.05),   # 250 < price ≤ 1000 → 0.05
-    (5000,   0.10),   # 1000 < price ≤ 5000 → 0.10
-    (20000,  0.10),   # 5000 < price ≤ 20000 → 0.10  (includes Atul band)
-    (100000, 0.50),   # very high priced scrips (MRF, BOSCH etc.)
-    (float('inf'), 1.00),
-]
+TICK_SIZE_CACHE = {}
 
-# Hard overrides if you know a specific symbol is wrong above
-TICK_SIZE_OVERRIDES = {
-    # "ATUL.NS": 0.10,
-    # "MRF.NS": 0.50,
-}
+def load_tick_sizes():
+    """
+    Load tick sizes from Dhan instrument master CSV.
+    Returns dict: {symbol: tick_size}
+    Caches result globally to avoid repeated downloads.
+    """
+    global TICK_SIZE_CACHE
 
-def get_tick_size(symbol, price):
-    if symbol in TICK_SIZE_OVERRIDES:
-        return TICK_SIZE_OVERRIDES[symbol]
-    for bound, tick in TICK_SIZE_BANDS:
-        if price <= bound:
-            return tick
-    return 0.05
+    if TICK_SIZE_CACHE:
+        dbg(f"✅ Using cached tick sizes ({len(TICK_SIZE_CACHE)} symbols)")
+        return TICK_SIZE_CACHE
+
+    try:
+        print("📥 Loading tick sizes from Dhan instrument master...")
+        url = "https://images.dhan.co/api-data/api-scrip-master.csv"
+        df = pd.read_csv(url, low_memory=False)
+
+        # Filter for NSE equities only
+        df = df[
+            (df['SEM_EXM_EXCH_ID'] == 'NSE') &
+            (df['SEM_SEGMENT'] == 'E')
+            ]
+
+        # Build cache: symbol → tick size
+        for _, row in df.iterrows():
+            symbol = str(row.get('SEM_TRADING_SYMBOL', '')).strip().upper()
+            tick = float(row.get('SEM_TICK_SIZE', 0.05))
+
+            if symbol:
+                TICK_SIZE_CACHE[symbol] = tick
+
+        print(f"✅ Loaded tick sizes for {len(TICK_SIZE_CACHE)} NSE equity symbols")
+        dbg(f"   Sample: {list(TICK_SIZE_CACHE.items())[:5]}")
+
+        return TICK_SIZE_CACHE
+
+    except Exception as e:
+        print(f"❌ Failed to load tick sizes from CSV: {e}")
+        print(f"⚠️  Falling back to default tick=0.05 for all symbols")
+        return {}
+
+
+def get_tick_size(symbol):
+    """
+    Get tick size for a symbol.
+    symbol: e.g., "ONGC" (without .NS)
+    Returns: float tick size
+    """
+    global TICK_SIZE_CACHE
+
+    # Load if not already cached
+    if not TICK_SIZE_CACHE:
+        load_tick_sizes()
+
+    symbol_clean = symbol.replace(".NS", "").strip().upper()
+
+    # Return from cache, or default to 0.05
+    tick = TICK_SIZE_CACHE.get(symbol_clean, 0.05)
+
+    if tick == 0.05:
+        dbg(f"   [{symbol}] Tick size: ₹{tick} (from Dhan CSV or default)")
+    else:
+        dbg(f"   [{symbol}] Tick size: ₹{tick} (from Dhan CSV)")
+
+    return tick
+
 
 def round_to_tick(price, tick, mode="up"):
-    """mode='up' for entry (buy above), 'down' for SL (sell below)."""
+    """
+    Round price to nearest tick.
+    mode='up' for entry (buy above signal), 'down' for SL (sell below signal).
+    """
     if tick <= 0:
         return round(price, 2)
     steps = price / tick
@@ -171,104 +209,62 @@ SKIP_MANUAL = True
 
 
 # ==========================================================
-# 🆕 P2 — TECHNICAL FILTER CONFIG (now exposed)
+# P2 — TECHNICAL FILTER CONFIG
 # ==========================================================
-# Base range ≤ this fraction of base low (e.g., 0.20 = 20% range across base)
 TECH_MAX_BASE_RANGE = 0.20           # P2.2: loosened from 0.15 for DISTRIBUTION regime
-
-# Volume check: today's vol > this × 20d avg
 TECH_VOL_MULT = 0.80
-
-# Trend alignment mode — controls how strict the moving-average check is:
-#   "strict"    → close > EMA50 > SMA200  (original — requires perfect sort)
-#   "medium"    → close > SMA200 AND close > EMA50  (P2.2 default — no sort needed)
-#   "loose"     → close > SMA200 only  (EMA50 ignored)
-#   "very_loose"→ close within TECH_TREND_CROSSBACK_BUFFER of SMA200
-#   "off"       → no trend alignment check at all
-TECH_TREND_ALIGNMENT_MODE = "medium"      # P2.2: relaxed from "strict"
-TECH_TREND_CROSSBACK_BUFFER = 0.02         # only used in very_loose mode (2%)
-
-# DEPRECATED — kept for backward compat. When True and MODE is "strict", behavior matches old.
+TECH_TREND_ALIGNMENT_MODE = "medium" # P2.2: relaxed from "strict"
+TECH_TREND_CROSSBACK_BUFFER = 0.02
 TECH_REQUIRE_TREND_ALIGNMENT = True
-
-# Base length in bars (standard OHM is 20 trading days ≈ 1 month)
 BASE_LOOKBACK_BARS = 20
 
 
 # ==========================================================
-# 🆕 P2 — BASE QUALITY CONFIG
+# P2 — BASE QUALITY CONFIG
 # ==========================================================
-# Minimum prior up-move required BEFORE the current base (no base without a bounce)
-BASE_MIN_PRIOR_UPMOVE_PCT = 0.15     # 15% rise in the prior leg
+BASE_MIN_PRIOR_UPMOVE_PCT = 0.15
+BASE_PRIOR_UPMOVE_LOOKBACK = 60
+BASE_MAX_GIVEBACK_PCT = 0.30
+BASE_VOL_DRYUP_MAX_RATIO = 1.3
+NEAR_BREAKOUT_MAX_DISTANCE = 0.05
+BASE_QUALITY_VERBOSE_LOGS = False
 
-# Look this far back to measure the prior up-move (from base-start backwards)
-BASE_PRIOR_UPMOVE_LOOKBACK = 60      # ~3 months
-
-# Maximum giveback: how much of prior up-move has current close retraced?
-# P2.2 BUGFIX: uses current close (not worst intraday wick in base window)
-BASE_MAX_GIVEBACK_PCT = 0.30         # ≤ 30% giveback
-
-# During the base, average volume should be lower than the up-move's average vol
-# by this factor (dry base is constructive)
-BASE_VOL_DRYUP_MAX_RATIO = 1.3       # P2.2: loosened from 1.0 to 1.3
-
-# Near-breakout HARD GATE: current close must be within X% of base high
-NEAR_BREAKOUT_MAX_DISTANCE = 0.05    # close >= 0.95 × base_high
-
-# Log verbosity for base quality (True = 5-line breakdown, False = 1-line summary)
-BASE_QUALITY_VERBOSE_LOGS = False    # P2.2: quieter by default
 
 # ==========================================================
-# 🆕 P2 — BASE STAGE CLASSIFICATION CONFIG
+# P2 — BASE STAGE CLASSIFICATION CONFIG
 # ==========================================================
-# How far back to count bases (bars)
 BASE_STAGE_LOOKBACK = 250
-
-# A "base" is a consolidation region of at least this many bars
 BASE_MIN_WIDTH_BARS = 10
-
-# A "bounce" between bases is at least this % up-move
 BASE_BOUNCE_MIN_PCT = 0.10
 
-# Stages with position-size multipliers (applied on top of P1 qty math)
-# Base 1: full size, Base 2: full size, Base 3: half size, Base 4+: quarter size
 BASE_STAGE_SIZE_MULTIPLIER = {
     1: 1.00,
     2: 1.00,
     3: 0.50,
     4: 0.25,
 }
-BASE_STAGE_DEFAULT_MULTIPLIER = 0.25  # used for stage 5+
-BASE_STAGE_MAX_ALLOWED = 4            # reject outright if > this
+BASE_STAGE_DEFAULT_MULTIPLIER = 0.25
+BASE_STAGE_MAX_ALLOWED = 4
 
 
 # ==========================================================
-# 🆕 P2 — TARGET STRATEGY CONFIG
+# P2 — TARGET STRATEGY CONFIG
 # ==========================================================
-# "FIXED_R"  → target = entry + N × risk (OHM is trend-following — this is a P2 placeholder)
-# "BASE_PROJ" → target = entry + (base_high - base_low) [project base height upward]
-# "NONE"     → no target; trailing stop only (most OHM-faithful)
 TARGET_STRATEGY = "FIXED_R"
 TARGET_FIXED_R_MULTIPLE = 2.0
 
 
 # ==========================================================
-# 🆕 P2 — ENTRY TRIGGERS (which OHM triggers to enable)
+# P2 — ENTRY TRIGGERS
 # ==========================================================
-# Primary triggers from P0 (candle-based): always ON
-# Additional triggers (P2, opt-in):
-ENABLE_PULLBACK_TRIGGER = False      # opt-in: price pulled back to EMA21 and bounced
-ENABLE_BREAKOUT_RETEST_TRIGGER = False  # opt-in: broke base_high then retested & held
+ENABLE_PULLBACK_TRIGGER = False
+ENABLE_BREAKOUT_RETEST_TRIGGER = False
 
 
 # ==========================================================
-# 🆕 P2 — GPT DEMOTED TO CONFIRMATION-ONLY
+# P2 — GPT DEMOTED TO CONFIRMATION-ONLY
 # ==========================================================
-# When True, GPT only vetoes code picks (veto = exclude). Scoring/ranking is deterministic.
-# When False, fall back to P1 behaviour (GPT is ranker).
 USE_GPT_AS_CONFIRMATION_ONLY = True
-
-# How many top deterministic picks to send through for final alerts
 MAX_ALERTS_PER_RUN = 3
 
 
@@ -276,6 +272,7 @@ MAX_ALERTS_PER_RUN = 3
 # DHAN TOKEN
 # ==========================
 DHAN_TOKEN_CACHE = {"token": None, "generated_at": 0}
+SECURITY_MAP_CACHE = {}
 
 
 def validate_dhan_token(token):
@@ -502,12 +499,12 @@ def get_stocks():
 
 
 # ==========================
-# DHAN DATA FETCH (unchanged from P1)
+# DHAN DATA FETCH
 # ==========================
 def fetch(stock):
     try:
         global SECURITY_MAP_CACHE
-        if "SECURITY_MAP_CACHE" not in globals():
+        if not SECURITY_MAP_CACHE:
             try:
                 url = "https://images.dhan.co/api-data/api-scrip-master.csv"
                 df_map = pd.read_csv(url, low_memory=False)
@@ -718,7 +715,7 @@ def check_fundamentals(symbol):
 
 
 # ==========================================================
-# P1/P2 STAGE 3 — TECHNICAL FILTER (now uses configurable thresholds)
+# P1/P2 STAGE 3 — TECHNICAL FILTER
 # ==========================================================
 def filter_technical(df, symbol="?"):
     if df is None or df.empty or len(df) < 200:
@@ -729,7 +726,6 @@ def filter_technical(df, symbol="?"):
     sma200 = df['Close'].rolling(200).mean().iloc[-1]
     last_close = df.iloc[-1]['Close']
 
-    # --- Gate 1: Trend alignment (mode-driven) ---
     mode = TECH_TREND_ALIGNMENT_MODE
     if mode == "strict":
         cond1 = last_close > ema50 > sma200
@@ -748,16 +744,13 @@ def filter_technical(df, symbol="?"):
         cond1 = True
         cond1_label = "(trend check off)"
     else:
-        # Unknown mode → fall back to old behavior for safety
         cond1 = last_close > ema50 > sma200
         cond1_label = f"close>{ema50:.2f}>{sma200:.2f}? {cond1} (unknown mode={mode})"
 
-    # --- Gate 2: Base tightness ---
     recent = df.tail(BASE_LOOKBACK_BARS)
     base_range = (recent['High'].max() - recent['Low'].min()) / recent['Low'].min()
     cond2 = base_range < TECH_MAX_BASE_RANGE
 
-    # --- Gate 3: Volume ---
     vol_avg = df['Volume'].rolling(20).mean().iloc[-1]
     cond3 = df.iloc[-1]['Volume'] > TECH_VOL_MULT * vol_avg
 
@@ -871,24 +864,9 @@ def check_aggregate_risk(proposed_risk_inr, symbol="?"):
 
 
 # ==========================================================
-# 🆕 P2 — BASE QUALITY CHECK
+# P2 — BASE QUALITY CHECK
 # ==========================================================
 def assess_base_quality(df, symbol="?"):
-    """
-    Returns (passed: bool, score: float 0-1, details: dict)
-    Checks:
-      - prior up-move exists (≥ BASE_MIN_PRIOR_UPMOVE_PCT)
-      - base volume is drier than up-move volume (ratio ≤ BASE_VOL_DRYUP_MAX_RATIO)
-      - giveback ≤ BASE_MAX_GIVEBACK_PCT  (uses CURRENT close, not worst wick)
-      - current close is within NEAR_BREAKOUT_MAX_DISTANCE of base high
-
-    P2.2 BUGFIXES:
-      - prior_high_at_base_start now uses the MAX of the ENTIRE prior window,
-        not just the last 5 bars (old version missed peaks that occurred earlier).
-      - giveback_pct now uses current CLOSE, not the worst intraday Low over the
-        20-bar base. A single bad wick shouldn't penalize a stock that has
-        since recovered to near its highs.
-    """
     if df is None or len(df) < BASE_LOOKBACK_BARS + BASE_PRIOR_UPMOVE_LOOKBACK:
         dbg(f"   [{symbol}] BASE_QUALITY ❌ — insufficient history")
         return False, 0.0, {"reason": "insufficient_history"}
@@ -898,31 +876,24 @@ def assess_base_quality(df, symbol="?"):
     base_low = float(base['Low'].min())
     current = float(df['Close'].iloc[-1])
 
-    # Prior window = bars preceding the current base
     prior = df.iloc[-(BASE_LOOKBACK_BARS + BASE_PRIOR_UPMOVE_LOOKBACK):-BASE_LOOKBACK_BARS]
     if prior.empty:
         return False, 0.0, {"reason": "no_prior_data"}
 
     prior_low = float(prior['Low'].min())
-    # BUGFIX: use full prior window high, not just last-5-bar max
     prior_high = float(prior['High'].max())
     upmove_pct = (prior_high - prior_low) / prior_low if prior_low > 0 else 0
 
-    # BUGFIX: giveback based on current close (where we ARE) vs prior high
-    # Old: used base_low (worst intraday wick) — punished single bad days
     if prior_high - prior_low > 0:
         giveback_pct = (prior_high - current) / (prior_high - prior_low)
     else:
         giveback_pct = 1.0
-    # clamp to [0, 1+] — if current > prior_high, giveback is negative (even better)
     giveback_pct = max(0.0, giveback_pct)
 
-    # Volume comparison (base vs prior up-move)
     base_vol_avg = float(base['Volume'].mean())
     prior_vol_avg = float(prior['Volume'].mean()) if len(prior) > 0 else 1
     vol_ratio = base_vol_avg / prior_vol_avg if prior_vol_avg > 0 else 99
 
-    # Near breakout gate (unchanged)
     distance_from_high = (base_high - current) / base_high if base_high > 0 else 1.0
 
     checks = {
@@ -947,7 +918,6 @@ def assess_base_quality(df, symbol="?"):
         "checks": checks,
     }
 
-    # Compact 1-line log by default, multi-line if verbose
     mark = "✅" if passed else "❌"
     failed_gates = [k for k, v in checks.items() if not v]
     if BASE_QUALITY_VERBOSE_LOGS or passed:
@@ -965,25 +935,15 @@ def assess_base_quality(df, symbol="?"):
 
 
 # ==========================================================
-# 🆕 P2 — BASE STAGE CLASSIFICATION
+# P2 — BASE STAGE CLASSIFICATION
 # ==========================================================
 def classify_base_stage(df, symbol="?"):
-    """
-    Counts how many base-bounce cycles have occurred in the recent trend.
-    Algorithm (simple):
-      - Walk backwards through BASE_STAGE_LOOKBACK bars
-      - A "base" = BASE_MIN_WIDTH_BARS with range < TECH_MAX_BASE_RANGE of its low
-      - A "bounce" = net price rise ≥ BASE_BOUNCE_MIN_PCT between bases
-      - Count bases found. The current one is the highest-numbered.
-    Returns (stage: int, details: dict)
-    """
     if df is None or len(df) < BASE_STAGE_LOOKBACK:
         return 1, {"reason": "short_history_assumed_base1"}
 
     window = df.tail(BASE_STAGE_LOOKBACK).copy().reset_index(drop=True)
     closes = window['Close'].values
 
-    # We slide a window of BASE_MIN_WIDTH_BARS. For each, compute range%. Mark as "in base" if tight.
     in_base = []
     for i in range(len(window)):
         start = max(0, i - BASE_MIN_WIDTH_BARS + 1)
@@ -994,7 +954,6 @@ def classify_base_stage(df, symbol="?"):
         rng = (chunk['High'].max() - chunk['Low'].min()) / chunk['Low'].min()
         in_base.append(rng < TECH_MAX_BASE_RANGE)
 
-    # Collapse consecutive True into base segments
     bases = []
     i = 0
     while i < len(in_base):
@@ -1007,7 +966,6 @@ def classify_base_stage(df, symbol="?"):
         else:
             i += 1
 
-    # Now for each gap between consecutive bases, check if net move ≥ BASE_BOUNCE_MIN_PCT
     valid_bases = []
     if bases:
         valid_bases.append(bases[0])
@@ -1019,7 +977,6 @@ def classify_base_stage(df, symbol="?"):
             net_move = (closes[gap_end_idx] - closes[gap_start_idx]) / closes[gap_start_idx]
             if net_move >= BASE_BOUNCE_MIN_PCT:
                 valid_bases.append(cur_base)
-            # else: treat as continuation of previous base — don't increment
 
     stage = max(1, len(valid_bases))
     details = {
@@ -1033,13 +990,9 @@ def classify_base_stage(df, symbol="?"):
 
 
 # ==========================================================
-# 🆕 P2 — ADDITIONAL ENTRY TRIGGERS (optional)
+# P2 — ADDITIONAL ENTRY TRIGGERS
 # ==========================================================
 def detect_pullback_trigger(df, symbol="?"):
-    """
-    Price pulled back to EMA21 and bounced (close > EMA21, prior low was < EMA21).
-    Very simple implementation — opt-in via ENABLE_PULLBACK_TRIGGER.
-    """
     if not ENABLE_PULLBACK_TRIGGER or len(df) < 25:
         return None
     ema21 = df['Close'].ewm(span=21).mean()
@@ -1048,7 +1001,6 @@ def detect_pullback_trigger(df, symbol="?"):
     last_ema21 = ema21.iloc[-1]
     prev_3_lows = df['Low'].iloc[-4:-1].min()
     prev_3_ema21 = ema21.iloc[-4:-1]
-    # Prior bars touched EMA21, current bar closed above it
     touched_ema = (prev_3_lows <= prev_3_ema21.max() * 1.01)
     bounced = last_close > last_ema21 and last_low > prev_3_lows
     if touched_ema and bounced:
@@ -1061,13 +1013,8 @@ def detect_pullback_trigger(df, symbol="?"):
 
 
 def detect_breakout_retest_trigger(df, symbol="?"):
-    """
-    Broke above base_high within last 5 bars, came back to test it, held, now bouncing.
-    Opt-in via ENABLE_BREAKOUT_RETEST_TRIGGER.
-    """
     if not ENABLE_BREAKOUT_RETEST_TRIGGER or len(df) < BASE_LOOKBACK_BARS + 10:
         return None
-    # Base ends 10 bars ago — look for a breakout since then
     base = df.iloc[-(BASE_LOOKBACK_BARS + 10):-10]
     base_high = float(base['High'].max())
     recent = df.iloc[-10:]
@@ -1077,7 +1024,7 @@ def detect_breakout_retest_trigger(df, symbol="?"):
     current_above = current_close > base_high
     if broke_above and came_back_near and current_above:
         entry = df.iloc[-1]['High']
-        sl = base_high * 0.98  # small buffer below base_high as SL
+        sl = base_high * 0.98
         dbg(f"   [{symbol}] 🎯 BREAKOUT_RETEST trigger matched (base_high={base_high:.2f})")
         return {"type": "BREAKOUT_RETEST", "entry_raw": entry, "sl_raw": sl,
                 "signal_bar_date": str(df.index[-1].date())}
@@ -1088,7 +1035,6 @@ def detect_breakout_retest_trigger(df, symbol="?"):
 # P0 — ENTRY TECHNIQUE DETECTION
 # ==========================================================
 def detect_entry_technique(df, symbol="?"):
-    """Returns raw entry/sl (pre-tick-rounding). Caller handles rounding."""
     if df is None or len(df) < 2:
         return {"type": None}
 
@@ -1147,17 +1093,11 @@ def detect_entry_technique(df, symbol="?"):
 
 
 # ==========================================================
-# ENTRY RESOLUTION (combines P0 + P2 triggers + tick rounding)
+# ENTRY RESOLUTION
 # ==========================================================
 def resolve_entry(df, symbol):
-    """
-    Tries P0 candle-based triggers first, then P2 triggers if enabled.
-    Returns dict with rounded entry/sl and metadata, or None.
-    """
-    # Try P0 patterns
     res = detect_entry_technique(df, symbol=symbol)
     if res["type"] is None:
-        # Try P2 triggers
         for trigger_fn in (detect_pullback_trigger, detect_breakout_retest_trigger):
             t = trigger_fn(df, symbol=symbol)
             if t is not None:
@@ -1170,10 +1110,9 @@ def resolve_entry(df, symbol):
     raw_entry = float(res["entry_raw"])
     raw_sl = float(res["sl_raw"])
 
-    # Determine tick size for this stock at this price band
-    tick = get_tick_size(symbol, raw_entry)
+    # GET TICK SIZE FROM DHAN CSV (FIX)
+    tick = get_tick_size(symbol)
 
-    # Add configurable tick offset above signal bar for the entry
     entry = round_to_tick(raw_entry + ENTRY_TICK_OFFSET_MULTIPLIER * tick, tick, mode="up")
     sl = round_to_tick(raw_sl, tick, mode="down")
 
@@ -1196,7 +1135,7 @@ def resolve_entry(df, symbol):
 
 
 # ==========================================================
-# POSITION SIZING (with base-stage multiplier)
+# POSITION SIZING
 # ==========================================================
 def create_trade(df, symbol, base_stage):
     trigger = resolve_entry(df, symbol)
@@ -1209,13 +1148,12 @@ def create_trade(df, symbol, base_stage):
     if risk_per_share <= 0:
         return None
 
-    # Base-stage multiplier
     stage_mult = BASE_STAGE_SIZE_MULTIPLIER.get(base_stage, BASE_STAGE_DEFAULT_MULTIPLIER)
     if base_stage > BASE_STAGE_MAX_ALLOWED:
         dbg(f"   [{symbol}] ⛔ base_stage={base_stage} > MAX_ALLOWED={BASE_STAGE_MAX_ALLOWED} — rejecting")
         return None
 
-    risk_amt = CAPITAL * 0.0025 * stage_mult  # 0.25% base, scaled by stage
+    risk_amt = CAPITAL * 0.0025 * stage_mult
     qty_risk = int(risk_amt / risk_per_share)
     max_capital_per_trade = CAPITAL * 0.10 * stage_mult
     qty_cap = int(max_capital_per_trade / entry)
@@ -1244,7 +1182,7 @@ def create_trade(df, symbol, base_stage):
 
 
 # ==========================================================
-# TARGET STRATEGY (configurable)
+# TARGET STRATEGY
 # ==========================================================
 def compute_target(entry, sl, base_high=None, base_low=None, symbol="?"):
     risk = entry - sl
@@ -1255,38 +1193,29 @@ def compute_target(entry, sl, base_high=None, base_low=None, symbol="?"):
         target = entry + (base_high - base_low)
         dbg(f"   [{symbol}] TARGET=BASE_PROJ (base height={base_high-base_low:.2f}): {target:.2f}")
     else:
-        target = 0  # no target
+        target = 0
         dbg(f"   [{symbol}] TARGET=NONE (trailing stop only)")
     return round(target, 2)
 
 
 # ==========================================================
-# DETERMINISTIC RANKING (used when GPT is confirmation-only)
+# DETERMINISTIC RANKING
 # ==========================================================
 def rank_candidates(candidates):
-    """
-    candidates: list of (symbol, trade_dict, meta_dict)
-    Sorts by: base_quality_score DESC, then ifp_score DESC, then tightness ASC.
-    Returns sorted list.
-    """
     def sort_key(c):
         _, _, m = c
         return (
             -m.get("base_quality_score", 0),
             -m.get("ifp_score", 0),
-            m.get("base_range_pct", 1),  # tighter = lower = better
+            m.get("base_range_pct", 1),
         )
     return sorted(candidates, key=sort_key)
 
 
 # ==========================================================
-# GPT — now CONFIRMATION-ONLY (veto, not ranker)
+# GPT CONFIRMATION-ONLY
 # ==========================================================
 def gpt_confirm(pdf_path, candidates_info):
-    """
-    candidates_info: list of dicts with {symbol, entry_type, base_stage, score...}
-    GPT returns which to REJECT (vetoes).
-    """
     if not client:
         return set()
     file = client.files.create(file=open(pdf_path, "rb"), purpose="user_data")
@@ -1400,6 +1329,14 @@ def build_pdf(images, path):
 # MAIN PIPELINE
 # ==========================================================
 def run():
+    print("=" * 60)
+    print("🔐 PRE-FLIGHT CHECKS")
+    print("=" * 60)
+
+    # Load tick sizes from Dhan CSV at startup
+    print("📥 Loading Dhan instrument master (for tick sizes)...")
+    load_tick_sizes()
+
     print("🔐 Dhan token pre-flight check...")
     if not get_dhan_token():
         print("❌ No Dhan token — aborting")
@@ -1455,7 +1392,6 @@ def run():
         "pass_aggregate_risk": 0,
     }
 
-    # P2.2: per-gate failure counters for base-quality (tells us WHICH gate kills flow)
     bq_fail_counts = {
         "prior_upmove": 0,
         "giveback_ok": 0,
@@ -1464,7 +1400,7 @@ def run():
         "insufficient_history": 0,
     }
 
-    candidates = []  # list of (symbol, trade, meta)
+    candidates = []
 
     print("\n" + "=" * 60)
     print("🔎 STAGES 1–8 — Per-stock pipeline")
@@ -1474,23 +1410,22 @@ def run():
     for s, df in all_data.items():
         dbg(f"\n--- {s} ---")
 
-        # --- 1. Liquidity (cheap, local) ---
+        # 1. Liquidity
         liq_pass, turnover = _timed(timer, "1_liquidity",
                                     check_liquidity, df, symbol=s)
         if not liq_pass:
             continue
         funnel["pass_liquidity"] += 1
 
-        # --- 2. Technical (cheap, local) — MOVED UP from P2 ---
+        # 2. Technical
         if not _timed(timer, "2_technical", filter_technical, df, symbol=s):
             continue
         funnel["pass_technical"] += 1
 
-        # --- 3. Base quality (cheap, local) ---
+        # 3. Base quality
         bq_pass, bq_score, bq_details = _timed(timer, "3_base_quality",
                                                assess_base_quality, df, symbol=s)
         if not bq_pass:
-            # Track which gate(s) failed — helps tune thresholds
             if bq_details.get("reason") == "insufficient_history":
                 bq_fail_counts["insufficient_history"] += 1
             else:
@@ -1500,7 +1435,7 @@ def run():
             continue
         funnel["pass_base_quality"] += 1
 
-        # --- 4. Base stage (cheap, local) ---
+        # 4. Base stage
         stage, _ = _timed(timer, "4_base_stage",
                           classify_base_stage, df, symbol=s)
         if stage > BASE_STAGE_MAX_ALLOWED:
@@ -1508,30 +1443,28 @@ def run():
             continue
         funnel["pass_base_stage"] += 1
 
-        # --- 5. Fundamental (EXPENSIVE — yfinance network call) ---
-        # Only runs for stocks that passed all 4 cheap gates above.
-        # Based on last run this cuts yfinance calls from ~484 to a handful.
+        # 5. Fundamental
         fund_pass, fund_details = _timed(timer, "5_fundamental",
                                          check_fundamentals, s)
         if not fund_pass:
             continue
         funnel["pass_fundamental"] += 1
 
-        # --- 6. IFP (cheap, local) ---
+        # 6. IFP
         ifp_score, ifp_pass, _ = _timed(timer, "6_ifp",
                                         compute_ifp_score, df, symbol=s)
         if not ifp_pass:
             continue
         funnel["pass_ifp"] += 1
 
-        # --- 7. Entry detection + sizing (cheap, local) ---
+        # 7. Entry detection + sizing
         trade = _timed(timer, "7_entry",
                        create_trade, df, symbol=s, base_stage=stage)
         if trade is None:
             continue
         funnel["pass_entry"] += 1
 
-        # --- 8. Aggregate risk (cheap, local, 1 DB query) ---
+        # 8. Aggregate risk
         allowed, _, _ = _timed(timer, "8_aggregate_risk",
                                check_aggregate_risk,
                                trade["total_risk_inr"], symbol=s)
@@ -1565,7 +1498,6 @@ def run():
     print(f"   regime                    → {regime}")
     print(f"   candidates                → {len(candidates)}")
 
-    # P2.2: base-quality per-gate breakdown (only if any stocks reached this stage)
     bq_total_fails = sum(bq_fail_counts.values())
     if bq_total_fails > 0:
         print("\n   --- base-quality fail breakdown ---")
@@ -1608,7 +1540,7 @@ def run():
     _timed(timer, "chart_pdf", build_pdf, images, pdf_path)
     send_document(pdf_path, f"📄 OHM charts ({regime})")
 
-    # GPT confirmation (veto only)
+    # GPT confirmation
     rejected_by_gpt = set()
     if USE_GPT_AS_CONFIRMATION_ONLY:
         det_scores = {s: 1.0 - (i * 0.1) for i, (s, _, _) in enumerate(top_picks)}
@@ -1698,7 +1630,6 @@ Tick: `₹{trade['tick_size']}`
                f"Funnel: {funnel}")
     send_message(summary)
 
-    # Timing report at the very end so it's always visible
     timer.report()
 
 
