@@ -38,7 +38,7 @@ client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-CAPITAL = int(os.getenv("CAPITAL") or "200000")
+CAPITAL = int(os.getenv("CAPITAL") or "300000")
 
 DEBUG = True  # master toggle for verbose logs
 
