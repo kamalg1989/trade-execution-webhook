@@ -1,6 +1,6 @@
 # ==============================================
-# 🚀 ENTRY ENGINE V2 (FINAL) — Called by app.py
-# Receives env vars from Flask webhook, places order on Dhan
+# 🚀 ENTRY ENGINE V2 (FIXED) — Called by app.py
+# Checks DHAN orders (not DB) for duplicates
 # ==============================================
 
 import os
@@ -26,7 +26,6 @@ DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
 
-# Reusable session
 session = requests.Session()
 
 
@@ -67,11 +66,11 @@ def get_security_id(stock):
     row = INSTRUMENT_DF[INSTRUMENT_DF['SEM_TRADING_SYMBOL'] == symbol]
 
     if row.empty:
-        log(f"❌ Mapping NOT FOUND: {symbol}")
+        log(f"❌ Security ID NOT FOUND: {symbol}")
         return None
 
     sec_id = str(row.iloc[0]['SEM_SMST_SECURITY_ID'])
-    log(f"✅ MAPPED: {symbol} → {sec_id}")
+    log(f"✅ {symbol} → Security ID: {sec_id}")
     return sec_id
 
 
@@ -79,211 +78,34 @@ def get_security_id(stock):
 # DATABASE INITIALIZATION
 # ==========================
 def init_db():
-    """
-    Creates dual-table schema for order tracking.
-
-    Flow: pending_orders (retry queue) → executed_orders (Dhan confirmed)
-    """
+    """Initialize database with minimal schema - trades table only"""
     conn = sqlite3.connect(DB_FILE)
 
-    # Table 1: PENDING ORDERS (awaiting Dhan confirmation)
+    # TRADES TABLE - Main trading ledger
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS pending_orders (
+        CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            setup_id TEXT UNIQUE NOT NULL,
             symbol TEXT NOT NULL,
             security_id TEXT NOT NULL,
             qty INTEGER NOT NULL,
             entry_price REAL NOT NULL,
-            sl_price REAL NOT NULL,
-            target_price REAL NOT NULL,
-            score REAL,
-            base_stage INTEGER,
-            base_quality_score REAL,
-            tick_size REAL,
-            placed_at TEXT NOT NULL,
-            placed_timestamp REAL NOT NULL,
-            status TEXT DEFAULT 'PENDING',
-            attempt_count INTEGER DEFAULT 1,
-            last_error TEXT,
-            retry_at TEXT,
-            notes TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    # Table 2: EXECUTED ORDERS (Dhan confirmed, open/closed)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS executed_orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            setup_id TEXT UNIQUE NOT NULL,
-            symbol TEXT NOT NULL,
-            security_id TEXT NOT NULL,
-            dhan_order_id TEXT UNIQUE NOT NULL,
-            qty_ordered INTEGER NOT NULL,
-            qty_executed INTEGER DEFAULT 0,
-            entry_price REAL NOT NULL,
-            entry_price_executed REAL,
-            sl_price REAL NOT NULL,
-            sl_order_id TEXT,
-            target_price REAL NOT NULL,
-            score REAL,
-            base_stage INTEGER,
-            base_quality_score REAL,
-            tick_size REAL,
-            placed_at TEXT NOT NULL,
-            placed_timestamp REAL NOT NULL,
-            executed_at TEXT,
-            executed_timestamp REAL,
+            entry_time TEXT NOT NULL,
             status TEXT DEFAULT 'OPEN',
+            sl_price REAL,
+            target_price REAL,
+            setup_id TEXT,
             current_price REAL,
-            current_price_update_at TEXT,
-            pnl REAL DEFAULT 0,
-            pnl_percent REAL DEFAULT 0,
-            order_status_dhan TEXT,
-            notes TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            pnl REAL,
+            pnl_percent REAL,
+            updated_at TEXT,
+            dhan_order_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
     conn.commit()
     conn.close()
-    log("✅ Database initialized with dual-table schema")
-
-
-# ==========================
-# PENDING ORDERS TABLE OPS
-# ==========================
-def insert_pending_order(setup_id, symbol, sec_id, qty, entry, sl, target, score,
-                         base_stage, base_quality_score, tick_size):
-    """Insert order into pending queue."""
-    conn = sqlite3.connect(DB_FILE)
-    ts = datetime.now(timezone.utc)
-    try:
-        conn.execute("""
-            INSERT INTO pending_orders 
-            (setup_id, symbol, security_id, qty, entry_price, sl_price, target_price,
-             score, base_stage, base_quality_score, tick_size, placed_at, placed_timestamp, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            setup_id, symbol, sec_id, qty, entry, sl, target,
-            score, base_stage, base_quality_score, tick_size,
-            ts.isoformat(), ts.timestamp(), "PENDING"
-        ))
-        conn.commit()
-        log(f"✅ Pending order saved: {setup_id} ({symbol})")
-        return True
-    except sqlite3.IntegrityError as e:
-        log(f"⚠️ Duplicate pending order (setup_id={setup_id}): {e}")
-        return False
-    except Exception as e:
-        log(f"❌ Failed to save pending order: {e}")
-        return False
-    finally:
-        conn.close()
-
-
-def mark_pending_placed(setup_id, dhan_order_id):
-    """Move pending → executed when Dhan confirms order."""
-    conn = sqlite3.connect(DB_FILE)
-    ts = datetime.now(timezone.utc)
-    try:
-        # Fetch pending order
-        pending = conn.execute("""
-            SELECT symbol, security_id, qty, entry_price, sl_price, target_price,
-                   score, base_stage, base_quality_score, tick_size, placed_at, placed_timestamp
-            FROM pending_orders
-            WHERE setup_id = ?
-        """, (setup_id,)).fetchone()
-
-        if not pending:
-            log(f"⚠️ Pending order not found: {setup_id}")
-            return False
-
-        (symbol, sec_id, qty, entry, sl, target, score, stage, bq_score, tick,
-         placed_at, placed_ts) = pending
-
-        # Insert into executed_orders
-        conn.execute("""
-            INSERT INTO executed_orders
-            (setup_id, symbol, security_id, dhan_order_id, qty_ordered, entry_price,
-             sl_price, target_price, score, base_stage, base_quality_score, tick_size,
-             placed_at, placed_timestamp, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            setup_id, symbol, sec_id, dhan_order_id, qty, entry, sl, target,
-            score, stage, bq_score, tick, placed_at, placed_ts, "OPEN"
-        ))
-
-        # Delete from pending_orders
-        conn.execute("DELETE FROM pending_orders WHERE setup_id = ?", (setup_id,))
-
-        conn.commit()
-        log(f"✅ Order moved to executed: {setup_id} (Dhan ID={dhan_order_id})")
-        return True
-    except Exception as e:
-        log(f"❌ Failed to mark pending as placed: {e}")
-        return False
-    finally:
-        conn.close()
-
-
-def mark_pending_failed(setup_id, error_msg, retry_after_seconds=300):
-    """Increment retry count and schedule retry."""
-    conn = sqlite3.connect(DB_FILE)
-    ts = datetime.now(timezone.utc)
-    retry_ts = ts.timestamp() + retry_after_seconds
-
-    try:
-        conn.execute("""
-            UPDATE pending_orders
-            SET attempt_count = attempt_count + 1,
-                last_error = ?,
-                retry_at = ?,
-                status = CASE 
-                    WHEN attempt_count >= 3 THEN 'FAILED'
-                    ELSE 'PENDING'
-                END
-            WHERE setup_id = ?
-        """, (error_msg, datetime.fromtimestamp(retry_ts, timezone.utc).isoformat(), setup_id))
-        conn.commit()
-
-        # Check final status
-        row = conn.execute(
-            "SELECT attempt_count, status FROM pending_orders WHERE setup_id = ?",
-            (setup_id,)
-        ).fetchone()
-
-        if row:
-            attempt, final_status = row
-            if final_status == "FAILED":
-                log(f"❌ Order {setup_id} failed after {attempt} attempts: {error_msg}")
-            else:
-                log(f"⚠️ Order {setup_id} retry #{attempt} scheduled")
-
-        return True
-    except Exception as e:
-        log(f"❌ Failed to update pending order status: {e}")
-        return False
-    finally:
-        conn.close()
-
-
-def is_duplicate_trade(setup_id):
-    """Check if order already exists (pending or executed)."""
-    conn = sqlite3.connect(DB_FILE)
-
-    pending = conn.execute(
-        "SELECT id FROM pending_orders WHERE setup_id = ?", (setup_id,)
-    ).fetchone()
-
-    executed = conn.execute(
-        "SELECT id FROM executed_orders WHERE setup_id = ?", (setup_id,)
-    ).fetchone()
-
-    conn.close()
-    return pending is not None or executed is not None
+    log("✅ Database initialized")
 
 
 # ==========================
@@ -294,7 +116,7 @@ def generate_token():
 
     try:
         totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
-        log(f"🔐 Generating token (TOTP={totp})")
+        log(f"🔐 Generating token...")
 
         r = requests.post(
             "https://auth.dhan.co/app/generateAccessToken",
@@ -307,36 +129,117 @@ def generate_token():
         )
 
         if r.status_code != 200:
-            log(f"❌ Token generation failed: {r.status_code} {r.text}")
+            log(f"❌ Token generation failed: {r.status_code}")
             return None
 
         data = r.json()
         token = data.get("accessToken")
 
         if not token:
-            log(f"❌ No token in response: {data}")
+            log(f"❌ No token in response")
             return None
 
         CURRENT_TOKEN = token
-        TOKEN_EXPIRY = datetime.now(timezone.utc).timestamp() + (23 * 3600)
+        TOKEN_EXPIRY = time.time() + (23 * 3600)
 
-        log(f"✅ Token generated: {token[:20]}...")
+        log(f"✅ Token generated")
         return token
     except Exception as e:
-        log(f"❌ Token generation exception: {e}")
+        log(f"❌ Token generation failed: {e}")
         return None
 
 
 def get_token():
     global CURRENT_TOKEN, TOKEN_EXPIRY
 
-    now = datetime.now(timezone.utc).timestamp()
+    now = time.time()
 
     if CURRENT_TOKEN and TOKEN_EXPIRY and now < TOKEN_EXPIRY:
         return CURRENT_TOKEN
 
-    log("⏳ Token expired/missing, regenerating...")
     return generate_token()
+
+
+# ==========================
+# CHECK DHAN FOR EXISTING ORDERS
+# ==========================
+def check_dhan_for_symbol(symbol):
+    """
+    Check Dhan for ANY open orders on this symbol.
+    Returns:
+    - list of matching orders if found
+    - empty list if no orders
+    """
+    try:
+        token = get_token()
+        if not token:
+            log("❌ Cannot get Dhan token")
+            return []
+
+        log(f"📡 Checking Dhan for {symbol}...")
+
+        r = requests.get(
+            "https://api.dhan.co/v2/forever/all",
+            headers={"access-token": token},
+            timeout=30
+        )
+
+        if r.status_code != 200:
+            log(f"⚠️ Dhan API error: {r.status_code}")
+            return []
+
+        orders = r.json()
+        if not isinstance(orders, list):
+            return []
+
+        log(f"📊 Retrieved {len(orders)} total orders from Dhan")
+
+        # Filter for this symbol's BUY orders
+        matching = []
+        for order in orders:
+            if not isinstance(order, dict):
+                continue
+
+            order_symbol = order.get("tradingSymbol", "").strip().upper()
+            trans_type = order.get("transactionType", "")
+            status = order.get("orderStatus", "")
+
+            if order_symbol == symbol.upper() and trans_type == "BUY":
+                log(f"   ✅ Found: {symbol} BUY order (Status={status})")
+                matching.append(order)
+
+        return matching
+
+    except Exception as e:
+        log(f"⚠️ Failed to check Dhan: {e}")
+        return []
+
+
+# ==========================
+# SAVE TRADE TO DATABASE
+# ==========================
+def save_trade(symbol, sec_id, qty, entry_price, sl_price, target_price, setup_id, dhan_order_id):
+    """Save executed trade to trades table"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        ts = datetime.now(timezone.utc).isoformat()
+
+        conn.execute("""
+            INSERT INTO trades
+            (symbol, security_id, qty, entry_price, entry_time, status, sl_price, target_price, setup_id, dhan_order_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            symbol, sec_id, qty, entry_price, ts, "OPEN",
+            sl_price, target_price, setup_id, dhan_order_id
+        ))
+        conn.commit()
+        conn.close()
+
+        log(f"✅ Trade saved to database: {symbol} (Dhan ID: {dhan_order_id})")
+        return True
+    except Exception as e:
+        log(f"❌ Failed to save trade: {e}")
+        return False
 
 
 # ==========================
@@ -345,7 +248,7 @@ def get_token():
 def place_order(sec_id, qty, entry):
     """
     Place BUY order on Dhan.
-    Returns (success: bool, order_response: dict)
+    Returns (success, order_response)
     """
 
     def round_to_tick(value):
@@ -374,11 +277,11 @@ def place_order(sec_id, qty, entry):
 
     token = get_token()
     if not token:
-        log("❌ No valid token available")
+        log("❌ No valid token")
         return False, {"error": "no_token"}
 
     try:
-        log(f"📤 Placing order: qty={qty}, entry={entry}, trigger={trigger}, price={price}")
+        log(f"📤 Placing BUY order: Qty={qty}, Entry={entry}, Trigger={trigger}, Price={price}")
 
         r = requests.post(
             "https://api.dhan.co/v2/forever/orders",
@@ -390,34 +293,38 @@ def place_order(sec_id, qty, entry):
             timeout=15
         )
 
-        log(f"📡 Response ({r.status_code}): {r.text[:200]}")
+        log(f"📡 Response: {r.status_code}")
 
         if r.status_code not in (200, 201):
-            return False, {"error": f"http_{r.status_code}", "details": r.text}
+            log(f"❌ Order placement failed: {r.status_code}")
+            return False, {"error": f"http_{r.status_code}", "text": r.text[:100]}
 
         data = r.json()
+        log(f"📄 Response: {json.dumps(data, indent=2)}")
+
         return True, data
 
     except Exception as e:
         log(f"❌ Order placement exception: {e}")
-        return False, {"error": "exception", "details": str(e)}
+        return False, {"error": "exception", "text": str(e)}
 
 
 # ==========================
-# MAIN ENTRY ROUTINE
+# MAIN EXECUTION
 # ==========================
 def run():
     """
-    Called by app.py with environment variables set.
-    Receives trade parameters via os.getenv()
+    Called by app.py webhook via subprocess.
+    Parameters passed via environment variables.
     """
+
     init_db()
 
-    log("=" * 60)
-    log("🚀 ENTRY ENGINE — Called by app.py webhook")
-    log("=" * 60)
+    log("=" * 80)
+    log("🚀 ENTRY ENGINE v2 (FIXED) - Called by webhook")
+    log("=" * 80)
 
-    # Read environment variables (set by app.py before calling subprocess)
+    # Read environment variables
     symbol = os.getenv("SYMBOL", "").strip()
     qty = int(os.getenv("QTY", "0") or "0")
     entry = float(os.getenv("ENTRY", "0") or "0.0")
@@ -425,24 +332,14 @@ def run():
     target = float(os.getenv("TARGET", "0") or "0.0")
     score = float(os.getenv("SCORE", "0") or "0.0")
     setup_id = os.getenv("SETUP_ID", "")
-    base_stage = int(os.getenv("BASE_STAGE", "0") or "0")
-    base_quality_score = float(os.getenv("BASE_QUALITY_SCORE", "0") or "0.0")
-    tick_size = float(os.getenv("TICK_SIZE", "0.05") or "0.05")
 
-    log("🔍 ENV DEBUG ------------------------")
-    for key in ["SYMBOL", "QTY", "ENTRY", "SL", "TARGET", "SCORE", "SETUP_ID",
-                "BASE_STAGE", "BASE_QUALITY_SCORE", "TICK_SIZE"]:
-        log(f"{key} =", os.getenv(key))
-    log("-------------------------------------")
-    log(f"Input: symbol={symbol}, qty={qty}, entry={entry}, sl={sl}, target={target}")
-    log(f"       setup_id={setup_id}, base_stage={base_stage}, score={score}")
+    log(f"Input: {symbol} | Qty={qty} | Entry={entry} | SL={sl} | Target={target}")
 
     # ==== VALIDATION ====
     if not symbol or qty <= 0 or entry <= 0:
         log("❌ Invalid inputs")
         return
 
-    # SL & TARGET validation (app.py already checks, but double-check here)
     if sl <= 0 or target <= 0:
         log("❌ SL or TARGET missing")
         return
@@ -451,48 +348,68 @@ def run():
         log(f"❌ Invalid price order: SL={sl} < ENTRY={entry} < TARGET={target}")
         return
 
-    # Duplicate check
-    if is_duplicate_trade(setup_id):
-        log(f"⚠️ Duplicate trade detected: {setup_id}")
-        return
-
-    # ==== MAPPING ====
+    # ==== GET SECURITY ID ====
     sec_id = get_security_id(symbol)
     if not sec_id:
         log(f"❌ Security ID not found for {symbol}")
         return
 
-    # ==== INSERT TO PENDING ====
-    if not insert_pending_order(
-            setup_id, symbol, sec_id, qty, entry, sl, target, score,
-            base_stage, base_quality_score, tick_size
-    ):
+    # ==== CHECK DHAN FOR EXISTING ORDERS ====
+    log(f"\n🔍 Checking Dhan for existing orders on {symbol}...")
+    existing_orders = check_dhan_for_symbol(symbol)
+
+    if existing_orders:
+        log(f"⚠️ {symbol} already has {len(existing_orders)} open order(s) on Dhan - SKIPPING")
+        for order in existing_orders:
+            log(f"   - OrderID: {order.get('orderId')}, Status: {order.get('orderStatus')}")
+        log("❌ Order placement cancelled")
         return
 
+    log(f"✅ {symbol} is clear on Dhan - proceeding to place order\n")
+
     # ==== PLACE ORDER ON DHAN ====
+    log("=" * 80)
+    log("📤 PLACING ORDER ON DHAN")
+    log("=" * 80)
+
     success, response = place_order(sec_id, qty, entry)
 
     if not success:
-        error_msg = response.get("error", "unknown")
-        details = response.get("details", "")
-        log(f"❌ Dhan order placement failed: {error_msg}")
-        log(f"   Details: {details}")
-
-        mark_pending_failed(setup_id, f"{error_msg}: {details}", retry_after_seconds=300)
+        log(f"❌ Order placement failed")
+        log(f"Error: {response.get('error')}")
         return
 
-    # ==== SUCCESS: MOVE TO EXECUTED ====
+    # ==== SUCCESS ====
     dhan_order_id = response.get("orderId")
+    order_status = response.get("orderStatus")
+
     if not dhan_order_id:
-        log(f"⚠️ Order placed but no orderId in response: {response}")
-        mark_pending_failed(setup_id, "No orderId in Dhan response", retry_after_seconds=60)
+        log(f"❌ No orderId in response")
         return
 
-    if mark_pending_placed(setup_id, dhan_order_id):
-        log(f"✅ Order placed successfully: {dhan_order_id}")
-        log(f"   Telegram should show: Order placed | Dhan ID: {dhan_order_id}")
-    else:
-        log(f"⚠️ Failed to move order to executed table")
+    log(f"\n✅ ORDER PLACED SUCCESSFULLY!")
+    log(f"   Order ID: {dhan_order_id}")
+    log(f"   Status: {order_status}")
+    log(f"   Symbol: {symbol}")
+    log(f"   Qty: {qty}")
+    log(f"   Entry: {entry}")
+
+    # Save to database
+    if save_trade(symbol, sec_id, qty, entry, sl, target, setup_id, dhan_order_id):
+        log(f"✅ Trade recorded in database")
+
+        # Output success JSON for app.py to parse
+        result = {
+            "success": True,
+            "order_id": dhan_order_id,
+            "symbol": symbol,
+            "qty": qty,
+            "entry": entry,
+            "message": "Order placed successfully"
+        }
+        print(json.dumps(result))
+
+    log("=" * 80)
 
 
 if __name__ == "__main__":
