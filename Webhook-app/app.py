@@ -1,6 +1,6 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK (app.py) — FINAL CORRECTED
-# Receives Telegram button clicks, validates, calls entry_engine.py
+# 🚀 TELEGRAM WEBHOOK (app.py) — FIXED v2
+# Checks DHAN orders (not DB) for duplicates
 # ==============================================
 
 import os
@@ -11,14 +11,13 @@ import threading
 import time
 import subprocess
 import json
+import pyotp
 
 # ==========================
-# GLOBAL DEDUP STORAGE (Thread-safe)
+# GLOBAL DEDUP STORAGE (Thread-safe, Telegram callback level only)
 # ==========================
 PROCESSED_CALLBACKS = set()
-PROCESSED_ORDERS = {}
 LOCK = threading.Lock()
-ORDER_WINDOW = 300  # 5 minutes
 
 
 # ==========================
@@ -26,13 +25,22 @@ ORDER_WINDOW = 300  # 5 minutes
 # ==========================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
+DHAN_PIN = os.getenv("DHAN_PIN")
+DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
 
 INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
 
-# Paths (adjust to your setup)
+# Paths
 ENTRY_ENGINE_PATH = "/root/trade-execution-webhook/Webhook-app/entry_engine.py"
 PROJECT_ROOT = "/root/trade-execution-webhook"
 VENV_PYTHON = "/root/trade-execution-webhook/venv/bin/python"
+
+# Dhan API
+CURRENT_TOKEN = None
+TOKEN_EXPIRY = None
+
+session = requests.Session()
 
 
 # ==========================
@@ -43,7 +51,7 @@ def log(*args):
 
 
 # ==========================
-# LOAD INSTRUMENTS (for symbol validation)
+# LOAD INSTRUMENTS
 # ==========================
 def load_instruments():
     try:
@@ -69,12 +77,145 @@ INSTRUMENT_DF = load_instruments()
 
 
 # ==========================
+# DHAN TOKEN MANAGEMENT
+# ==========================
+def generate_dhan_token():
+    global CURRENT_TOKEN, TOKEN_EXPIRY
+    try:
+        totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
+        log(f"🔐 Generating Dhan token...")
+
+        r = requests.post(
+            "https://auth.dhan.co/app/generateAccessToken",
+            params={
+                "dhanClientId": DHAN_CLIENT_ID,
+                "pin": DHAN_PIN,
+                "totp": totp
+            },
+            timeout=15
+        )
+
+        if r.status_code != 200:
+            log(f"❌ Token generation failed: {r.status_code}")
+            return None
+
+        data = r.json()
+        token = data.get("accessToken")
+
+        if token:
+            CURRENT_TOKEN = token
+            TOKEN_EXPIRY = time.time() + (23 * 3600)
+            log(f"✅ Dhan token generated")
+            return token
+        else:
+            log(f"❌ No token in response")
+            return None
+
+    except Exception as e:
+        log(f"❌ Token generation exception: {e}")
+        return None
+
+
+def get_dhan_token():
+    global CURRENT_TOKEN, TOKEN_EXPIRY
+
+    now = time.time()
+    if CURRENT_TOKEN and TOKEN_EXPIRY and now < TOKEN_EXPIRY:
+        return CURRENT_TOKEN
+
+    return generate_dhan_token()
+
+
+# ==========================
+# CHECK DHAN FOR OPEN ORDERS
+# ==========================
+def get_dhan_open_orders_for_symbol(symbol):
+    """
+    Fetch ALL forever orders from Dhan.
+    Return list of BUY orders for the given symbol.
+
+    Returns: list of open BUY orders matching symbol
+    """
+    try:
+        token = get_dhan_token()
+        if not token:
+            log("❌ Cannot get Dhan token")
+            return []
+
+        log(f"📡 Fetching Dhan orders for {symbol}...")
+
+        r = requests.get(
+            "https://api.dhan.co/v2/forever/all",
+            headers={"access-token": token},
+            timeout=30
+        )
+
+        if r.status_code != 200:
+            log(f"⚠️ Dhan API error: {r.status_code}")
+            return []
+
+        orders = r.json()
+        if not isinstance(orders, list):
+            log(f"⚠️ Unexpected response type: {type(orders)}")
+            return []
+
+        log(f"📊 Retrieved {len(orders)} total forever orders from Dhan")
+
+        # Filter for BUY orders matching this symbol
+        matching_orders = []
+        for order in orders:
+            if not isinstance(order, dict):
+                continue
+
+            order_symbol = order.get("tradingSymbol", "").strip().upper()
+            trans_type = order.get("transactionType", "")
+            status = order.get("orderStatus", "")
+            order_id = order.get("orderId")
+
+            # Match symbol and look for BUY orders (pending or confirmed)
+            if order_symbol == symbol.upper() and trans_type == "BUY":
+                log(f"   Found {symbol} BUY order: ID={order_id}, Status={status}")
+                matching_orders.append(order)
+
+        log(f"✅ Found {len(matching_orders)} BUY orders for {symbol}")
+        return matching_orders
+
+    except Exception as e:
+        log(f"❌ Failed to check Dhan orders: {e}")
+        return []
+
+
+def symbol_has_open_buy_order(symbol):
+    """
+    Check if Dhan has ANY open BUY order for this symbol.
+    If yes, don't place a new order.
+
+    Returns: True if open BUY order exists, False otherwise
+    """
+    orders = get_dhan_open_orders_for_symbol(symbol)
+
+    if not orders:
+        log(f"✅ {symbol}: No open BUY orders on Dhan - OK to place new order")
+        return False
+
+    # Check if any are in PENDING or TRIGGERED state (not filled yet)
+    for order in orders:
+        status = order.get("orderStatus", "")
+        if status in ["PENDING", "TRIGGERED", "CONFIRM"]:
+            log(f"⚠️ {symbol}: Already has open BUY order (Status={status}) - SKIP")
+            return True
+
+    log(f"✅ {symbol}: Existing BUY orders are filled or cancelled - OK to place new order")
+    return False
+
+
+# ==========================
 # TELEGRAM SEND
 # ==========================
 def send_telegram(msg):
     """Send message to user via Telegram."""
     try:
-        log(f"📨 SENDING TELEGRAM: {msg[:100]}...")
+        log(f"📨 TELEGRAM: {msg[:80]}...")
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             json={"chat_id": CHAT_ID, "text": msg},
@@ -93,7 +234,7 @@ def validate_symbol(symbol_input):
 
     if INSTRUMENT_DF.empty:
         log("⚠️ Instruments not loaded, skipping validation")
-        return True  # Allow anyway
+        return True
 
     row = INSTRUMENT_DF[INSTRUMENT_DF['SEM_TRADING_SYMBOL'] == symbol]
     return not row.empty
@@ -104,15 +245,10 @@ def validate_symbol(symbol_input):
 # ==========================
 def execute_entry_engine_subprocess(payload):
     """
-    Execute entry_engine.py as subprocess on the VPS.
+    Execute entry_engine.py as subprocess.
 
-    This ensures:
-    ✅ API calls originate from VPS static IP (Dhan whitelisting)
-    ✅ Entry engine runs in isolated process
-    ✅ Clear separation: webhook validation vs order placement
-
-    Payload should have:
-    - setup_id, symbol, qty, entry, sl, target, score
+    Now with Dhan order checking - entry_engine will also verify
+    no duplicate orders before placing.
     """
 
     try:
@@ -120,10 +256,10 @@ def execute_entry_engine_subprocess(payload):
         required = ["setup_id", "symbol", "qty", "entry", "sl", "target", "score"]
         for field in required:
             if field not in payload or payload[field] is None:
-                log(f"❌ Missing field in payload: {field}")
+                log(f"❌ Missing field: {field}")
                 return False
 
-        # Prepare environment (passed to subprocess)
+        # Prepare environment
         env = os.environ.copy()
         env.update({
             "SYMBOL": str(payload["symbol"]),
@@ -139,61 +275,50 @@ def execute_entry_engine_subprocess(payload):
         })
 
         log("🚀 EXECUTING ENTRY ENGINE SUBPROCESS")
-        log(f"   Python: {VENV_PYTHON}")
         log(f"   Script: {ENTRY_ENGINE_PATH}")
-        log(f"   CWD: {PROJECT_ROOT}")
-        log(f"   Payload: {json.dumps(payload, indent=2)}")
 
-        # Execute entry_engine.py with env vars
-        log(f"🔧 ENV CHECK → SYMBOL={env.get('SYMBOL')}, QTY={env.get('QTY')}, ENTRY={env.get('ENTRY')}")
         result = subprocess.run(
             [VENV_PYTHON, ENTRY_ENGINE_PATH],
             cwd=PROJECT_ROOT,
             env=env,
             capture_output=True,
             text=True,
-            timeout=30  # 30 second timeout
+            timeout=30
         )
 
-        log("📤 SUBPROCESS STDOUT:")
+        log("📤 SUBPROCESS OUTPUT:")
         log(result.stdout)
 
         if result.stderr:
-            log("📤 SUBPROCESS STDERR:")
+            log("📤 STDERR:")
             log(result.stderr)
 
         stdout = result.stdout or ""
 
-        log(f"🔍 STDOUT length: {len(stdout)}")
-
-        # --- Preferred: JSON-based success detection ---
+        # Check for success via JSON
         try:
             last_line = stdout.strip().split("\n")[-1]
-            parsed = json.loads(last_line)
+            if last_line.startswith("{"):
+                parsed = json.loads(last_line)
+                if parsed.get("success"):
+                    log(f"✅ Order success: {parsed.get('order_id')}")
+                    return True
+        except:
+            pass
 
-            if parsed.get("success"):
-                log(f"✅ Order success confirmed via JSON: {parsed.get('order_id')}")
-                return True
-        except Exception as e:
-            log(f"⚠️ JSON parse failed: {e}")
-
-        # --- Fallback: string-based detection ---
-        if "Order placed successfully" in stdout:
-            log("✅ Order success detected via stdout string match")
+        # Check for success via string match
+        if "Order placed successfully" in stdout or "✅ Order placed" in stdout:
+            log("✅ Order success detected")
             return True
 
-        log("❌ Order NOT confirmed from entry engine output")
-
-        if result.returncode != 0:
-            log(f"❌ Subprocess failed with code: {result.returncode}")
-
+        log("❌ Order NOT confirmed from entry engine")
         return False
 
     except subprocess.TimeoutExpired:
-        log("❌ Entry engine subprocess timeout (30s exceeded)")
+        log("❌ Entry engine timeout")
         return False
     except Exception as e:
-        log(f"❌ Error executing entry engine subprocess: {e}")
+        log(f"❌ Error executing entry engine: {e}")
         return False
 
 
@@ -206,42 +331,38 @@ app = Flask(__name__)
 @app.route("/webhook", methods=["POST"])
 def webhook():
     """
-    Receives Telegram callback when user clicks "✅ Confirm Buy" button.
-
-    Callback format: BUY|setup_id|symbol|qty|entry|sl|target|score
+    Receives Telegram callback: BUY|setup_id|symbol|qty|entry|sl|target|score
     """
 
     try:
         data = request.get_json(force=True)
-        log("=" * 70)
+        log("=" * 80)
         log("📩 TELEGRAM WEBHOOK RECEIVED")
-        log("=" * 70)
+        log("=" * 80)
         log(json.dumps(data, indent=2))
 
-        # Check for callback_query
         if not data or "callback_query" not in data:
-            log("⚠️ No callback_query in payload")
+            log("⚠️ No callback_query")
             return "OK"
 
         query = data["callback_query"]
         callback_id = query["id"]
 
-        # ✅ CALLBACK DEDUP (Telegram may send duplicate callbacks)
+        # ==== CALLBACK DEDUP (Telegram level only) ====
         with LOCK:
             if callback_id in PROCESSED_CALLBACKS:
-                log(f"⚠️ Duplicate callback ignored: {callback_id}")
+                log(f"⚠️ Duplicate callback: {callback_id}")
                 return "OK"
             PROCESSED_CALLBACKS.add(callback_id)
 
-        # Parse callback data
+        # Parse callback
         raw_callback = query.get("data", "")
-        log(f"📋 RAW CALLBACK: {raw_callback}")
+        log(f"📋 Callback: {raw_callback}")
 
         parts = raw_callback.split("|")
 
-        # Expected format: BUY|setup_id|symbol|qty|entry|sl|target|score
         if len(parts) < 8:
-            log(f"❌ Invalid callback format (expected 8 parts, got {len(parts)})")
+            log(f"❌ Invalid format")
             send_telegram("❌ Invalid payload format")
             return "OK"
 
@@ -266,91 +387,63 @@ def webhook():
         sl = safe_float(parts[5])
         target = safe_float(parts[6])
         score = safe_float(parts[7])
-
-        # Base stage (optional, index 8)
         base_stage = safe_int(parts[8]) if len(parts) > 8 else 0
         base_quality_score = safe_float(parts[9]) if len(parts) > 9 else 0.0
         tick_size = safe_float(parts[10]) if len(parts) > 10 else 0.05
 
-        log("✅ PARSED CALLBACK:")
-        log(f"   Action: {action}")
-        log(f"   Setup ID: {setup_id}")
-        log(f"   Symbol: {symbol}")
-        log(f"   Qty: {qty}")
-        log(f"   Entry: {entry}")
-        log(f"   SL: {sl}")
-        log(f"   Target: {target}")
-        log(f"   Score: {score}")
-        log(f"   Base Stage: {base_stage}")
-        log(f"   Base Quality: {base_quality_score}")
-        log(f"   Tick Size: {tick_size}")
+        log("✅ PARSED:")
+        log(f"   Symbol: {symbol}, Qty: {qty}, Entry: {entry}, SL: {sl}, Target: {target}")
 
-        # ==== VALIDATION (before calling entry engine) ====
+        # ==== VALIDATION ====
 
-        # 1. Setup ID
-        if not setup_id:
-            log(f"❌ VALIDATION: Missing setup_id")
-            send_telegram(f"❌ Missing setup_id")
+        if not setup_id or not symbol:
+            log(f"❌ Missing setup_id or symbol")
+            send_telegram("❌ Missing setup_id or symbol")
             return "OK"
 
-        # 2. Quantities
         if qty is None or qty <= 0:
-            log(f"❌ VALIDATION: Invalid qty={qty}")
+            log(f"❌ Invalid qty")
             send_telegram(f"❌ Invalid qty: {qty}")
             return "OK"
 
-        # 3. Prices
         if entry is None or entry <= 0:
-            log(f"❌ VALIDATION: Invalid entry={entry}")
-            send_telegram(f"❌ Invalid entry price: {entry}")
+            log(f"❌ Invalid entry")
+            send_telegram(f"❌ Invalid entry: {entry}")
             return "OK"
 
-        if sl is None or sl <= 0:
-            log(f"❌ VALIDATION: Invalid sl={sl}")
-            send_telegram(f"❌ Invalid SL: {sl}")
+        if sl is None or sl <= 0 or target is None or target <= 0:
+            log(f"❌ Invalid SL or target")
+            send_telegram(f"❌ Invalid SL/target")
             return "OK"
 
-        if target is None or target <= 0:
-            log(f"❌ VALIDATION: Invalid target={target}")
-            send_telegram(f"❌ Invalid target: {target}")
-            return "OK"
-
-        # 4. Price order validation (CRITICAL)
         if not (sl < entry < target):
-            log(f"❌ VALIDATION: Invalid price order - SL={sl} ENTRY={entry} TARGET={target}")
-            send_telegram(f"❌ Invalid price order: SL={sl} < ENTRY={entry} < TARGET={target}")
+            log(f"❌ Invalid price order: SL={sl} < ENTRY={entry} < TARGET={target}")
+            send_telegram(f"❌ Invalid price order")
             return "OK"
 
-        # 5. Symbol validation
         if not validate_symbol(symbol):
-            log(f"❌ VALIDATION: Symbol not found in Dhan: {symbol}")
+            log(f"❌ Symbol not found: {symbol}")
             send_telegram(f"❌ Symbol not found: {symbol}")
             return "OK"
 
-        # 6. Action check
         if action != "BUY":
-            log(f"❌ VALIDATION: Unsupported action={action}")
-            send_telegram(f"❌ Unsupported action: {action}")
+            log(f"❌ Invalid action: {action}")
+            send_telegram(f"❌ Invalid action: {action}")
             return "OK"
 
-        # 7. Order dedup (check if we already processed this setup_id recently)
-        key = setup_id
-        now = time.time()
+        # ==== CHECK DHAN FOR EXISTING ORDERS ====
+        log(f"\n🔍 Checking Dhan for existing orders on {symbol}...")
 
-        with LOCK:
-            if key in PROCESSED_ORDERS:
-                time_since_last = now - PROCESSED_ORDERS[key]
-                if time_since_last < ORDER_WINDOW:
-                    log(f"⚠️ DEDUP: Order {key} already processed {time_since_last:.1f}s ago")
-                    send_telegram(f"⚠️ Order already processed for {symbol}")
-                    return "OK"
+        if symbol_has_open_buy_order(symbol):
+            log(f"⚠️ {symbol} already has open BUY order on Dhan - SKIP")
+            send_telegram(f"⚠️ {symbol} already has open order on Dhan")
+            return "OK"
 
-            PROCESSED_ORDERS[key] = now
+        log(f"✅ {symbol} is clear on Dhan - proceeding to place order\n")
 
         # ==== ALL VALIDATIONS PASSED ====
         log("✅ ALL VALIDATIONS PASSED")
 
-        # Prepare payload for entry engine
         payload = {
             "setup_id": setup_id,
             "symbol": symbol,
@@ -364,14 +457,11 @@ def webhook():
             "tick_size": tick_size,
         }
 
-        # Send immediate ack to user
-        send_telegram(f"⏳ Processing order for {symbol} | Qty: {qty}")
+        send_telegram(f"⏳ Processing {symbol} | Qty: {qty}")
 
-        # 🚀 Execute entry engine as subprocess
-        # This will place the order on Dhan and save to DB
+        # Execute entry engine
         success = execute_entry_engine_subprocess(payload)
 
-        # Notify user of result
         if success:
             send_telegram(f"✅ ORDER EXECUTED\n{symbol} | Qty: {qty}\nSL: {sl} | Target: {target}")
         else:
@@ -387,26 +477,19 @@ def webhook():
 
 @app.route("/", methods=["GET"])
 def home():
-    """Health check."""
-    return "Webhook running - ready to accept Telegram callbacks"
+    return "Webhook running"
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    """Health endpoint for monitoring."""
-    return {"status": "ok", "timestamp": str(pd.Timestamp.now())}, 200
+    return {"status": "ok"}, 200
 
 
 if __name__ == "__main__":
-    log("=" * 70)
-    log("🚀 TELEGRAM WEBHOOK (app.py) STARTING")
-    log("=" * 70)
-    log(f"ENTRY_ENGINE_PATH: {ENTRY_ENGINE_PATH}")
-    log(f"PROJECT_ROOT: {PROJECT_ROOT}")
-    log(f"VENV_PYTHON: {VENV_PYTHON}")
-    log(f"TELEGRAM_TOKEN: {TELEGRAM_TOKEN[:20]}...")
-    log(f"CHAT_ID: {CHAT_ID}")
+    log("=" * 80)
+    log("🚀 TELEGRAM WEBHOOK (app.py) v2 - FIXED")
+    log("=" * 80)
+    log(f"Checks DHAN orders (not DB) for duplicates")
+    log(f"Entry Engine: {ENTRY_ENGINE_PATH}")
 
-    # Run Flask app
-    # In production, use: gunicorn -w 4 -b 0.0.0.0:5000 app:app
     app.run(host="0.0.0.0", port=5000, debug=False)
