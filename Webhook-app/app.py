@@ -1,6 +1,7 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK (app.py) — FIXED v2
-# Checks DHAN orders (not DB) for duplicates
+# 🚀 TELEGRAM WEBHOOK (app.py) — FIXED v3
+# Uses /v2/forever/all (correct endpoint)
+# Better token handling
 # ==============================================
 
 import os
@@ -14,7 +15,7 @@ import json
 import pyotp
 
 # ==========================
-# GLOBAL DEDUP STORAGE (Thread-safe, Telegram callback level only)
+# GLOBAL DEDUP STORAGE
 # ==========================
 PROCESSED_CALLBACKS = set()
 LOCK = threading.Lock()
@@ -95,8 +96,10 @@ def generate_dhan_token():
             timeout=15
         )
 
+        log(f"📡 Token response: {r.status_code}")
+
         if r.status_code != 200:
-            log(f"❌ Token generation failed: {r.status_code}")
+            log(f"❌ Token generation failed: {r.status_code} {r.text[:200]}")
             return None
 
         data = r.json()
@@ -105,10 +108,10 @@ def generate_dhan_token():
         if token:
             CURRENT_TOKEN = token
             TOKEN_EXPIRY = time.time() + (23 * 3600)
-            log(f"✅ Dhan token generated")
+            log(f"✅ Dhan token generated: {token[:20]}...")
             return token
         else:
-            log(f"❌ No token in response")
+            log(f"❌ No token in response: {data}")
             return None
 
     except Exception as e:
@@ -127,14 +130,12 @@ def get_dhan_token():
 
 
 # ==========================
-# CHECK DHAN FOR OPEN ORDERS
+# CHECK DHAN FOR OPEN ORDERS (FIXED)
 # ==========================
-def get_dhan_open_orders_for_symbol(symbol):
+def get_dhan_all_forever_orders():
     """
-    Fetch ALL forever orders from Dhan.
-    Return list of BUY orders for the given symbol.
-
-    Returns: list of open BUY orders matching symbol
+    Fetch ALL forever orders from Dhan using /v2/forever/all endpoint.
+    Returns: list of orders or empty list if error
     """
     try:
         token = get_dhan_token()
@@ -142,7 +143,7 @@ def get_dhan_open_orders_for_symbol(symbol):
             log("❌ Cannot get Dhan token")
             return []
 
-        log(f"📡 Fetching Dhan orders for {symbol}...")
+        log(f"📡 Fetching all forever orders from /v2/forever/all...")
 
         r = requests.get(
             "https://api.dhan.co/v2/forever/all",
@@ -150,8 +151,10 @@ def get_dhan_open_orders_for_symbol(symbol):
             timeout=30
         )
 
+        log(f"📡 Response: {r.status_code}")
+
         if r.status_code != 200:
-            log(f"⚠️ Dhan API error: {r.status_code}")
+            log(f"⚠️ Dhan API error: {r.status_code} {r.text[:200]}")
             return []
 
         orders = r.json()
@@ -159,10 +162,29 @@ def get_dhan_open_orders_for_symbol(symbol):
             log(f"⚠️ Unexpected response type: {type(orders)}")
             return []
 
-        log(f"📊 Retrieved {len(orders)} total forever orders from Dhan")
+        log(f"✅ Retrieved {len(orders)} total forever orders from Dhan")
+        return orders
+
+    except Exception as e:
+        log(f"❌ Failed to fetch forever orders: {e}")
+        return []
+
+
+def symbol_has_open_buy_order(symbol):
+    """
+    Check if Dhan has ANY open BUY order for this symbol.
+    Uses /v2/forever/all endpoint.
+    Returns: True if open BUY order exists, False otherwise
+    """
+    try:
+        orders = get_dhan_all_forever_orders()
+
+        if not orders:
+            log(f"✅ {symbol}: No orders on Dhan - OK to place new order")
+            return False
 
         # Filter for BUY orders matching this symbol
-        matching_orders = []
+        matching_buys = []
         for order in orders:
             if not isinstance(order, dict):
                 continue
@@ -172,41 +194,26 @@ def get_dhan_open_orders_for_symbol(symbol):
             status = order.get("orderStatus", "")
             order_id = order.get("orderId")
 
-            # Match symbol and look for BUY orders (pending or confirmed)
+            # Match symbol and look for BUY orders in pending/triggered state
             if order_symbol == symbol.upper() and trans_type == "BUY":
-                log(f"   Found {symbol} BUY order: ID={order_id}, Status={status}")
-                matching_orders.append(order)
+                if status in ["PENDING", "TRIGGERED", "CONFIRM"]:
+                    matching_buys.append({
+                        "orderId": order_id,
+                        "status": status,
+                        "qty": order.get("quantity", 0)
+                    })
+                    log(f"   Found {symbol} BUY order: ID={order_id}, Status={status}")
 
-        log(f"✅ Found {len(matching_orders)} BUY orders for {symbol}")
-        return matching_orders
+        if matching_buys:
+            log(f"⚠️ {symbol}: Already has {len(matching_buys)} open BUY order(s) - SKIP")
+            return True
 
-    except Exception as e:
-        log(f"❌ Failed to check Dhan orders: {e}")
-        return []
-
-
-def symbol_has_open_buy_order(symbol):
-    """
-    Check if Dhan has ANY open BUY order for this symbol.
-    If yes, don't place a new order.
-
-    Returns: True if open BUY order exists, False otherwise
-    """
-    orders = get_dhan_open_orders_for_symbol(symbol)
-
-    if not orders:
         log(f"✅ {symbol}: No open BUY orders on Dhan - OK to place new order")
         return False
 
-    # Check if any are in PENDING or TRIGGERED state (not filled yet)
-    for order in orders:
-        status = order.get("orderStatus", "")
-        if status in ["PENDING", "TRIGGERED", "CONFIRM"]:
-            log(f"⚠️ {symbol}: Already has open BUY order (Status={status}) - SKIP")
-            return True
-
-    log(f"✅ {symbol}: Existing BUY orders are filled or cancelled - OK to place new order")
-    return False
+    except Exception as e:
+        log(f"❌ Failed to check symbol orders: {e}")
+        return False
 
 
 # ==========================
@@ -246,9 +253,6 @@ def validate_symbol(symbol_input):
 def execute_entry_engine_subprocess(payload):
     """
     Execute entry_engine.py as subprocess.
-
-    Now with Dhan order checking - entry_engine will also verify
-    no duplicate orders before placing.
     """
 
     try:
@@ -276,6 +280,7 @@ def execute_entry_engine_subprocess(payload):
 
         log("🚀 EXECUTING ENTRY ENGINE SUBPROCESS")
         log(f"   Script: {ENTRY_ENGINE_PATH}")
+        log(f"   Symbol: {payload['symbol']}, Qty: {payload['qty']}")
 
         result = subprocess.run(
             [VENV_PYTHON, ENTRY_ENGINE_PATH],
@@ -431,7 +436,7 @@ def webhook():
             send_telegram(f"❌ Invalid action: {action}")
             return "OK"
 
-        # ==== CHECK DHAN FOR EXISTING ORDERS ====
+        # ==== CHECK DHAN FOR EXISTING ORDERS (FIXED) ====
         log(f"\n🔍 Checking Dhan for existing orders on {symbol}...")
 
         if symbol_has_open_buy_order(symbol):
@@ -487,9 +492,9 @@ def health():
 
 if __name__ == "__main__":
     log("=" * 80)
-    log("🚀 TELEGRAM WEBHOOK (app.py) v2 - FIXED")
+    log("🚀 TELEGRAM WEBHOOK (app.py) v3 - FIXED")
     log("=" * 80)
-    log(f"Checks DHAN orders (not DB) for duplicates")
+    log(f"Uses /v2/forever/all endpoint (correct API)")
     log(f"Entry Engine: {ENTRY_ENGINE_PATH}")
 
     app.run(host="0.0.0.0", port=5000, debug=False)
