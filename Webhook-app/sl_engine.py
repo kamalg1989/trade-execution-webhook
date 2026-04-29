@@ -1,5 +1,5 @@
 # ==============================================
-# 🚀 SL ENGINE V11 (FINAL FIXED)
+# 🚀 SL ENGINE V12 (CRON SAFE + DEBUG + FIXED ENV)
 # ==============================================
 
 import os
@@ -11,11 +11,29 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
 # ==========================
-# CONFIG
+# LOAD ENV (CRITICAL FIX)
 # ==========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(BASE_DIR, ".env"))
 
+ENV_PATHS = [
+    os.path.join(BASE_DIR, ".env"),                                # local
+    "/root/trade-execution-webhook/.env",                          # VPS root
+]
+
+env_loaded = False
+for path in ENV_PATHS:
+    if os.path.exists(path):
+        load_dotenv(path)
+        print(f"✅ Loaded .env from: {path}")
+        env_loaded = True
+        break
+
+if not env_loaded:
+    print("❌ WARNING: .env NOT FOUND")
+
+# ==========================
+# CONFIG
+# ==========================
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
 DHAN_PIN = os.getenv("DHAN_PIN")
 DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
@@ -31,6 +49,24 @@ CURRENT_TOKEN = None
 TOKEN_EXPIRY = datetime.now(timezone.utc)
 
 # ==========================
+# ENV VALIDATION (CRITICAL)
+# ==========================
+def validate_env():
+    missing = []
+
+    if not DHAN_CLIENT_ID:
+        missing.append("DHAN_CLIENT_ID")
+    if not DHAN_PIN:
+        missing.append("DHAN_PIN")
+    if not DHAN_TOTP_SECRET:
+        missing.append("DHAN_TOTP_SECRET")
+
+    if missing:
+        raise ValueError(f"❌ Missing ENV: {missing}")
+
+    logger.info(f"✅ ENV OK | CLIENT_ID={DHAN_CLIENT_ID}")
+
+# ==========================
 # TOKEN
 # ==========================
 def get_token():
@@ -39,36 +75,59 @@ def get_token():
     if CURRENT_TOKEN and datetime.now(timezone.utc) < TOKEN_EXPIRY:
         return CURRENT_TOKEN
 
-    totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
+    try:
+        if not DHAN_TOTP_SECRET:
+            raise ValueError("TOTP secret missing")
 
-    r = session.post(
-        "https://auth.dhan.co/app/generateAccessToken",
-        params={
-            "dhanClientId": DHAN_CLIENT_ID,
-            "pin": DHAN_PIN,
-            "totp": totp
-        }
-    )
+        totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
 
-    token = r.json().get("accessToken")
-    CURRENT_TOKEN = token
-    TOKEN_EXPIRY = datetime.now(timezone.utc) + timedelta(hours=23)
+        logger.info("🔑 Generating token...")
 
-    logger.info("✅ Token generated")
-    return token
+        r = session.post(
+            "https://auth.dhan.co/app/generateAccessToken",
+            params={
+                "dhanClientId": DHAN_CLIENT_ID,
+                "pin": DHAN_PIN,
+                "totp": totp
+            },
+            timeout=10
+        )
 
+        logger.info(f"🔐 Token status: {r.status_code}")
+
+        data = r.json()
+
+        if "accessToken" not in data:
+            logger.error(f"❌ Token failed: {data}")
+            return None
+
+        CURRENT_TOKEN = data["accessToken"]
+        TOKEN_EXPIRY = datetime.now(timezone.utc) + timedelta(hours=23)
+
+        logger.info("✅ Token generated")
+        return CURRENT_TOKEN
+
+    except Exception as e:
+        logger.error(f"❌ Token error: {e}")
+        return None
 
 # ==========================
 # POSITIONS
 # ==========================
 def get_positions():
+    token = get_token()
+    if not token:
+        return []
+
     r = session.get(
         "https://api.dhan.co/v2/positions",
         headers={
-            "access-token": get_token(),
+            "access-token": token,
             "client-id": DHAN_CLIENT_ID
         }
     )
+
+    logger.info(f"📡 Positions status: {r.status_code}")
 
     data = r.json()
     result = []
@@ -87,18 +146,23 @@ def get_positions():
     logger.info(f"📊 Positions: {len(result)}")
     return result
 
-
 # ==========================
 # HOLDINGS
 # ==========================
 def get_holdings():
+    token = get_token()
+    if not token:
+        return []
+
     r = session.get(
         "https://api.dhan.co/v2/holdings",
         headers={
-            "access-token": get_token(),
+            "access-token": token,
             "client-id": DHAN_CLIENT_ID
         }
     )
+
+    logger.info(f"📡 Holdings status: {r.status_code}")
 
     data = r.json()
     result = []
@@ -117,18 +181,25 @@ def get_holdings():
     logger.info(f"📊 Holdings: {len(result)}")
     return result
 
-
 # ==========================
 # FOREVER ORDERS
 # ==========================
 def get_forever_orders():
+    token = get_token()
+    if not token:
+        return []
+
     r = session.get(
         "https://api.dhan.co/v2/forever/orders",
-        headers={"access-token": get_token()}
+        headers={"access-token": token}
     )
 
-    return r.json()
+    logger.info(f"📡 Forever status: {r.status_code}")
 
+    data = r.json()
+    logger.info(f"📊 Forever count: {len(data) if isinstance(data, list) else 'INVALID'}")
+
+    return data if isinstance(data, list) else []
 
 # ==========================
 # PLACE SL
@@ -169,14 +240,16 @@ def place_sl(sec_id, qty, avg):
     )
 
     logger.info(f"📡 SL status: {r.status_code} | {r.text}")
-    return r.status_code in (200, 201)
 
+    return r.status_code in (200, 201)
 
 # ==========================
 # MAIN
 # ==========================
 def run():
     logger.info("🚀 SL ENGINE START")
+
+    validate_env()
 
     positions = get_positions()
     holdings = get_holdings()
@@ -217,6 +290,8 @@ def run():
 
     logger.info(f"✅ DONE | SL placed: {placed}")
 
-
+# ==========================
+# ENTRY
+# ==========================
 if __name__ == "__main__":
     run()
