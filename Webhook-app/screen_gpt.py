@@ -1,11 +1,12 @@
 # ==============================================
-# 🚀 OHM SYSTEM — P2.2 (FIXED TICK SIZE)
+# 🚀 OHM SYSTEM — P2.2 (FIXED TICK SIZE) — CORRECTED
 # Builds on P0 + P1 + P2 + P2.1 + P2.2
 #
-# P2.2 FIXED changes:
-#   - TICK SIZE now fetched from Dhan CSV (SEM_TICK_SIZE column)
-#   - Removed hardcoded TICK_SIZE_BANDS and TICK_SIZE_OVERRIDES
-#   - Cache TICK_SIZES globally after first load
+# P2.2 FIXED changes (TICK SIZE CORRECTION):
+#   - SEM_TICK_SIZE is a MULTIPLIER (1, 5, 10, 50, etc.)
+#   - CONVERT to decimal: tick_decimal = multiplier / 100
+#   - Example: SEM_TICK_SIZE=5 → 0.05, SEM_TICK_SIZE=1 → 0.01
+#   - round_to_tick() now handles decimal precision correctly
 # ==============================================
 
 import os
@@ -84,14 +85,37 @@ def _timed(timer, stage, fn, *args, **kwargs):
 
 
 # ==========================================================
-# 🆕 TICK SIZE FETCHING (from Dhan CSV)
+# 🆕 TICK SIZE FETCHING (from Dhan CSV) — CORRECTED
 # ==========================================================
 TICK_SIZE_CACHE = {}
+
+def convert_tick_multiplier_to_decimal(tick_multiplier):
+    """
+    Convert SEM_TICK_SIZE multiplier to actual decimal tick value.
+    SEM_TICK_SIZE is stored as: 1→0.01, 5→0.05, 10→0.10, etc.
+    Formula: decimal_tick = tick_multiplier / 100
+
+    Examples:
+    - tick_multiplier=1 → 0.01
+    - tick_multiplier=5 → 0.05
+    - tick_multiplier=10 → 0.10
+    - tick_multiplier=50 → 0.50
+    """
+    try:
+        multiplier = float(tick_multiplier)
+        if multiplier <= 0:
+            return 0.05  # fallback default
+        decimal_tick = multiplier / 100.0
+        return round(decimal_tick, 4)
+    except (ValueError, TypeError):
+        return 0.05  # fallback default
+
 
 def load_tick_sizes():
     """
     Load tick sizes from Dhan instrument master CSV.
-    Returns dict: {symbol: tick_size}
+    Converts SEM_TICK_SIZE multiplier to actual decimal values.
+    Returns dict: {symbol: tick_size_decimal}
     Caches result globally to avoid repeated downloads.
     """
     global TICK_SIZE_CACHE
@@ -111,13 +135,16 @@ def load_tick_sizes():
             (df['SEM_SEGMENT'] == 'E')
             ]
 
-        # Build cache: symbol → tick size
+        # Build cache: symbol → tick size (converted to decimal)
         for _, row in df.iterrows():
             symbol = str(row.get('SEM_TRADING_SYMBOL', '')).strip().upper()
-            tick = float(row.get('SEM_TICK_SIZE', 0.05))
+            tick_multiplier = row.get('SEM_TICK_SIZE', 5)  # default 5 → 0.05
+
+            # Convert multiplier to decimal tick value
+            tick_decimal = convert_tick_multiplier_to_decimal(tick_multiplier)
 
             if symbol:
-                TICK_SIZE_CACHE[symbol] = tick
+                TICK_SIZE_CACHE[symbol] = tick_decimal
 
         print(f"✅ Loaded tick sizes for {len(TICK_SIZE_CACHE)} NSE equity symbols")
         dbg(f"   Sample: {list(TICK_SIZE_CACHE.items())[:5]}")
@@ -132,9 +159,9 @@ def load_tick_sizes():
 
 def get_tick_size(symbol):
     """
-    Get tick size for a symbol.
-    symbol: e.g., "ONGC" (without .NS)
-    Returns: float tick size
+    Get tick size for a symbol (already in decimal form).
+    symbol: e.g., "ONGC" (without .NS) or "ONGC.NS"
+    Returns: float tick size in decimal form (e.g., 0.01, 0.05, 0.10)
     """
     global TICK_SIZE_CACHE
 
@@ -148,9 +175,9 @@ def get_tick_size(symbol):
     tick = TICK_SIZE_CACHE.get(symbol_clean, 0.05)
 
     if tick == 0.05:
-        dbg(f"   [{symbol}] Tick size: ₹{tick} (from Dhan CSV or default)")
+        dbg(f"   [{symbol}] Tick size: ₹{tick:.4f} (from Dhan CSV or default)")
     else:
-        dbg(f"   [{symbol}] Tick size: ₹{tick} (from Dhan CSV)")
+        dbg(f"   [{symbol}] Tick size: ₹{tick:.4f} (from Dhan CSV)")
 
     return tick
 
@@ -158,17 +185,40 @@ def get_tick_size(symbol):
 def round_to_tick(price, tick, mode="up"):
     """
     Round price to nearest tick.
-    mode='up' for entry (buy above signal), 'down' for SL (sell below signal).
+
+    Args:
+        price (float): Price to round
+        tick (float): Tick size in decimal form (e.g., 0.05, 0.01, 0.10)
+        mode (str): "up" for entry (buy above signal),
+                    "down" for SL (sell below signal),
+                    "nearest" for standard rounding
+
+    Returns:
+        float: Price rounded to tick precision
+
+    Examples:
+        round_to_tick(100.47, 0.05, mode="up") → 100.50
+        round_to_tick(100.47, 0.05, mode="down") → 100.45
+        round_to_tick(100.47, 0.01, mode="up") → 100.47
     """
     if tick <= 0:
-        return round(price, 2)
+        return round(price, 4)
+
+    # Calculate number of steps: price / tick
     steps = price / tick
+
     if mode == "up":
-        return round(math.ceil(steps) * tick, 2)
+        # Ceiling: round up to next tick
+        rounded_price = math.ceil(steps) * tick
     elif mode == "down":
-        return round(math.floor(steps) * tick, 2)
-    else:
-        return round(round(steps) * tick, 2)
+        # Floor: round down to previous tick
+        rounded_price = math.floor(steps) * tick
+    else:  # mode == "nearest" or any other
+        # Standard rounding: round to nearest tick
+        rounded_price = round(steps) * tick
+
+    # Return with 4 decimal precision (enough for 0.01 tick size)
+    return round(rounded_price, 4)
 
 
 # ==========================
@@ -1110,14 +1160,14 @@ def resolve_entry(df, symbol):
     raw_entry = float(res["entry_raw"])
     raw_sl = float(res["sl_raw"])
 
-    # GET TICK SIZE FROM DHAN CSV (FIX)
+    # GET TICK SIZE FROM DHAN CSV (CORRECTED)
     tick = get_tick_size(symbol)
 
     entry = round_to_tick(raw_entry + ENTRY_TICK_OFFSET_MULTIPLIER * tick, tick, mode="up")
     sl = round_to_tick(raw_sl, tick, mode="down")
 
-    dbg(f"   [{symbol}] TICK ROUNDING | tick=₹{tick} | "
-        f"raw entry={raw_entry:.4f}→{entry} | raw sl={raw_sl:.4f}→{sl}")
+    dbg(f"   [{symbol}] TICK ROUNDING | tick=₹{tick:.4f} | "
+        f"raw entry={raw_entry:.4f}→{entry:.4f} | raw sl={raw_sl:.4f}→{sl:.4f}")
 
     if entry <= sl:
         dbg(f"   [{symbol}] ⚠️ After rounding entry({entry}) <= sl({sl}) — rejecting")
@@ -1612,7 +1662,7 @@ SL: `{sl}` _(exit on close below)_
 Target: {target_str}
 Qty: `{qty}`  _(stage {m['base_stage']}, x{trade['stage_multiplier']})_
 Risk/Share: `{risk}`  |  R:R: `1:{rr_ratio}`
-Tick: `₹{trade['tick_size']}`
+Tick: `₹{trade['tick_size']:.4f}`
 
 🧱 Base Stage: *{m['base_stage']}*
 📊 Base Quality: `{m['base_quality_score']:.2f}` (upmove, giveback, vol, near-BO)
