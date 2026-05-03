@@ -1,21 +1,30 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK (app.py) v6 - PASSES TOKEN TO SUBPROCESS
-# UPDATED: Tick size logic corrected (multiplier → decimal)
-# Token is generated ONCE in parent, passed to entry_engine
-# Entry_engine uses it WITHOUT regenerating
+# 🚀 TELEGRAM WEBHOOK (app.py) v7 - WITH DASHBOARD INTEGRATED
+# Combines webhook + dashboard in single Flask app
+# Token passed to subprocess, no double generation
+# Dashboard integrated for live P&L tracking
 # ==============================================
 
 import os
 import requests
 import pandas as pd
-from flask import Flask, request
+from flask import Flask, request, jsonify, send_file
 import threading
 import time
 import subprocess
 import json
 import pyotp
-import math
 from datetime import datetime, timezone, timedelta
+from dotenv import load_dotenv
+
+# ==========================
+# IMPORT DASHBOARD MODULE
+# ==========================
+from pnl_dashboard_enhanced import (
+    EnhancedPnLDashboard,
+    get_dhan_token,
+    sync_entry_price_with_dhan
+)
 
 # ==========================
 # GLOBAL STATE
@@ -23,15 +32,18 @@ from datetime import datetime, timezone, timedelta
 PROCESSED_CALLBACKS = set()
 LOCK = threading.Lock()
 
-# Token caching (REUSE across all API calls)
+# Token caching
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
 
-# Tick size caching
+# Tick size cache
 TICK_SIZE_CACHE = {}
 
 # Reusable session
 session = requests.Session()
+
+# Dashboard instance
+dashboard = EnhancedPnLDashboard()
 
 
 # ==========================
@@ -54,135 +66,6 @@ VENV_PYTHON = "/root/trade-execution-webhook/venv/bin/python"
 # ==========================
 def log(*args):
     print(*args, flush=True)
-
-
-# ==========================
-# TICK SIZE LOGIC (CORRECTED)
-# ==========================
-def convert_tick_multiplier_to_decimal(tick_multiplier):
-    """
-    Convert SEM_TICK_SIZE multiplier to actual decimal tick value.
-    SEM_TICK_SIZE is stored as: 1→0.01, 5→0.05, 10→0.10, etc.
-    Formula: decimal_tick = tick_multiplier / 100
-
-    Examples:
-    - tick_multiplier=1 → 0.01
-    - tick_multiplier=5 → 0.05
-    - tick_multiplier=10 → 0.10
-    - tick_multiplier=50 → 0.50
-    """
-    try:
-        multiplier = float(tick_multiplier)
-        if multiplier <= 0:
-            return 0.05  # fallback default
-        decimal_tick = multiplier / 100.0
-        return round(decimal_tick, 4)
-    except (ValueError, TypeError):
-        return 0.05  # fallback default
-
-
-def load_tick_sizes():
-    """
-    Load tick sizes from Dhan instrument master CSV.
-    Converts SEM_TICK_SIZE multiplier to actual decimal values.
-    Returns dict: {symbol: tick_size_decimal}
-    Caches result globally to avoid repeated downloads.
-    """
-    global TICK_SIZE_CACHE
-
-    if TICK_SIZE_CACHE:
-        log(f"✅ Using cached tick sizes ({len(TICK_SIZE_CACHE)} symbols)")
-        return TICK_SIZE_CACHE
-
-    try:
-        log("📥 Loading tick sizes from Dhan instrument master...")
-        url = "https://images.dhan.co/api-data/api-scrip-master.csv"
-        df = pd.read_csv(url, low_memory=False)
-
-        # Filter for NSE equities only
-        df = df[
-            (df['SEM_EXM_EXCH_ID'] == 'NSE') &
-            (df['SEM_SEGMENT'] == 'E')
-            ]
-
-        # Build cache: symbol → tick size (converted to decimal)
-        for _, row in df.iterrows():
-            symbol = str(row.get('SEM_TRADING_SYMBOL', '')).strip().upper()
-            tick_multiplier = row.get('SEM_TICK_SIZE', 5)  # default 5 → 0.05
-
-            # Convert multiplier to decimal tick value
-            tick_decimal = convert_tick_multiplier_to_decimal(tick_multiplier)
-
-            if symbol:
-                TICK_SIZE_CACHE[symbol] = tick_decimal
-
-        log(f"✅ Loaded tick sizes for {len(TICK_SIZE_CACHE)} NSE equity symbols")
-        return TICK_SIZE_CACHE
-
-    except Exception as e:
-        log(f"❌ Failed to load tick sizes from CSV: {e}")
-        log(f"⚠️  Falling back to default tick=0.05 for all symbols")
-        return {}
-
-
-def get_tick_size(symbol):
-    """
-    Get tick size for a symbol (already in decimal form).
-    symbol: e.g., "ONGC" (without .NS) or "ONGC.NS"
-    Returns: float tick size in decimal form (e.g., 0.01, 0.05, 0.10)
-    """
-    global TICK_SIZE_CACHE
-
-    # Load if not already cached
-    if not TICK_SIZE_CACHE:
-        load_tick_sizes()
-
-    symbol_clean = symbol.replace(".NS", "").strip().upper()
-
-    # Return from cache, or default to 0.05
-    tick = TICK_SIZE_CACHE.get(symbol_clean, 0.05)
-
-    log(f"   [{symbol}] Tick size: ₹{tick:.4f}")
-    return tick
-
-
-def round_to_tick(price, tick, mode="up"):
-    """
-    Round price to nearest tick.
-
-    Args:
-        price (float): Price to round
-        tick (float): Tick size in decimal form (e.g., 0.05, 0.01, 0.10)
-        mode (str): "up" for entry (buy above signal),
-                    "down" for SL (sell below signal),
-                    "nearest" for standard rounding
-
-    Returns:
-        float: Price rounded to tick precision
-
-    Examples:
-        round_to_tick(100.47, 0.05, mode="up") → 100.50
-        round_to_tick(100.47, 0.05, mode="down") → 100.45
-        round_to_tick(100.47, 0.01, mode="up") → 100.47
-    """
-    if tick <= 0:
-        return round(price, 4)
-
-    # Calculate number of steps: price / tick
-    steps = price / tick
-
-    if mode == "up":
-        # Ceiling: round up to next tick
-        rounded_price = math.ceil(steps) * tick
-    elif mode == "down":
-        # Floor: round down to previous tick
-        rounded_price = math.floor(steps) * tick
-    else:  # mode == "nearest" or any other
-        # Standard rounding: round to nearest tick
-        rounded_price = round(steps) * tick
-
-    # Return with 4 decimal precision (enough for 0.01 tick size)
-    return round(rounded_price, 4)
 
 
 # ==========================
@@ -268,16 +151,13 @@ def get_token():
 
 
 # ==========================
-# CHECK DHAN FOR OPEN ORDERS (USING CACHED TOKEN)
+# CHECK DHAN FOR OPEN ORDERS
 # ==========================
 def get_dhan_forever_orders(token):
-    """
-    Fetch ALL forever orders from Dhan using /v2/forever/orders endpoint.
-    Uses provided token (already cached from parent)
-    """
+    """Fetch ALL forever orders from Dhan."""
     try:
         if not token:
-            log("❌ No token provided to get_dhan_forever_orders")
+            log("❌ No token provided")
             return []
 
         log(f"📡 GET /v2/forever/orders...")
@@ -308,10 +188,7 @@ def get_dhan_forever_orders(token):
 
 
 def check_for_existing_buy_order(symbol, token):
-    """
-    Check if symbol already has an open BUY order on Dhan.
-    Uses cached token from parent.
-    """
+    """Check if symbol already has an open BUY order on Dhan."""
     try:
         orders = get_dhan_forever_orders(token)
 
@@ -370,51 +247,10 @@ def validate_symbol(symbol_input):
 
 
 # ==========================
-# VALIDATE PRICES WITH TICK SIZES
-# ==========================
-def validate_prices_with_ticks(entry, sl, target, symbol):
-    """
-    Validate that entry, SL, and target are properly aligned with tick sizes.
-    Returns (is_valid, reason)
-    """
-    try:
-        tick = get_tick_size(symbol)
-
-        # Check if prices are aligned to tick
-        entry_aligned = (round(entry / tick) * tick) - entry
-        sl_aligned = (round(sl / tick) * tick) - sl
-        target_aligned = (round(target / tick) * tick) - target
-
-        tolerance = tick * 0.01  # Allow small floating-point errors
-
-        if abs(entry_aligned) > tolerance:
-            log(f"⚠️ Entry {entry} not aligned to tick {tick:.4f}")
-
-        if abs(sl_aligned) > tolerance:
-            log(f"⚠️ SL {sl} not aligned to tick {tick:.4f}")
-
-        if abs(target_aligned) > tolerance:
-            log(f"⚠️ Target {target} not aligned to tick {tick:.4f}")
-
-        # Price order validation
-        if not (sl < entry < target):
-            return False, f"Invalid price order: SL({sl}) < Entry({entry}) < Target({target})"
-
-        return True, "OK"
-
-    except Exception as e:
-        log(f"⚠️ Tick validation error: {e}")
-        return True, "OK"  # Allow if validation fails (fallback)
-
-
-# ==========================
 # EXECUTE ENTRY ENGINE
 # ==========================
 def execute_entry_engine_subprocess(payload, token):
-    """
-    Execute entry_engine.py with token passed via env var.
-    Token is generated ONCE in parent, reused in subprocess.
-    """
+    """Execute entry_engine.py with token passed via env var."""
     try:
         required = ["setup_id", "symbol", "qty", "entry", "sl", "target", "score"]
         for field in required:
@@ -431,12 +267,11 @@ def execute_entry_engine_subprocess(payload, token):
             "TARGET": str(payload["target"]),
             "SCORE": str(payload["score"]),
             "SETUP_ID": str(payload["setup_id"]),
-            "DHAN_TOKEN": token,  # 🔑 PASS TOKEN TO SUBPROCESS!
+            "DHAN_TOKEN": token,
         })
 
         log("🚀 EXECUTING ENTRY ENGINE SUBPROCESS")
         log(f"   Symbol: {payload['symbol']}, Qty: {payload['qty']}")
-        log(f"   Entry: {payload['entry']}, SL: {payload['sl']}, Target: {payload['target']}")
         log(f"   Token passed: {token[:30]}...")
 
         result = subprocess.run(
@@ -457,12 +292,7 @@ def execute_entry_engine_subprocess(payload, token):
 
         stdout = result.stdout or ""
 
-        # Check for success
-        if "✅ ORDER PLACED SUCCESSFULLY" in stdout:
-            log("✅ Order success detected")
-            return True
-
-        if "Order placed successfully" in stdout:
+        if "✅ ORDER PLACED SUCCESSFULLY" in stdout or "Order placed successfully" in stdout:
             log("✅ Order success detected")
             return True
 
@@ -492,6 +322,10 @@ def execute_entry_engine_subprocess(payload, token):
 # ==========================
 app = Flask(__name__)
 
+
+# ==========================
+# WEBHOOK ROUTES
+# ==========================
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -572,13 +406,9 @@ def webhook():
             send_telegram(f"❌ Invalid SL/target")
             return "OK"
 
-        # Validate prices with tick alignment
-        log(f"\n🔍 Validating prices with tick sizes...")
-        is_valid, reason = validate_prices_with_ticks(entry, sl, target, symbol)
-
-        if not is_valid:
-            log(f"❌ {reason}")
-            send_telegram(f"❌ Price validation failed: {reason}")
+        if not (sl < entry < target):
+            log(f"❌ Invalid price order")
+            send_telegram(f"❌ Invalid price order")
             return "OK"
 
         if not validate_symbol(symbol):
@@ -643,6 +473,137 @@ def webhook():
         return "OK"
 
 
+# ==========================
+# DASHBOARD ROUTES
+# ==========================
+
+@app.route("/api/dashboard/open-trades", methods=["GET"])
+def get_open_trades():
+    """Get all open trades with live prices and metrics."""
+    try:
+        trades = dashboard.get_open_trades_dashboard()
+        summary = dashboard.get_dashboard_summary()
+
+        return jsonify({
+            "success": True,
+            "timestamp": summary['timestamp'],
+            "summary": summary,
+            "trades": trades,
+        }), 200
+
+    except Exception as e:
+        log(f"❌ Dashboard error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/dashboard/update-trade", methods=["POST"])
+def update_trade_field():
+    """Update an editable field in a trade."""
+    try:
+        data = request.get_json()
+
+        setup_id = data.get('setup_id')
+        field_name = data.get('field')
+        value = data.get('value')
+
+        if not all([setup_id, field_name, value is not None]):
+            return jsonify({"success": False, "error": "Missing required fields"}), 400
+
+        field_mapping = {
+            'entry_price_executed': 'entry_price_executed',
+            'entry_price': 'entry_price_executed',
+            'sl_price': 'sl_price',
+            'sl': 'sl_price',
+            'target_price': 'target_price',
+            'target': 'target_price',
+        }
+
+        db_field = field_mapping.get(field_name)
+
+        if not db_field:
+            return jsonify({"success": False, "error": f"Field '{field_name}' is not editable"}), 400
+
+        success, message = dashboard.update_trade_field(setup_id, db_field, value)
+
+        if success:
+            return jsonify({"success": True, "message": message}), 200
+        else:
+            return jsonify({"success": False, "error": message}), 400
+
+    except Exception as e:
+        log(f"❌ Update error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/dashboard/update-safety-sl", methods=["POST"])
+def update_safety_sl():
+    """Update safety SL level (8% below entry price)."""
+    try:
+        data = request.get_json()
+
+        setup_id = data.get('setup_id')
+        safety_sl_pct = data.get('safety_sl_pct', 0.92)
+
+        if not setup_id:
+            return jsonify({"success": False, "error": "Missing setup_id"}), 400
+
+        success, message = dashboard.update_safety_sl(setup_id, safety_sl_pct)
+
+        if success:
+            return jsonify({"success": True, "message": message}), 200
+        else:
+            return jsonify({"success": False, "error": message}), 400
+
+    except Exception as e:
+        log(f"❌ Safety SL error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/dashboard/sync-entry-prices", methods=["POST"])
+def sync_entry_prices():
+    """Sync entry prices from database with actual Dhan orders."""
+    try:
+        token = get_token()
+
+        if not token:
+            return jsonify({"success": False, "error": "Failed to generate Dhan token"}), 401
+
+        sync_entry_price_with_dhan(token)
+
+        return jsonify({"success": True, "message": "Entry prices synced with Dhan"}), 200
+
+    except Exception as e:
+        log(f"❌ Sync error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/dashboard/summary", methods=["GET"])
+def get_summary():
+    """Get dashboard summary stats."""
+    try:
+        summary = dashboard.get_dashboard_summary()
+        return jsonify({"success": True, "summary": summary}), 200
+
+    except Exception as e:
+        log(f"❌ Summary error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# Serve dashboard HTML
+@app.route("/dashboard")
+def serve_dashboard():
+    """Serve the dashboard HTML page."""
+    try:
+        return send_file("static/dashboard.html", mimetype="text/html")
+    except Exception as e:
+        log(f"❌ Dashboard serve error: {e}")
+        return "Dashboard HTML not found", 404
+
+
+# ==========================
+# HEALTH CHECK
+# ==========================
+
 @app.route("/", methods=["GET"])
 def home():
     return "Webhook running"
@@ -653,19 +614,19 @@ def health():
     return {"status": "ok"}, 200
 
 
+# ==========================
+# MAIN
+# ==========================
+
 if __name__ == "__main__":
     log("=" * 80)
-    log("🚀 TELEGRAM WEBHOOK (app.py) v6 - FINAL (WITH TICK SIZE LOGIC)")
+    log("🚀 TELEGRAM WEBHOOK + DASHBOARD (app.py v7) - FINAL")
     log("=" * 80)
-    log("✅ Token generated ONCE in parent")
-    log("✅ Token passed to subprocess via env var")
-    log("✅ NO double generation = NO rate limit!")
-    log("✅ Tick sizes loaded from Dhan CSV (SEM_TICK_SIZE)")
-    log("✅ Prices validated against tick precision")
+    log("✅ Webhook on /webhook")
+    log("✅ Dashboard API on /api/dashboard/*")
+    log("✅ Dashboard UI on /dashboard")
+    log("✅ Token generated ONCE and reused")
+    log("✅ Live prices from Dhan API")
     log("=" * 80)
-
-    # Pre-load tick sizes at startup
-    log("\n📥 Pre-loading tick sizes...")
-    load_tick_sizes()
 
     app.run(host="0.0.0.0", port=5000, debug=False)
