@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OHM Open Trades Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #312e81 50%, #1e1b4b 100%);
+            color: #e2e8f0;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1800px;
+            margin: 0 auto;
+        }
+
+        /* Header */
+        .header {
+            background: rgba(0, 0, 0, 0.4);
+            border-bottom: 1px solid rgba(147, 51, 234, 0.2);
+            backdrop-filter: blur(10px);
+            padding: 20px;
+            margin-bottom: 30px;
+            border-radius: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .logo {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, #a855f7, #ec4899);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+        }
+
+        .header-title h1 {
+            font-size: 28px;
+            font-weight: bold;
+            color: #fff;
+            margin-bottom: 4px;
+        }
+
+        .header-title p {
+            color: #c084fc;
+            font-size: 12px;
+        }
+
+        .header-right {
+            text-align: right;
+        }
+
+        .header-right p {
+            color: #c084fc;
+            font-size: 12px;
+        }
+
+        .refresh-btn {
+            background: linear-gradient(135deg, #a855f7, #ec4899);
+            border: none;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+            font-size: 12px;
+            margin-left: 10px;
+            transition: all 0.3s ease;
+        }
+
+        .refresh-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(168, 85, 247, 0.4);
+        }
+
+        /* Summary Cards */
+        .summary-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 30px;
+        }
+
+        .summary-card {
+            background: linear-gradient(135deg, rgba(30, 27, 75, 0.6), rgba(15, 23, 42, 0.6));
+            border: 1px solid rgba(147, 51, 234, 0.2);
+            border-radius: 12px;
+            padding: 20px;
+            backdrop-filter: blur(10px);
+        }
+
+        .summary-label {
+            color: #c084fc;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+
+        .summary-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #fff;
+        }
+
+        .summary-value.positive {
+            color: #4ade80;
+        }
+
+        .summary-value.negative {
+            color: #f87171;
+        }
+
+        /* Table Wrapper */
+        .table-wrapper {
+            background: linear-gradient(135deg, rgba(30, 27, 75, 0.6), rgba(15, 23, 42, 0.6));
+            border: 1px solid rgba(147, 51, 234, 0.2);
+            border-radius: 12px;
+            padding: 20px;
+            backdrop-filter: blur(10px);
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        thead {
+            background: rgba(147, 51, 234, 0.1);
+            border-bottom: 2px solid rgba(147, 51, 234, 0.3);
+        }
+
+        th {
+            padding: 12px;
+            text-align: left;
+            color: #c084fc;
+            font-weight: 600;
+            white-space: nowrap;
+            border-right: 1px solid rgba(147, 51, 234, 0.1);
+        }
+
+        th:last-child {
+            border-right: none;
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid rgba(147, 51, 234, 0.1);
+            border-right: 1px solid rgba(147, 51, 234, 0.05);
+        }
+
+        td:last-child {
+            border-right: none;
+        }
+
+        tbody tr {
+            transition: all 0.3s ease;
+        }
+
+        tbody tr:hover {
+            background: rgba(147, 51, 234, 0.1);
+        }
+
+        tbody tr.profit-row {
+            border-left: 3px solid #4ade80;
+        }
+
+        tbody tr.loss-row {
+            border-left: 3px solid #f87171;
+        }
+
+        /* Editable Fields */
+        .editable {
+            position: relative;
+            cursor: pointer;
+            padding: 8px 12px;
+            border-radius: 4px;
+            transition: all 0.2s ease;
+        }
+
+        .editable:hover {
+            background: rgba(168, 85, 247, 0.2);
+            border: 1px solid rgba(168, 85, 247, 0.3);
+        }
+
+        .edit-icon {
+            font-size: 10px;
+            color: #a855f7;
+            margin-left: 4px;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+
+        .editable:hover .edit-icon {
+            opacity: 1;
+        }
+
+        /* Edit Input */
+        .edit-input {
+            width: 100%;
+            background: rgba(0, 0, 0, 0.3);
+            border: 2px solid #a855f7;
+            color: #e2e8f0;
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+
+        .edit-input:focus {
+            outline: none;
+            border-color: #ec4899;
+            box-shadow: 0 0 8px rgba(236, 72, 153, 0.3);
+        }
+
+        /* Action Buttons */
+        .action-buttons {
+            display: flex;
+            gap: 6px;
+        }
+
+        .btn-save, .btn-cancel, .btn-safety {
+            padding: 4px 8px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+
+        .btn-save {
+            background: #4ade80;
+            color: #000;
+        }
+
+        .btn-save:hover {
+            background: #22c55e;
+        }
+
+        .btn-cancel {
+            background: #6b7280;
+            color: #fff;
+        }
+
+        .btn-cancel:hover {
+            background: #4b5563;
+        }
+
+        .btn-safety {
+            background: #f59e0b;
+            color: #000;
+            font-size: 10px;
+        }
+
+        .btn-safety:hover {
+            background: #d97706;
+        }
+
+        /* Value Display */
+        .value-display {
+            font-weight: 500;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .value-positive {
+            color: #4ade80;
+        }
+
+        .value-negative {
+            color: #f87171;
+        }
+
+        /* Symbols */
+        .symbol-cell {
+            font-weight: 600;
+            color: #fff;
+            font-size: 14px;
+        }
+
+        /* Loading State */
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #9ca3af;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(147, 51, 234, 0.2);
+            border-top-color: #a855f7;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Empty State */
+        .empty-state {
+            background: linear-gradient(135deg, rgba(30, 27, 75, 0.6), rgba(15, 23, 42, 0.6));
+            border: 1px dashed rgba(147, 51, 234, 0.3);
+            border-radius: 12px;
+            padding: 48px 20px;
+            text-align: center;
+            color: #9ca3af;
+        }
+
+        /* Tooltip */
+        .tooltip {
+            position: relative;
+            display: inline-block;
+            cursor: help;
+        }
+
+        .tooltip .tooltiptext {
+            visibility: hidden;
+            width: 200px;
+            background-color: #1f2937;
+            color: #e2e8f0;
+            text-align: center;
+            padding: 8px;
+            border-radius: 6px;
+            position: absolute;
+            z-index: 1;
+            bottom: 125%;
+            left: 50%;
+            margin-left: -100px;
+            opacity: 0;
+            transition: opacity 0.3s;
+            font-size: 11px;
+            border: 1px solid rgba(147, 51, 234, 0.2);
+        }
+
+        .tooltip:hover .tooltiptext {
+            visibility: visible;
+            opacity: 1;
+        }
+
+        /* Notification */
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #4ade80;
+            color: #000;
+            padding: 16px 24px;
+            border-radius: 8px;
+            font-weight: 600;
+            z-index: 1000;
+            animation: slideIn 0.3s ease;
+        }
+
+        .notification.error {
+            background: #f87171;
+            color: #fff;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <!-- Header -->
+    <div class="header">
+        <div class="header-left">
+            <div class="logo">📊</div>
+            <div class="header-title">
+                <h1>Open Trades Dashboard</h1>
+                <p>Live Prices • Editable Fields • Real-time Sync</p>
+            </div>
+        </div>
+        <div class="header-right">
+            <p>Last updated: <span id="updateTime">--:--:--</span></p>
+            <button class="refresh-btn" onclick="refreshDashboard()">🔄 Refresh</button>
+        </div>
+    </div>
+
+    <!-- Summary Cards -->
+    <div class="summary-cards">
+        <div class="summary-card">
+            <div class="summary-label">Total Trades</div>
+            <div class="summary-value" id="totalTrades">0</div>
+        </div>
+        <div class="summary-card">
+            <div class="summary-label">Total P&L</div>
+            <div class="summary-value" id="totalPnL">₹0</div>
+        </div>
+        <div class="summary-card">
+            <div class="summary-label">Avg P&L %</div>
+            <div class="summary-value" id="avgPnLPct">0%</div>
+        </div>
+        <div class="summary-card">
+            <div class="summary-label">Total Allocation</div>
+            <div class="summary-value" id="totalAllocation">₹0</div>
+        </div>
+        <div class="summary-card">
+            <div class="summary-label">Win Rate</div>
+            <div class="summary-value" id="winRate">0%</div>
+        </div>
+    </div>
+
+    <!-- Loading State -->
+    <div id="loadingState" class="loading">
+        <div class="spinner"></div>
+        <p>Loading dashboard...</p>
+    </div>
+
+    <!-- Dashboard Content -->
+    <div id="dashboardContent" style="display: none;">
+        <!-- Table -->
+        <div class="table-wrapper">
+            <table id="tradesTable">
+                <thead>
+                <tr>
+                    <th>Symbol</th>
+                    <th class="tooltip">Entry Price <span class="tooltiptext">Editable: Buy-in price</span></th>
+                    <th class="tooltip">Exit Price <span class="tooltiptext">Current live price</span></th>
+                    <th class="tooltip">SL <span class="tooltiptext">Editable: Stop Loss price</span></th>
+                    <th class="tooltip">Target <span class="tooltiptext">Editable: Target price</span></th>
+                    <th>Qty</th>
+                    <th>Allocation</th>
+                    <th class="tooltip">Safety SL (8%) <span class="tooltiptext">Editable: Safety level</span></th>
+                    <th class="tooltip">RR% <span class="tooltiptext">Risk:Reward Ratio</span></th>
+                    <th>Chg. %</th>
+                    <th>Price</th>
+                    <th>P&L</th>
+                    <th>Actions</th>
+                </tr>
+                </thead>
+                <tbody id="tradesBody"></tbody>
+            </table>
+        </div>
+
+        <!-- Empty State -->
+        <div id="emptyState" class="empty-state" style="display: none;">
+            <p>No open trades found.</p>
+        </div>
+    </div>
+</div>
+
+<!-- Notification -->
+<div id="notification" class="notification" style="display: none;"></div>
+
+<script>
+    const API_BASE = '/api';  // Update this to your API endpoint
+
+    // ==========================
+    // FETCH DASHBOARD DATA
+    // ==========================
+    async function fetchDashboard() {
+        try {
+            document.getElementById('loadingState').style.display = 'block';
+            document.getElementById('dashboardContent').style.display = 'none';
+
+            const response = await fetch(`${API_BASE}/dashboard/open-trades`);
+            const data = await response.json();
+
+            renderDashboard(data);
+
+            document.getElementById('loadingState').style.display = 'none';
+            document.getElementById('dashboardContent').style.display = 'block';
+            updateTime();
+        } catch (error) {
+            console.error('Error fetching dashboard:', error);
+            showNotification('Error loading dashboard', 'error');
+            document.getElementById('loadingState').innerHTML =
+                '<p style="color: #f87171;">Error loading dashboard. Check API connection.</p>';
+        }
+    }
+
+    // ==========================
+    // RENDER DASHBOARD
+    // ==========================
+    function renderDashboard(data) {
+        const trades = data.trades || [];
+        const summary = data.summary || {};
+
+        // Update summary cards
+        document.getElementById('totalTrades').textContent = summary.total_trades || 0;
+        document.getElementById('totalPnL').textContent = formatCurrency(summary.total_pnl || 0);
+        document.getElementById('totalPnL').className = `summary-value ${getColorClass(summary.total_pnl)}`;
+        document.getElementById('avgPnLPct').textContent = `${(summary.total_pnl_pct || 0).toFixed(2)}%`;
+        document.getElementById('avgPnLPct').className = `summary-value ${getColorClass(summary.total_pnl_pct)}`;
+        document.getElementById('totalAllocation').textContent = formatCurrency(summary.total_allocation || 0);
+        document.getElementById('winRate').textContent = `${(summary.win_rate_pct || 0).toFixed(1)}%`;
+
+        // Render trades table
+        const tbody = document.getElementById('tradesBody');
+        const emptyState = document.getElementById('emptyState');
+
+        if (trades.length === 0) {
+            tbody.innerHTML = '';
+            emptyState.style.display = 'block';
+            return;
+        }
+
+        emptyState.style.display = 'none';
+        tbody.innerHTML = trades.map(trade => createTradeRow(trade)).join('');
+    }
+
+    // ==========================
+    // CREATE TRADE ROW
+    // ==========================
+    function createTradeRow(trade) {
+        const rowClass = trade.pnl >= 0 ? 'profit-row' : 'loss-row';
+        const pnlClass = trade.pnl >= 0 ? 'value-positive' : 'value-negative';
+
+        return `
+            <tr class="${rowClass}">
+                <td class="symbol-cell">${trade.symbol}</td>
+                <td><div class="editable" onclick="startEdit(this, '${trade.setup_id}', 'entry_price_executed', ${trade.entry_price})">
+                    <span class="value-display">₹${trade.entry_price.toFixed(2)}</span>
+                    <span class="edit-icon">✎</span>
+                </div></td>
+                <td><div class="value-display">₹${trade.exit_price.toFixed(2)}</div></td>
+                <td><div class="editable" onclick="startEdit(this, '${trade.setup_id}', 'sl_price', ${trade.sl})">
+                    <span class="value-display">₹${trade.sl.toFixed(2)}</span>
+                    <span class="edit-icon">✎</span>
+                </div></td>
+                <td><div class="editable" onclick="startEdit(this, '${trade.setup_id}', 'target_price', ${trade.target_price})">
+                    <span class="value-display">₹${trade.target_price.toFixed(2)}</span>
+                    <span class="edit-icon">✎</span>
+                </div></td>
+                <td><span class="value-display">${trade.qty}</span></td>
+                <td><span class="value-display">₹${trade.allocation.toLocaleString('en-IN', {maximumFractionDigits: 0})}</span></td>
+                <td><div class="editable" onclick="startEdit(this, '${trade.setup_id}', 'safety_sl_pct', 0.92)">
+                    <span class="value-display">₹${trade.safety_sl_8pct.toFixed(2)}</span>
+                    <span class="edit-icon">✎</span>
+                </div></td>
+                <td><span class="value-display">${trade.rr_pct.toFixed(2)}</span></td>
+                <td><span class="value-display ${pnlClass}">${trade.chg_pct.toFixed(2)}%</span></td>
+                <td><span class="value-display">₹${trade.price.toFixed(2)}</span></td>
+                <td><span class="value-display ${pnlClass}">₹${trade.pnl.toLocaleString('en-IN', {maximumFractionDigits: 0})}</span></td>
+                <td>
+                    <button class="btn-safety" onclick="updateSafetySL('${trade.setup_id}', '${trade.symbol}')">
+                        Set 8% SL
+                    </button>
+                </td>
+            </tr>
+        `;
+    }
+
+    // ==========================
+    // EDITABLE FIELD LOGIC
+    // ==========================
+    function startEdit(element, setupId, fieldName, currentValue) {
+        if (element.querySelector('input')) return; // Already editing
+
+        const cell = element;
+        const oldHtml = cell.innerHTML;
+
+        cell.innerHTML = `
+            <div class="action-buttons">
+                <input type="number" class="edit-input" value="${currentValue}" step="0.01" id="editInput" autofocus>
+                <button class="btn-save" onclick="saveEdit(this, '${setupId}', '${fieldName}')">✓</button>
+                <button class="btn-cancel" onclick="cancelEdit(this, '${setupId}')">✕</button>
+            </div>
+        `;
+
+        document.getElementById('editInput').focus();
+        document.getElementById('editInput').select();
+    }
+
+    function saveEdit(button, setupId, fieldName) {
+        const input = button.parentElement.querySelector('input');
+        const newValue = parseFloat(input.value);
+
+        if (!newValue || newValue <= 0) {
+            showNotification('Invalid value', 'error');
+            return;
+        }
+
+        updateTradeField(setupId, fieldName, newValue);
+    }
+
+    function cancelEdit(button, setupId) {
+        refreshDashboard();
+    }
+
+    // ==========================
+    // API CALLS
+    // ==========================
+    async function updateTradeField(setupId, fieldName, value) {
+        try {
+            const response = await fetch(`${API_BASE}/dashboard/update-trade`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    setup_id: setupId,
+                    field: fieldName,
+                    value: value
+                })
+            });
+
+            if (response.ok) {
+                showNotification('✅ Trade updated successfully', 'success');
+                setTimeout(() => refreshDashboard(), 500);
+            } else {
+                showNotification('❌ Failed to update trade', 'error');
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            showNotification('Error updating trade', 'error');
+        }
+    }
+
+    async function updateSafetySL(setupId, symbol) {
+        try {
+            const response = await fetch(`${API_BASE}/dashboard/update-safety-sl`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    setup_id: setupId,
+                    safety_sl_pct: 0.92
+                })
+            });
+
+            if (response.ok) {
+                showNotification(`✅ ${symbol} SL updated to 8% level`, 'success');
+                setTimeout(() => refreshDashboard(), 500);
+            } else {
+                showNotification(`❌ Failed to update ${symbol}`, 'error');
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            showNotification('Error updating SL', 'error');
+        }
+    }
+
+    // ==========================
+    // UTILITIES
+    // ==========================
+    function formatCurrency(value) {
+        return new Intl.NumberFormat('en-IN', {
+            style: 'currency',
+            currency: 'INR',
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 2,
+        }).format(value || 0);
+    }
+
+    function getColorClass(value) {
+        if (value > 0) return 'positive';
+        if (value < 0) return 'negative';
+        return '';
+    }
+
+    function updateTime() {
+        const now = new Date();
+        document.getElementById('updateTime').textContent = now.toLocaleTimeString('en-IN');
+    }
+
+    function refreshDashboard() {
+        fetchDashboard();
+    }
+
+    function showNotification(message, type = 'success') {
+        const notif = document.getElementById('notification');
+        notif.textContent = message;
+        notif.className = `notification ${type === 'error' ? 'error' : ''}`;
+        notif.style.display = 'block';
+
+        setTimeout(() => {
+            notif.style.display = 'none';
+        }, 3000);
+    }
+
+    // Initial load
+    fetchDashboard();
+
+    // Auto-refresh every 30 seconds
+    setInterval(fetchDashboard, 30000);
+
+    // Update time every second
+    setInterval(updateTime, 1000);
+</script>
+</body>
+</html>
