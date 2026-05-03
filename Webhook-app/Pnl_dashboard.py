@@ -1,342 +1,507 @@
 # ==============================================
-# 📊 P/L DASHBOARD — Query & Reporting Module
-# Provides insights into trading performance
-# Works with the dual-table architecture
+# 📊 ENHANCED P/L DASHBOARD — Query & Reporting Module
+# With Editable Fields & Live Dhan Data
+# All columns match the screenshot requirements
 # ==============================================
 
 import sqlite3
 import json
 from datetime import datetime, timezone, timedelta
 import os
+import requests
+import pyotp
+from threading import Thread
+import pandas as pd
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades.db")
 
+# ==========================
+# DHAN API CONFIG
+# ==========================
+DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
+DHAN_PIN = os.getenv("DHAN_PIN")
+DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
+INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
 
-class PnLDashboard:
-    """P/L tracking and reporting dashboard."""
+CURRENT_TOKEN = None
+TOKEN_EXPIRY = None
+
+session = requests.Session()
+LIVE_PRICES_CACHE = {}
+
+
+# ==========================
+# LOGGER
+# ==========================
+def log(*args):
+    print(*args, flush=True)
+
+
+# ==========================
+# TOKEN MANAGEMENT
+# ==========================
+def get_dhan_token():
+    global CURRENT_TOKEN, TOKEN_EXPIRY
+
+    now = datetime.now(timezone.utc)
+
+    if CURRENT_TOKEN and TOKEN_EXPIRY and now < TOKEN_EXPIRY:
+        return CURRENT_TOKEN
+
+    try:
+        log("🔐 Generating Dhan token...")
+        totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
+
+        response = session.post(
+            "https://auth.dhan.co/app/generateAccessToken",
+            params={
+                "dhanClientId": DHAN_CLIENT_ID,
+                "pin": DHAN_PIN,
+                "totp": totp
+            },
+            timeout=15
+        )
+
+        if response.status_code != 200:
+            log(f"❌ Token generation failed: {response.status_code}")
+            return None
+
+        data = response.json()
+        token = data.get("accessToken")
+
+        if not token:
+            log(f"❌ No accessToken in response")
+            return None
+
+        CURRENT_TOKEN = token
+        TOKEN_EXPIRY = datetime.now(timezone.utc) + timedelta(hours=23)
+
+        log(f"✅ Token generated: {token[:30]}...")
+        return token
+
+    except Exception as e:
+        log(f"❌ Token generation error: {e}")
+        return None
+
+
+# ==========================
+# LOAD INSTRUMENTS (SECURITY ID MAPPING)
+# ==========================
+def load_instruments():
+    try:
+        log("📥 Loading instruments...")
+        df = pd.read_csv(INSTRUMENT_URL, low_memory=False)
+        df = df[
+            (df['SEM_EXM_EXCH_ID'] == 'NSE') &
+            (df['SEM_SEGMENT'] == 'E')
+            ]
+        df['SEM_TRADING_SYMBOL'] = df['SEM_TRADING_SYMBOL'].astype(str).str.strip().str.upper()
+
+        instrument_map = {}
+        for _, row in df.iterrows():
+            symbol = row['SEM_TRADING_SYMBOL']
+            sec_id = str(row['SEM_SMST_SECURITY_ID'])
+            instrument_map[symbol] = sec_id
+
+        log(f"✅ Loaded {len(instrument_map)} instruments")
+        return instrument_map
+
+    except Exception as e:
+        log(f"❌ Failed to load instruments: {e}")
+        return {}
+
+
+INSTRUMENTS = load_instruments()
+
+
+# ==========================
+# GET LIVE PRICES FROM DHAN
+# ==========================
+def get_live_price(symbol, security_id=None):
+    """
+    Fetch live price for a symbol from Dhan API.
+    Uses cache to avoid repeated API calls.
+    """
+    try:
+        # Check cache (5-minute expiry)
+        if symbol in LIVE_PRICES_CACHE:
+            cached_data = LIVE_PRICES_CACHE[symbol]
+            if datetime.now(timezone.utc) - cached_data['timestamp'] < timedelta(minutes=5):
+                return cached_data['price']
+
+        token = get_dhan_token()
+        if not token:
+            return None
+
+        # Get security ID if not provided
+        if not security_id:
+            security_id = INSTRUMENTS.get(symbol.replace('.NS', '').upper())
+
+        if not security_id:
+            log(f"⚠️ Security ID not found for {symbol}")
+            return None
+
+        # Fetch live price from Dhan API
+        r = session.get(
+            f"https://api.dhan.co/v2/quotes",
+            headers={"access-token": token},
+            params={
+                "mode": "LTP",
+                "exchangeTokens": f"NSE_EQ|{security_id}"
+            },
+            timeout=10
+        )
+
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, list) and len(data) > 0:
+                price = data[0].get('LTP') or data[0].get('price')
+
+                # Cache the price
+                LIVE_PRICES_CACHE[symbol] = {
+                    'price': price,
+                    'timestamp': datetime.now(timezone.utc)
+                }
+
+                return price
+
+        return None
+
+    except Exception as e:
+        log(f"⚠️ Error fetching price for {symbol}: {e}")
+        return None
+
+
+# ==========================
+# SYNC ENTRY PRICE WITH DHAN ORDERS
+# ==========================
+def sync_entry_price_with_dhan(token):
+    """
+    Cross-check entry prices from DB against actual Dhan orders.
+    Update if mismatch found.
+    """
+    try:
+        log("🔄 Syncing entry prices with Dhan orders...")
+
+        r = session.get(
+            "https://api.dhan.co/v2/forever/orders",
+            headers={"access-token": token},
+            timeout=30
+        )
+
+        if r.status_code != 200:
+            log(f"⚠️ Failed to fetch Dhan orders: {r.status_code}")
+            return
+
+        dhan_orders = r.json()
+        if not isinstance(dhan_orders, list):
+            return
+
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+
+        for order in dhan_orders:
+            if order.get('transactionType') != 'BUY':
+                continue
+
+            symbol = order.get('tradingSymbol', '').upper()
+            dhan_entry = order.get('price')
+            setup_id = order.get('correlationId')
+
+            # Find matching trade in DB
+            cursor.execute("""
+                SELECT setup_id, entry_price_executed
+                FROM executed_orders
+                WHERE symbol = ? AND status = 'FILLED'
+                LIMIT 1
+            """, (symbol,))
+
+            result = cursor.fetchone()
+            if result:
+                db_setup_id, db_entry = result
+                if dhan_entry and db_entry and abs(dhan_entry - db_entry) > 0.01:
+                    log(f"⚠️ Entry price mismatch for {symbol}: DB={db_entry}, Dhan={dhan_entry}")
+                    log(f"   Updating DB to Dhan price...")
+
+                    cursor.execute("""
+                        UPDATE executed_orders
+                        SET entry_price_executed = ?
+                        WHERE symbol = ? AND status = 'FILLED'
+                    """, (dhan_entry, symbol))
+
+                    conn.commit()
+
+        conn.close()
+        log("✅ Sync complete")
+
+    except Exception as e:
+        log(f"❌ Sync error: {e}")
+
+
+# ==========================
+# ENHANCED DASHBOARD CLASS
+# ==========================
+class EnhancedPnLDashboard:
+    """Enhanced P/L dashboard with live prices and editable fields."""
 
     def __init__(self, db_path=DB_FILE):
         self.db = db_path
 
     # ==========================
-    # PENDING ORDERS REPORTS
+    # OPEN POSITIONS WITH LIVE DATA
     # ==========================
-    def get_pending_summary(self):
-        """Summary of orders awaiting Dhan confirmation."""
-        with sqlite3.connect(self.db) as conn:
-            rows = conn.execute("""
-                SELECT 
-                    COUNT(*) as total,
-                    SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) as pending,
-                    SUM(CASE WHEN status='FAILED' THEN 1 ELSE 0 END) as failed,
-                    SUM(qty * entry_price) as total_value
-                FROM pending_orders
-            """).fetchone()
+    def get_open_trades_dashboard(self):
+        """
+        Get all open trades with live prices and calculated metrics.
+        Returns list of trades with all dashboard columns.
+        """
+        try:
+            with sqlite3.connect(self.db) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute("""
+                    SELECT 
+                        setup_id,
+                        symbol,
+                        qty_executed as qty,
+                        entry_price_executed as entry_price,
+                        sl_price,
+                        target_price,
+                        base_stage,
+                        placed_at,
+                        dhan_order_id
+                    FROM executed_orders
+                    WHERE status = 'FILLED'
+                    ORDER BY placed_at DESC
+                """).fetchall()
 
-        return {
-            "total": rows[0] or 0,
-            "pending": rows[1] or 0,
-            "failed": rows[2] or 0,
-            "total_value_inr": round(rows[3] or 0, 2),
-        }
+            trades = []
+            for row in rows:
+                symbol = row['symbol']
+                entry_price = row['entry_price']
+                qty = row['qty']
+                sl_price = row['sl_price']
+                target_price = row['target_price']
 
-    def get_pending_orders(self, status="PENDING"):
-        """List pending orders."""
-        with sqlite3.connect(self.db) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute("""
-                SELECT setup_id, symbol, qty, entry_price, sl_price, target_price,
-                       score, base_stage, placed_at, attempt_count, last_error
-                FROM pending_orders
-                WHERE status = ?
-                ORDER BY placed_at DESC
-            """, (status,)).fetchall()
+                # Fetch live price from Dhan
+                current_price = get_live_price(symbol)
+                if current_price is None:
+                    current_price = entry_price  # Fallback to entry price
 
-        return [dict(r) for r in rows]
+                # Calculate all metrics
+                allocation = entry_price * qty  # Capital allocated
+                safety_sl_8pct = entry_price * 0.92  # 8% safety level
+                rr_ratio = (target_price - entry_price) / (entry_price - sl_price) if (entry_price - sl_price) > 0 else 0
+                chg_pct = ((current_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
+                pnl = (current_price - entry_price) * qty
+                pnl_pct = chg_pct
 
-    # ==========================
-    # EXECUTED ORDERS REPORTS
-    # ==========================
-    def get_executed_summary(self):
-        """Summary of filled/closed orders."""
-        with sqlite3.connect(self.db) as conn:
-            rows = conn.execute("""
-                SELECT 
-                    COUNT(*) as total,
-                    SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) as open_count,
-                    SUM(CASE WHEN status='FILLED' THEN 1 ELSE 0 END) as filled_count,
-                    SUM(CASE WHEN status LIKE 'CLOSED_%' THEN 1 ELSE 0 END) as closed_count,
-                    SUM(qty_ordered) as total_qty,
-                    SUM(qty_executed) as total_qty_executed,
-                    SUM(pnl) as total_pnl,
-                    AVG(pnl_percent) as avg_pnl_pct,
-                    SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
-                    SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losing_trades
-                FROM executed_orders
-            """).fetchone()
+                trades.append({
+                    "setup_id": row['setup_id'],
+                    "symbol": symbol,
+                    "entry_price": round(entry_price, 2),
+                    "exit_price": round(current_price, 2),  # Current price (live)
+                    "sl": round(sl_price, 2),
+                    "target_price": round(target_price, 2),
+                    "qty": qty,
+                    "allocation": round(allocation, 2),
+                    "safety_sl_8pct": round(safety_sl_8pct, 2),
+                    "rr_pct": round(rr_ratio, 2),
+                    "chg_pct": round(chg_pct, 2),
+                    "price": round(current_price, 2),
+                    "pnl": round(pnl, 2),
+                    "pnl_pct": round(pnl_pct, 2),
+                    "dhan_order_id": row['dhan_order_id'],
+                    "placed_at": row['placed_at'],
+                })
 
-        return {
-            "total_orders": rows[0] or 0,
-            "open": rows[1] or 0,
-            "filled": rows[2] or 0,
-            "closed": rows[3] or 0,
-            "total_qty": rows[4] or 0,
-            "total_qty_executed": rows[5] or 0,
-            "total_pnl_inr": round(rows[6] or 0, 2),
-            "avg_pnl_percent": round(rows[7] or 0, 2),
-            "win_count": rows[8] or 0,
-            "loss_count": rows[9] or 0,
-            "win_rate_pct": round((rows[8] or 0) / ((rows[8] or 0) + (rows[9] or 0)) * 100, 2) if (rows[8] or 0) + (rows[9] or 0) > 0 else 0,
-        }
+            return trades
 
-    def get_open_positions(self):
-        """Current open positions with unrealized P/L."""
-        with sqlite3.connect(self.db) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute("""
-                SELECT 
-                    setup_id, symbol, dhan_order_id, qty_executed, entry_price_executed,
-                    current_price, sl_price, target_price, pnl, pnl_percent,
-                    placed_at, current_price_update_at
-                FROM executed_orders
-                WHERE status = 'FILLED'
-                ORDER BY placed_at DESC
-            """).fetchall()
-
-        return [dict(r) for r in rows]
-
-    def get_closed_positions(self, limit=50):
-        """Recently closed trades with realized P/L."""
-        with sqlite3.connect(self.db) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute("""
-                SELECT 
-                    setup_id, symbol, qty_executed, entry_price_executed,
-                    current_price, pnl, pnl_percent, status,
-                    placed_at, current_price_update_at
-                FROM executed_orders
-                WHERE status LIKE 'CLOSED_%'
-                ORDER BY current_price_update_at DESC
-                LIMIT ?
-            """, (limit,)).fetchall()
-
-        return [dict(r) for r in rows]
+        except Exception as e:
+            log(f"❌ Error fetching open trades: {e}")
+            return []
 
     # ==========================
-    # PERFORMANCE ANALYTICS
+    # UPDATE EDITABLE FIELDS
     # ==========================
-    def get_daily_pnl(self, days=30):
-        """Daily P/L aggregation."""
-        with sqlite3.connect(self.db) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute("""
-                SELECT 
-                    DATE(executed_at) as trade_date,
-                    COUNT(*) as trade_count,
-                    SUM(pnl) as daily_pnl,
-                    AVG(pnl_percent) as avg_pnl_pct,
-                    SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins
-                FROM executed_orders
-                WHERE executed_at IS NOT NULL
-                  AND DATE(executed_at) >= DATE('now', '-' || ? || ' days')
-                GROUP BY trade_date
-                ORDER BY trade_date DESC
-            """, (days,)).fetchall()
+    def update_trade_field(self, setup_id, field_name, new_value):
+        """
+        Update an editable field in the database.
+        Allowed fields: entry_price_executed, exit_price, sl_price, target_price
+        """
+        allowed_fields = [
+            "entry_price_executed",
+            "sl_price",
+            "target_price"
+        ]
 
-        return [dict(r) for r in rows]
+        if field_name not in allowed_fields:
+            return False, f"Field '{field_name}' is not editable"
 
-    def get_symbol_performance(self):
-        """P/L by symbol (realized trades only)."""
-        with sqlite3.connect(self.db) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute("""
-                SELECT 
-                    symbol,
-                    COUNT(*) as trades,
-                    SUM(pnl) as total_pnl,
-                    AVG(pnl_percent) as avg_pnl_pct,
-                    SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-                    MAX(pnl) as best_trade,
-                    MIN(pnl) as worst_trade
-                FROM executed_orders
-                WHERE status LIKE 'CLOSED_%'
-                GROUP BY symbol
-                ORDER BY total_pnl DESC
-            """).fetchall()
+        try:
+            new_value = float(new_value)
 
-        return [dict(r) for r in rows]
+            with sqlite3.connect(self.db) as conn:
+                conn.execute(f"""
+                    UPDATE executed_orders
+                    SET {field_name} = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE setup_id = ?
+                """, (new_value, setup_id))
 
-    def get_base_stage_performance(self):
-        """P/L analysis by base stage."""
-        with sqlite3.connect(self.db) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute("""
-                SELECT 
-                    base_stage,
-                    COUNT(*) as trades,
-                    SUM(pnl) as total_pnl,
-                    AVG(pnl_percent) as avg_pnl_pct,
-                    SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-                    COUNT(*) - SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as losses
-                FROM executed_orders
-                WHERE status LIKE 'CLOSED_%'
-                  AND base_stage > 0
-                GROUP BY base_stage
-                ORDER BY base_stage
-            """).fetchall()
+                conn.commit()
 
-        return [dict(r) for r in rows]
+            log(f"✅ Updated {setup_id} {field_name} = {new_value}")
+            return True, "Update successful"
 
-    # ==========================
-    # RISK METRICS
-    # ==========================
-    def get_risk_metrics(self):
-        """Overall risk/reward metrics."""
-        with sqlite3.connect(self.db) as conn:
-            rows = conn.execute("""
-                SELECT 
-                    SUM(qty_executed * (entry_price_executed - sl_price)) as total_risk,
-                    AVG(qty_executed * (entry_price_executed - sl_price)) as avg_risk_per_trade,
-                    SUM(qty_executed * (target_price - entry_price_executed)) as total_potential_reward,
-                    AVG(CASE WHEN status LIKE 'CLOSED_%' 
-                             THEN ABS(pnl) 
-                             ELSE qty_executed * (target_price - entry_price_executed) 
-                        END) as avg_reward_per_trade,
-                    SUM(CASE WHEN pnl > 0 THEN ABS(pnl) ELSE 0 END) as sum_wins,
-                    SUM(CASE WHEN pnl < 0 THEN ABS(pnl) ELSE 0 END) as sum_losses,
-                    AVG(CASE WHEN pnl > 0 THEN pnl ELSE NULL END) as avg_win,
-                    AVG(CASE WHEN pnl < 0 THEN pnl ELSE NULL END) as avg_loss
-                FROM executed_orders
-                WHERE status LIKE 'CLOSED_%'
-            """).fetchone()
+        except Exception as e:
+            log(f"❌ Error updating trade: {e}")
+            return False, str(e)
 
-        total_risk = rows[0] or 0
-        avg_risk = rows[1] or 0
-        total_reward = rows[2] or 0
-        avg_reward = rows[3] or 0
-        sum_wins = rows[4] or 0
-        sum_losses = rows[5] or 0
-        avg_win = rows[6] or 0
-        avg_loss = rows[7] or 0
+    def update_safety_sl(self, setup_id, safety_sl_pct):
+        """
+        Update safety SL level and calculate new SL price.
+        safety_sl_pct: 0.92 means 8% below entry price
+        """
+        try:
+            safety_sl_pct = float(safety_sl_pct)
 
-        profit_factor = (sum_wins / sum_losses) if sum_losses != 0 else (1 if sum_wins > 0 else 0)
+            with sqlite3.connect(self.db) as conn:
+                # Get entry price
+                result = conn.execute("""
+                    SELECT entry_price_executed, symbol
+                    FROM executed_orders
+                    WHERE setup_id = ?
+                """, (setup_id,)).fetchone()
 
-        return {
-            "total_risk_exposed_inr": round(total_risk, 2),
-            "avg_risk_per_trade_inr": round(avg_risk, 2),
-            "total_potential_reward_inr": round(total_reward, 2),
-            "avg_reward_per_trade_inr": round(avg_reward, 2),
-            "total_wins_inr": round(sum_wins, 2),
-            "total_losses_inr": round(sum_losses, 2),
-            "avg_win_inr": round(avg_win, 2),
-            "avg_loss_inr": round(avg_loss, 2),
-            "profit_factor": round(profit_factor, 2),
-        }
+                if not result:
+                    return False, "Trade not found"
+
+                entry_price, symbol = result
+                new_sl = entry_price * safety_sl_pct
+
+                # Update SL in database
+                conn.execute("""
+                    UPDATE executed_orders
+                    SET sl_price = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE setup_id = ?
+                """, (round(new_sl, 2), setup_id))
+
+                conn.commit()
+
+            log(f"✅ Updated {symbol} safety SL to {safety_sl_pct:.2%} = ₹{round(new_sl, 2)}")
+            return True, f"SL updated to ₹{round(new_sl, 2)}"
+
+        except Exception as e:
+            log(f"❌ Error updating safety SL: {e}")
+            return False, str(e)
 
     # ==========================
-    # QUICK STATS
+    # SUMMARY STATS
     # ==========================
-    def get_dashboard_snapshot(self):
-        """One-liner summary for quick view."""
-        pending = self.get_pending_summary()
-        executed = self.get_executed_summary()
-        risk = self.get_risk_metrics()
+    def get_dashboard_summary(self):
+        """Get quick summary stats for dashboard."""
+        trades = self.get_open_trades_dashboard()
+
+        total_pnl = sum(t['pnl'] for t in trades)
+        total_allocation = sum(t['allocation'] for t in trades)
+        winning_trades = len([t for t in trades if t['pnl'] > 0])
+        losing_trades = len([t for t in trades if t['pnl'] < 0])
+        avg_pnl_pct = (sum(t['pnl_pct'] for t in trades) / len(trades)) if trades else 0
 
         return {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "pending": pending,
-            "executed": executed,
-            "risk": risk,
+            "total_trades": len(trades),
+            "total_pnl": round(total_pnl, 2),
+            "total_pnl_pct": round(avg_pnl_pct, 2),
+            "total_allocation": round(total_allocation, 2),
+            "winning_trades": winning_trades,
+            "losing_trades": losing_trades,
+            "win_rate_pct": round((winning_trades / len(trades) * 100), 2) if trades else 0,
         }
 
-    def print_dashboard(self):
-        """Pretty-print full dashboard."""
-        snapshot = self.get_dashboard_snapshot()
+    # ==========================
+    # PRINT DASHBOARD
+    # ==========================
+    def print_open_trades_table(self):
+        """Pretty-print open trades table."""
+        trades = self.get_open_trades_dashboard()
+        summary = self.get_dashboard_summary()
 
-        print("\n" + "=" * 80)
-        print("📊 OHM TRADING DASHBOARD")
-        print("=" * 80)
-        print(f"Updated: {snapshot['timestamp']}\n")
+        print("\n" + "=" * 150)
+        print("📊 OPEN TRADES DASHBOARD")
+        print("=" * 150)
+        print(f"Updated: {summary['timestamp']}\n")
 
-        # PENDING
-        pend = snapshot["pending"]
-        print("📋 PENDING ORDERS (awaiting Dhan confirmation)")
-        print(f"   Total: {pend['total']} | Pending: {pend['pending']} | Failed: {pend['failed']}")
-        print(f"   Value: ₹{pend['total_value_inr']:,.2f}\n")
+        print(f"{'Symbol':<12} {'Entry':<10} {'Exit':<10} {'SL':<10} {'Target':<10} "
+              f"{'Qty':<8} {'Allocation':<12} {'Safety SL':<12} {'RR%':<8} "
+              f"{'Chg %':<8} {'Price':<10} {'PnL':<12}")
+        print("-" * 150)
 
-        # EXECUTED
-        exe = snapshot["executed"]
-        print("✅ EXECUTED ORDERS")
-        print(f"   Total: {exe['total_orders']} | Open: {exe['open']} | Filled: {exe['filled']} | Closed: {exe['closed']}")
-        print(f"   Qty: {exe['total_qty']} ordered, {exe['total_qty_executed']} executed")
-        print(f"   PnL: ₹{exe['total_pnl_inr']:,.2f} ({exe['avg_pnl_percent']:+.2f}%)")
-        print(f"   Win Rate: {exe['win_count']}/{exe['win_count'] + exe['loss_count']} ({exe['win_rate_pct']:.1f}%)\n")
+        for t in trades:
+            symbol = t['symbol']
+            entry = f"₹{t['entry_price']:.2f}"
+            exit_p = f"₹{t['exit_price']:.2f}"
+            sl = f"₹{t['sl']:.2f}"
+            target = f"₹{t['target_price']:.2f}"
+            qty = f"{t['qty']}"
+            alloc = f"₹{t['allocation']:,.0f}"
+            safety_sl = f"₹{t['safety_sl_8pct']:.2f}"
+            rr = f"{t['rr_pct']:.2f}"
+            chg = f"{t['chg_pct']:+.2f}%"
+            price = f"₹{t['price']:.2f}"
+            pnl_mark = "📗" if t['pnl'] > 0 else "📕"
+            pnl = f"{pnl_mark}₹{t['pnl']:,.0f}"
 
-        # RISK
-        rsk = snapshot["risk"]
-        print("⚔️ RISK METRICS")
-        print(f"   Total Risk: ₹{rsk['total_risk_exposed_inr']:,.2f}")
-        print(f"   Profit Factor: {rsk['profit_factor']:.2f}x")
-        print(f"   Sum of Wins: ₹{rsk['total_wins_inr']:,.2f}")
-        print(f"   Sum of Losses: ₹{rsk['total_losses_inr']:,.2f}")
-        print(f"   Avg Win/Loss: ₹{rsk['avg_win_inr']:,.2f} / ₹{rsk['avg_loss_inr']:,.2f}\n")
+            print(f"{symbol:<12} {entry:<10} {exit_p:<10} {sl:<10} {target:<10} "
+                  f"{qty:<8} {alloc:<12} {safety_sl:<12} {rr:<8} {chg:<8} {price:<10} {pnl:<12}")
 
-        # OPEN POSITIONS
-        open_pos = self.get_open_positions()
-        if open_pos:
-            print("📈 OPEN POSITIONS")
-            total_unrealized = 0
-            for pos in open_pos:
-                mark = "📗" if pos["pnl"] >= 0 else "📕"
-                total_unrealized += pos["pnl"]
-                print(f"   {mark} {pos['symbol']:12} | Qty:{pos['qty_executed']:4d} | "
-                      f"Entry:₹{pos['entry_price_executed']:8.2f} | "
-                      f"Current:₹{pos['current_price']:8.2f} | "
-                      f"PnL: ₹{pos['pnl']:10.2f} ({pos['pnl_percent']:+6.2f}%)")
-            print(f"   Total Unrealized: ₹{total_unrealized:,.2f}\n")
+        print("-" * 150)
+        print(f"\n📊 SUMMARY:")
+        print(f"   Total Trades: {summary['total_trades']}")
+        print(f"   Total P&L: ₹{summary['total_pnl']:,.2f} ({summary['total_pnl_pct']:+.2f}%)")
+        print(f"   Total Allocation: ₹{summary['total_allocation']:,.0f}")
+        print(f"   Win Rate: {summary['winning_trades']}/{summary['total_trades']} ({summary['win_rate_pct']:.1f}%)")
+        print("\n" + "=" * 150)
 
-        # DAILY PnL (last 7 days)
-        daily = self.get_daily_pnl(days=7)
-        if daily:
-            print("📅 LAST 7 DAYS")
-            for day in daily:
-                mark = "📗" if day["daily_pnl"] >= 0 else "📕"
-                print(f"   {mark} {day['trade_date']} | Trades:{day['trade_count']:2d} | "
-                      f"PnL: ₹{day['daily_pnl']:10.2f} | Avg: {day['avg_pnl_pct']:+.2f}% | "
-                      f"Wins: {day['wins']}")
+    # ==========================
+    # EXPORT AS JSON
+    # ==========================
+    def export_dashboard_json(self, output_file="open_trades_dashboard.json"):
+        """Export dashboard to JSON for API usage."""
+        trades = self.get_open_trades_dashboard()
+        summary = self.get_dashboard_summary()
 
-        print("\n" + "=" * 80)
+        report = {
+            "timestamp": summary['timestamp'],
+            "summary": summary,
+            "trades": trades,
+        }
 
+        with open(output_file, "w") as f:
+            json.dump(report, f, indent=2, default=str)
 
-def export_report(output_file="pnl_report.json"):
-    """Export dashboard to JSON."""
-    dashboard = PnLDashboard()
-    report = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "pending_summary": dashboard.get_pending_summary(),
-        "pending_orders": dashboard.get_pending_orders(),
-        "executed_summary": dashboard.get_executed_summary(),
-        "open_positions": dashboard.get_open_positions(),
-        "closed_positions": dashboard.get_closed_positions(limit=20),
-        "daily_pnl_7d": dashboard.get_daily_pnl(days=7),
-        "symbol_performance": dashboard.get_symbol_performance(),
-        "base_stage_performance": dashboard.get_base_stage_performance(),
-        "risk_metrics": dashboard.get_risk_metrics(),
-    }
-
-    with open(output_file, "w") as f:
-        json.dump(report, f, indent=2, default=str)
-
-    print(f"✅ Report exported to {output_file}")
-    return report
+        log(f"✅ Exported to {output_file}")
+        return report
 
 
+# ==========================
+# USAGE EXAMPLES
+# ==========================
 if __name__ == "__main__":
-    # Usage examples
-    dashboard = PnLDashboard()
+    dashboard = EnhancedPnLDashboard()
 
-    # Print full dashboard
-    dashboard.print_dashboard()
+    # Sync entry prices with Dhan (optional)
+    token = get_dhan_token()
+    if token:
+        sync_entry_price_with_dhan(token)
 
-    # Export JSON report
-    export_report()
+    # Print dashboard
+    dashboard.print_open_trades_table()
+
+    # Export as JSON
+    dashboard.export_dashboard_json()
+
+    # Example: Update a trade field
+    # dashboard.update_trade_field("setup_id_here", "sl_price", 5100.00)
+
+    # Example: Update safety SL
+    # dashboard.update_safety_sl("setup_id_here", 0.92)  # 8% below entry
