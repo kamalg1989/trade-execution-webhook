@@ -175,7 +175,7 @@ def round_to_tick(price, tick, mode="up"):
 # P0 — ENTRY TECHNIQUE CONFIG
 # ==========================
 # TICK offset above/below signal bar: 1 tick by default. Set 0 for exact H/L.
-ENTRY_TICK_OFFSET_MULTIPLIER = 0
+ENTRY_TICK_OFFSET_MULTIPLIER = 1
 
 TREND_BAR_CLOSE_THRESHOLD = 0.70   # ⬇ loosened from 0.75
 PIN_BAR_MAX_BODY_PCT = 0.35        # ⬆ loosened from 0.30
