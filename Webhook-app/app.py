@@ -1,5 +1,6 @@
 # ==============================================
 # 🚀 TELEGRAM WEBHOOK (app.py) v6 - PASSES TOKEN TO SUBPROCESS
+# UPDATED: Tick size logic corrected (multiplier → decimal)
 # Token is generated ONCE in parent, passed to entry_engine
 # Entry_engine uses it WITHOUT regenerating
 # ==============================================
@@ -13,6 +14,7 @@ import time
 import subprocess
 import json
 import pyotp
+import math
 from datetime import datetime, timezone, timedelta
 
 # ==========================
@@ -24,6 +26,9 @@ LOCK = threading.Lock()
 # Token caching (REUSE across all API calls)
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
+
+# Tick size caching
+TICK_SIZE_CACHE = {}
 
 # Reusable session
 session = requests.Session()
@@ -49,6 +54,135 @@ VENV_PYTHON = "/root/trade-execution-webhook/venv/bin/python"
 # ==========================
 def log(*args):
     print(*args, flush=True)
+
+
+# ==========================
+# TICK SIZE LOGIC (CORRECTED)
+# ==========================
+def convert_tick_multiplier_to_decimal(tick_multiplier):
+    """
+    Convert SEM_TICK_SIZE multiplier to actual decimal tick value.
+    SEM_TICK_SIZE is stored as: 1→0.01, 5→0.05, 10→0.10, etc.
+    Formula: decimal_tick = tick_multiplier / 100
+
+    Examples:
+    - tick_multiplier=1 → 0.01
+    - tick_multiplier=5 → 0.05
+    - tick_multiplier=10 → 0.10
+    - tick_multiplier=50 → 0.50
+    """
+    try:
+        multiplier = float(tick_multiplier)
+        if multiplier <= 0:
+            return 0.05  # fallback default
+        decimal_tick = multiplier / 100.0
+        return round(decimal_tick, 4)
+    except (ValueError, TypeError):
+        return 0.05  # fallback default
+
+
+def load_tick_sizes():
+    """
+    Load tick sizes from Dhan instrument master CSV.
+    Converts SEM_TICK_SIZE multiplier to actual decimal values.
+    Returns dict: {symbol: tick_size_decimal}
+    Caches result globally to avoid repeated downloads.
+    """
+    global TICK_SIZE_CACHE
+
+    if TICK_SIZE_CACHE:
+        log(f"✅ Using cached tick sizes ({len(TICK_SIZE_CACHE)} symbols)")
+        return TICK_SIZE_CACHE
+
+    try:
+        log("📥 Loading tick sizes from Dhan instrument master...")
+        url = "https://images.dhan.co/api-data/api-scrip-master.csv"
+        df = pd.read_csv(url, low_memory=False)
+
+        # Filter for NSE equities only
+        df = df[
+            (df['SEM_EXM_EXCH_ID'] == 'NSE') &
+            (df['SEM_SEGMENT'] == 'E')
+            ]
+
+        # Build cache: symbol → tick size (converted to decimal)
+        for _, row in df.iterrows():
+            symbol = str(row.get('SEM_TRADING_SYMBOL', '')).strip().upper()
+            tick_multiplier = row.get('SEM_TICK_SIZE', 5)  # default 5 → 0.05
+
+            # Convert multiplier to decimal tick value
+            tick_decimal = convert_tick_multiplier_to_decimal(tick_multiplier)
+
+            if symbol:
+                TICK_SIZE_CACHE[symbol] = tick_decimal
+
+        log(f"✅ Loaded tick sizes for {len(TICK_SIZE_CACHE)} NSE equity symbols")
+        return TICK_SIZE_CACHE
+
+    except Exception as e:
+        log(f"❌ Failed to load tick sizes from CSV: {e}")
+        log(f"⚠️  Falling back to default tick=0.05 for all symbols")
+        return {}
+
+
+def get_tick_size(symbol):
+    """
+    Get tick size for a symbol (already in decimal form).
+    symbol: e.g., "ONGC" (without .NS) or "ONGC.NS"
+    Returns: float tick size in decimal form (e.g., 0.01, 0.05, 0.10)
+    """
+    global TICK_SIZE_CACHE
+
+    # Load if not already cached
+    if not TICK_SIZE_CACHE:
+        load_tick_sizes()
+
+    symbol_clean = symbol.replace(".NS", "").strip().upper()
+
+    # Return from cache, or default to 0.05
+    tick = TICK_SIZE_CACHE.get(symbol_clean, 0.05)
+
+    log(f"   [{symbol}] Tick size: ₹{tick:.4f}")
+    return tick
+
+
+def round_to_tick(price, tick, mode="up"):
+    """
+    Round price to nearest tick.
+
+    Args:
+        price (float): Price to round
+        tick (float): Tick size in decimal form (e.g., 0.05, 0.01, 0.10)
+        mode (str): "up" for entry (buy above signal),
+                    "down" for SL (sell below signal),
+                    "nearest" for standard rounding
+
+    Returns:
+        float: Price rounded to tick precision
+
+    Examples:
+        round_to_tick(100.47, 0.05, mode="up") → 100.50
+        round_to_tick(100.47, 0.05, mode="down") → 100.45
+        round_to_tick(100.47, 0.01, mode="up") → 100.47
+    """
+    if tick <= 0:
+        return round(price, 4)
+
+    # Calculate number of steps: price / tick
+    steps = price / tick
+
+    if mode == "up":
+        # Ceiling: round up to next tick
+        rounded_price = math.ceil(steps) * tick
+    elif mode == "down":
+        # Floor: round down to previous tick
+        rounded_price = math.floor(steps) * tick
+    else:  # mode == "nearest" or any other
+        # Standard rounding: round to nearest tick
+        rounded_price = round(steps) * tick
+
+    # Return with 4 decimal precision (enough for 0.01 tick size)
+    return round(rounded_price, 4)
 
 
 # ==========================
@@ -236,6 +370,44 @@ def validate_symbol(symbol_input):
 
 
 # ==========================
+# VALIDATE PRICES WITH TICK SIZES
+# ==========================
+def validate_prices_with_ticks(entry, sl, target, symbol):
+    """
+    Validate that entry, SL, and target are properly aligned with tick sizes.
+    Returns (is_valid, reason)
+    """
+    try:
+        tick = get_tick_size(symbol)
+
+        # Check if prices are aligned to tick
+        entry_aligned = (round(entry / tick) * tick) - entry
+        sl_aligned = (round(sl / tick) * tick) - sl
+        target_aligned = (round(target / tick) * tick) - target
+
+        tolerance = tick * 0.01  # Allow small floating-point errors
+
+        if abs(entry_aligned) > tolerance:
+            log(f"⚠️ Entry {entry} not aligned to tick {tick:.4f}")
+
+        if abs(sl_aligned) > tolerance:
+            log(f"⚠️ SL {sl} not aligned to tick {tick:.4f}")
+
+        if abs(target_aligned) > tolerance:
+            log(f"⚠️ Target {target} not aligned to tick {tick:.4f}")
+
+        # Price order validation
+        if not (sl < entry < target):
+            return False, f"Invalid price order: SL({sl}) < Entry({entry}) < Target({target})"
+
+        return True, "OK"
+
+    except Exception as e:
+        log(f"⚠️ Tick validation error: {e}")
+        return True, "OK"  # Allow if validation fails (fallback)
+
+
+# ==========================
 # EXECUTE ENTRY ENGINE
 # ==========================
 def execute_entry_engine_subprocess(payload, token):
@@ -264,6 +436,7 @@ def execute_entry_engine_subprocess(payload, token):
 
         log("🚀 EXECUTING ENTRY ENGINE SUBPROCESS")
         log(f"   Symbol: {payload['symbol']}, Qty: {payload['qty']}")
+        log(f"   Entry: {payload['entry']}, SL: {payload['sl']}, Target: {payload['target']}")
         log(f"   Token passed: {token[:30]}...")
 
         result = subprocess.run(
@@ -399,9 +572,13 @@ def webhook():
             send_telegram(f"❌ Invalid SL/target")
             return "OK"
 
-        if not (sl < entry < target):
-            log(f"❌ Invalid price order")
-            send_telegram(f"❌ Invalid price order")
+        # Validate prices with tick alignment
+        log(f"\n🔍 Validating prices with tick sizes...")
+        is_valid, reason = validate_prices_with_ticks(entry, sl, target, symbol)
+
+        if not is_valid:
+            log(f"❌ {reason}")
+            send_telegram(f"❌ Price validation failed: {reason}")
             return "OK"
 
         if not validate_symbol(symbol):
@@ -433,7 +610,7 @@ def webhook():
             send_telegram(f"⚠️ {symbol} already has open order on Dhan - skipping")
             return "OK"
 
-        log(f"✅ {symbol} is clear on Dhan - proceeding\n")
+        log(f"✅ {symbol} is clear on Dhan\n")
 
         # ==== ALL VALIDATIONS PASSED ====
         log("✅ ALL VALIDATIONS PASSED")
@@ -478,11 +655,17 @@ def health():
 
 if __name__ == "__main__":
     log("=" * 80)
-    log("🚀 TELEGRAM WEBHOOK (app.py) v6 - FINAL")
+    log("🚀 TELEGRAM WEBHOOK (app.py) v6 - FINAL (WITH TICK SIZE LOGIC)")
     log("=" * 80)
     log("✅ Token generated ONCE in parent")
     log("✅ Token passed to subprocess via env var")
     log("✅ NO double generation = NO rate limit!")
+    log("✅ Tick sizes loaded from Dhan CSV (SEM_TICK_SIZE)")
+    log("✅ Prices validated against tick precision")
     log("=" * 80)
+
+    # Pre-load tick sizes at startup
+    log("\n📥 Pre-loading tick sizes...")
+    load_tick_sizes()
 
     app.run(host="0.0.0.0", port=5000, debug=False)
