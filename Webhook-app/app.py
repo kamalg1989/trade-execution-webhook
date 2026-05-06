@@ -1,8 +1,9 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK (app.py) v7 - WITH DASHBOARD INTEGRATED
+# 🚀 TELEGRAM WEBHOOK (app.py) v8 - SMART TOKEN VALIDATION
 # Combines webhook + dashboard in single Flask app
 # Token passed to subprocess, no double generation
 # Dashboard integrated for live P&L tracking
+# UPDATED: Smart token validation - tests with Dhan API
 # ==============================================
 
 import os
@@ -99,13 +100,65 @@ INSTRUMENT_DF = load_instruments()
 
 
 # ==========================
-# TOKEN MANAGEMENT - ONLY GENERATES ONCE
+# TOKEN VALIDATION & MANAGEMENT (UPDATED v8)
 # ==========================
+
+def validate_token_with_dhan(token):
+    """
+    🔐 Validate token by calling Dhan API.
+    Uses /v2/profile endpoint to check if token is valid.
+    This is the official test endpoint recommended by Dhan.
+
+    Returns: True if token is valid, False otherwise
+    """
+    try:
+        if not token:
+            log("⚠️ No token provided for validation")
+            return False
+
+        log("🔐 Validating token with Dhan /v2/profile API...")
+
+        response = session.get(
+            "https://api.dhan.co/v2/profile",
+            headers={"access-token": token},
+            timeout=5  # Fail fast - 5 second timeout
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            token_validity = data.get("tokenValidity", "unknown")
+            dhan_client_id = data.get("dhanClientId", "unknown")
+
+            log(f"✅ Token is VALID")
+            log(f"   Client ID: {dhan_client_id}")
+            log(f"   Token expires: {token_validity}")
+            return True
+        else:
+            log(f"❌ Token validation failed: HTTP {response.status_code}")
+            log(f"   Response: {response.text[:200]}")
+            return False
+
+    except requests.exceptions.Timeout:
+        log(f"⚠️ Token validation timed out (5s)")
+        return False
+    except Exception as e:
+        log(f"⚠️ Token validation error: {e}")
+        return False
+
+
 def generate_token():
+    """
+    🔐 Generate a fresh token from Dhan API.
+    Uses DHAN_CLIENT_ID, DHAN_PIN, and DHAN_TOTP_SECRET from environment.
+    """
     global CURRENT_TOKEN, TOKEN_EXPIRY
 
     try:
-        log("🔐 Generating Dhan token (ONE TIME)...")
+        log("🔐 Generating fresh Dhan token...")
+
+        if not all([DHAN_CLIENT_ID, DHAN_PIN, DHAN_TOTP_SECRET]):
+            log("❌ Missing Dhan credentials in environment")
+            return None
 
         totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
 
@@ -121,13 +174,14 @@ def generate_token():
 
         if response.status_code != 200:
             log(f"❌ Token generation failed: {response.status_code}")
+            log(f"   Response: {response.text[:200]}")
             return None
 
         data = response.json()
         token = data.get("accessToken")
 
         if not token:
-            log(f"❌ No accessToken in response")
+            log(f"❌ No accessToken in response: {data}")
             return None
 
         CURRENT_TOKEN = token
@@ -142,15 +196,37 @@ def generate_token():
 
 
 def get_token():
+    """
+    🔐 Smart token management (v8).
+
+    Flow:
+    1. If we have a cached token → TEST it with Dhan API
+    2. If test passes → REUSE the token (no regeneration)
+    3. If test fails → REGENERATE a new token
+    4. If no cached token → GENERATE a new one
+
+    This approach:
+    ✅ Detects actual token invalidity (not just time-based)
+    ✅ Reuses valid tokens longer (no unnecessary regeneration)
+    ✅ Regenerates only when Dhan actually rejects it
+    ✅ More reliable than time-based expiry
+    """
     global CURRENT_TOKEN, TOKEN_EXPIRY
 
-    now = datetime.now(timezone.utc)
+    # If we have a cached token, TEST it first
+    if CURRENT_TOKEN:
+        log(f"🔐 Testing cached token...")
 
-    if CURRENT_TOKEN and TOKEN_EXPIRY and now < TOKEN_EXPIRY:
-        log(f"✅ Reusing cached token (expires in 23h)")
-        return CURRENT_TOKEN
+        if validate_token_with_dhan(CURRENT_TOKEN):
+            log(f"✅ Cached token is still valid, reusing it")
+            return CURRENT_TOKEN
+        else:
+            log(f"⚠️ Cached token is invalid, generating new one...")
+            CURRENT_TOKEN = None  # Clear invalid token
+            # Fall through to generate new token
 
-    log(f"⏳ Token missing/expired, generating...")
+    # No cached token or validation failed → generate fresh token
+    log(f"⏳ Generating fresh token...")
     return generate_token()
 
 
@@ -425,7 +501,7 @@ def webhook():
             send_telegram(f"❌ Invalid action: {action}")
             return "OK"
 
-        # ==== GET TOKEN (ONCE) ====
+        # ==== GET TOKEN (WITH SMART VALIDATION) ====
         log(f"\n🔐 Getting token for API calls...")
         token = get_token()
 
@@ -624,12 +700,13 @@ def health():
 
 if __name__ == "__main__":
     log("=" * 80)
-    log("🚀 TELEGRAM WEBHOOK + DASHBOARD (app.py v7) - FINAL")
+    log("🚀 TELEGRAM WEBHOOK + DASHBOARD (app.py v8) - SMART TOKEN VALIDATION")
     log("=" * 80)
     log("✅ Webhook on /webhook")
     log("✅ Dashboard API on /api/dashboard/*")
     log("✅ Dashboard UI on /dashboard")
-    log("✅ Token generated ONCE and reused")
+    log("✅ Smart token validation with /v2/profile")
+    log("✅ Regenerates token only when Dhan rejects it")
     log("✅ Live prices from Dhan API")
     log("=" * 80)
 
