@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 # ==========================
 # IMPORT DASHBOARD MODULE
 # ==========================
-from pnl_dashboard_enhanced import (
+from Pnl_dashboardpnl_dashboard_enhanced import (
     EnhancedPnLDashboard,
     get_dhan_token,
     sync_entry_price_with_dhan
