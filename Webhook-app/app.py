@@ -15,7 +15,11 @@ import subprocess
 import json
 import pyotp
 from datetime import datetime, timezone, timedelta
+import sys
+import os
 
+# Ensure current directory is in path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dotenv import load_dotenv
 
 # ==========================
