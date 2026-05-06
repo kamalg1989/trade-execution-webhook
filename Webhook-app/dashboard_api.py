@@ -11,7 +11,7 @@ import os
 # Add dashboard module to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from pnl_dashboard_enhanced import EnhancedPnLDashboard, get_dhan_token, sync_entry_price_with_dhan
+from pnl_dashboard import EnhancedPnLDashboard, get_dhan_token, sync_entry_price_with_dhan
 
 app = Flask(__name__)
 CORS(app)
