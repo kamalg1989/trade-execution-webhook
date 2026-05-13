@@ -1,5 +1,6 @@
 # ==============================================
 # 🚀 SL ENGINE V12 (CRON SAFE + DEBUG + FIXED ENV)
+# WITH TRAILING STOP LOSS + MODIFY_SL FROM V5
 # ==============================================
 
 import os
@@ -7,6 +8,8 @@ import requests
 import pyotp
 import logging
 import time
+import uuid
+import yfinance as yf
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
@@ -38,7 +41,9 @@ DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
 DHAN_PIN = os.getenv("DHAN_PIN")
 DHAN_TOTP_SECRET = os.getenv("DHAN_TOTP_SECRET")
 
-BASE_SL_PCT = 0.92
+BASE_SL_PCT = 0.92              # 8% initial SL
+TRAIL_PROFIT_LOCK = 0.5         # Lock 50% of profit (from V5)
+MIN_LTP_BUFFER = 0.05           # Maintain 5% gap from LTP (from V5)
 
 session = requests.Session()
 
@@ -202,20 +207,76 @@ def get_forever_orders():
     return data if isinstance(data, list) else []
 
 # ==========================
-# PLACE SL
+# FETCH LTP USING YFINANCE
 # ==========================
-def place_sl(sec_id, qty, avg):
+def get_ltp(symbol):
+    """
+    Fetch Last Traded Price using yfinance.
+    Symbol should be like 'RELIANCE' (without .NS extension)
+    """
+    try:
+        ticker = yf.Ticker(symbol + ".NS")
+        ltp = ticker.fast_info["lastPrice"]
+        logger.info(f"📊 {symbol} LTP: {ltp}")
+        return ltp
+    except Exception as e:
+        logger.warning(f"⚠️ LTP fetch failed for {symbol}: {e}")
+        return None
 
+# ==========================
+# SL CALCULATION LOGIC (FROM V5)
+# ==========================
+def calculate_sl(entry, ltp, current_sl):
+    """
+    Calculate trailing stop-loss with a minimum 5% buffer from LTP.
+
+    Args:
+        entry: Entry price of the position
+        ltp: Current Last Traded Price
+        current_sl: Current stop-loss price (None if new position)
+
+    Returns:
+        New calculated stop-loss price
+    """
+
+    # Initial SL (8% below entry)
+    base_sl = entry * BASE_SL_PCT
+
+    # Start with the highest of current or base SL
+    new_sl = max(current_sl or 0, base_sl)
+
+    # Apply trailing logic only when in profit
+    if ltp > entry:
+        profit = ltp - entry
+        # Trail by locking in 50% of profit
+        trailing_sl = entry + (profit * TRAIL_PROFIT_LOCK)
+
+        # Ensure SL is not closer than 5% to LTP
+        max_allowed_sl = ltp * (1 - MIN_LTP_BUFFER)
+
+        # Choose the safer SL (lower value, but respects buffer)
+        new_sl = max(new_sl, min(trailing_sl, max_allowed_sl))
+
+    return round(new_sl, 2)
+
+# ==========================
+# PLACE SL (FROM V12)
+# ==========================
+def place_sl(sec_id, qty, avg, symbol):
+    """
+    Place initial stop-loss order for a position.
+    """
     if not avg:
         logger.error(f"❌ Invalid avg price for {sec_id}")
         return False
 
-    trigger = round(avg * BASE_SL_PCT, 2)
+    # Calculate SL using new trailing logic (initial placement)
+    trigger = calculate_sl(avg, avg, None)  # LTP = avg on first placement
     price = round(trigger * 0.995, 2)
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
-        "correlationId": str(int(time.time())),
+        "correlationId": str(uuid.uuid4())[:20],
         "orderFlag": "SINGLE",
         "transactionType": "SELL",
         "exchangeSegment": "NSE_EQ",
@@ -228,20 +289,79 @@ def place_sl(sec_id, qty, avg):
         "triggerPrice": trigger
     }
 
-    logger.info(f"📤 SL → {sec_id} | trigger={trigger}")
+    logger.info(f"📤 SL → {symbol} ({sec_id}) | trigger={trigger} | price={price}")
+
+    token = get_token()
+    if not token:
+        logger.error(f"❌ Failed to get token for placing SL on {symbol}")
+        return False
 
     r = session.post(
         "https://api.dhan.co/v2/forever/orders",
         json=payload,
         headers={
-            "access-token": get_token(),
+            "access-token": token,
             "client-id": DHAN_CLIENT_ID
-        }
+        },
+        timeout=30
     )
 
-    logger.info(f"📡 SL status: {r.status_code} | {r.text}")
+    logger.info(f"📡 SL Place status ({symbol}): {r.status_code} | {r.text}")
 
     return r.status_code in (200, 201)
+
+# ==========================
+# MODIFY SL (FROM V5)
+# ==========================
+def modify_sl(order_id, qty, trigger, symbol):
+    """
+    Modify existing stop-loss order with new trigger price.
+    Used for trailing stop-loss adjustments.
+    """
+    token = get_token()
+    if not token:
+        logger.error(f"❌ Failed to get token for modifying SL on {symbol}")
+        return False
+
+    price = round(trigger * 0.995, 2)  # Ensure SELL price < trigger
+    disclosed_qty = max(1, int(qty * 0.3))
+
+    payload = {
+        "dhanClientId": DHAN_CLIENT_ID,
+        "orderId": order_id,
+        "orderFlag": "SINGLE",
+        "orderType": "LIMIT",
+        "legName": "STOP_LOSS_LEG",
+        "quantity": int(qty),
+        "price": price,
+        "triggerPrice": round(trigger, 2),
+        "disclosedQuantity": disclosed_qty,
+        "validity": "DAY"
+    }
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "access-token": token
+    }
+
+    logger.info(f"🔄 Modifying SL for {symbol}: trigger={trigger} | price={price}")
+
+    r = session.put(
+        f"https://api.dhan.co/v2/forever/orders/{order_id}",
+        json=payload,
+        headers=headers,
+        timeout=15
+    )
+
+    logger.info(f"📡 SL Modify status ({symbol}): {r.status_code} | {r.text}")
+
+    if r.status_code not in (200, 201):
+        logger.error(f"❌ SL MODIFY FAILED for {symbol} | Response: {r.text}")
+        return False
+
+    logger.info(f"✅ SL trailed for {symbol} to {trigger}")
+    return True
 
 # ==========================
 # MAIN
@@ -270,25 +390,50 @@ def run():
            and o.get("orderStatus") == "PENDING"
     }
 
-    logger.info(f"📊 Existing SL: {len(sl_map)}")
+    logger.info(f"📊 Existing SL Orders: {len(sl_map)}")
 
     placed = 0
+    modified = 0
 
     for sec_id, pos in all_pos.items():
 
-        logger.info(f"\n📍 {pos['symbol']}")
+        symbol = pos['symbol']
+        logger.info(f"\n📍 Processing: {symbol}")
 
-        if sec_id in sl_map:
-            logger.info("✅ SL exists")
+        # Get current LTP
+        ltp = get_ltp(symbol)
+        if not ltp:
+            logger.warning(f"⚠️ Could not fetch LTP for {symbol}, skipping")
             continue
 
-        logger.warning("⚠️ Missing SL → placing")
+        # Check if SL exists
+        if sec_id not in sl_map:
+            logger.warning(f"⚠️ Missing SL for {symbol} → placing new SL")
+            if place_sl(sec_id, pos["qty"], pos["avgPrice"], symbol):
+                placed += 1
+                time.sleep(0.3)
+            continue
 
-        if place_sl(sec_id, pos["qty"], pos["avgPrice"]):
-            placed += 1
-            time.sleep(0.3)
+        # SL exists - check if it needs trailing adjustment
+        existing_order = sl_map[sec_id]
+        current_trigger = existing_order.get("triggerPrice")
 
-    logger.info(f"✅ DONE | SL placed: {placed}")
+        new_trigger = calculate_sl(pos["avgPrice"], ltp, current_trigger)
+
+        logger.info(f"   Entry: {pos['avgPrice']} | LTP: {ltp} | Current SL: {current_trigger} → New SL: {new_trigger}")
+
+        # Only modify if new SL is higher (beneficial for trader)
+        if new_trigger > current_trigger:
+            logger.warning(f"⚠️ Trailing SL up for {symbol}")
+            if modify_sl(existing_order["orderId"], pos["qty"], new_trigger, symbol):
+                modified += 1
+                time.sleep(0.3)
+        else:
+            logger.info(f"✅ SL optimal for {symbol} (no change needed)")
+
+    logger.info(f"\n✅ SL ENGINE COMPLETED")
+    logger.info(f"   📊 SL Placed: {placed}")
+    logger.info(f"   🔄 SL Modified: {modified}")
 
 # ==========================
 # ENTRY
