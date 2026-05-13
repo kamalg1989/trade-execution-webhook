@@ -1,13 +1,14 @@
 # ==============================================
-# 🚀 ENTRY ENGINE v2.4 (TOKEN FROM PARENT)
-# UPDATED: Tick size logic corrected (multiplier → decimal)
+# 🚀 ENTRY ENGINE v2.5 (GOOGLE SHEETS VERSION)
+# UPDATED: SQLite → Google Sheets (Excel in Drive)
 # Accepts token via env var from app.py
-# Avoids double token generation = no rate limit!
+# All CRUD operations: Create, Read, Update, Delete
 # ==============================================
 
 import os
 import requests
-import sqlite3
+import gspread
+from google.oauth2.service_account import Credentials
 from datetime import datetime, timezone
 import uuid
 import pandas as pd
@@ -18,17 +19,22 @@ import math
 # CONFIG
 # ==========================
 INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
-DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades.db")
 
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
-
-# Get token from parent (app.py) - AVOIDS REGENERATION!
 DHAN_TOKEN = os.getenv("DHAN_TOKEN")
+
+# Google Sheets Config
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
+SERVICE_ACCOUNT_KEY_PATH = os.getenv("SERVICE_ACCOUNT_KEY_PATH")
+SHEET_NAME = "Trades"  # Name of the sheet in your Google Sheet
 
 # Tick size cache
 TICK_SIZE_CACHE = {}
 
 session = requests.Session()
+
+# Global Google Sheets client
+gsheet = None
 
 
 # ==========================
@@ -40,35 +46,86 @@ def log(*args):
 
 
 # ==========================
-# TICK SIZE LOGIC (CORRECTED)
+# GOOGLE SHEETS INIT
+# ==========================
+def init_google_sheets():
+    """
+    Initialize Google Sheets client using service account.
+    Returns: gspread.Worksheet object for the Trades sheet
+    """
+    global gsheet
+
+    try:
+        if not SPREADSHEET_ID:
+            log("❌ SPREADSHEET_ID not set in environment")
+            return None
+
+        if not SERVICE_ACCOUNT_KEY_PATH:
+            log("❌ SERVICE_ACCOUNT_KEY_PATH not set in environment")
+            return None
+
+        # Authenticate with service account
+        scopes = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
+
+        credentials = Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_KEY_PATH,
+            scopes=scopes
+        )
+
+        client = gspread.authorize(credentials)
+        log(f"✅ Authenticated with Google Sheets")
+
+        # Open the spreadsheet
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        log(f"✅ Opened spreadsheet: {spreadsheet.title}")
+
+        # Get or create the Trades worksheet
+        try:
+            gsheet = spreadsheet.worksheet(SHEET_NAME)
+            log(f"✅ Using existing sheet: {SHEET_NAME}")
+        except gspread.exceptions.WorksheetNotFound:
+            log(f"⚠️ Sheet '{SHEET_NAME}' not found, creating...")
+            gsheet = spreadsheet.add_worksheet(title=SHEET_NAME, rows=1000, cols=15)
+            # Add header row
+            headers = [
+                "ID", "Symbol", "Security_ID", "Qty", "Entry_Price",
+                "Entry_Time", "Status", "SL_Price", "Target_Price",
+                "Setup_ID", "Current_Price", "PnL", "PnL_Percent",
+                "Updated_At", "Dhan_Order_ID"
+            ]
+            gsheet.insert_row(headers, 1)
+            log(f"✅ Created sheet '{SHEET_NAME}' with headers")
+
+        return gsheet
+
+    except Exception as e:
+        log(f"❌ Failed to initialize Google Sheets: {e}")
+        return None
+
+
+# ==========================
+# TICK SIZE LOGIC (SAME AS BEFORE)
 # ==========================
 def convert_tick_multiplier_to_decimal(tick_multiplier):
     """
     Convert SEM_TICK_SIZE multiplier to actual decimal tick value.
-    SEM_TICK_SIZE is stored as: 1→0.01, 5→0.05, 10→0.10, etc.
-    Formula: decimal_tick = tick_multiplier / 100
-
-    Examples:
-    - tick_multiplier=1 → 0.01
-    - tick_multiplier=5 → 0.05
-    - tick_multiplier=10 → 0.10
-    - tick_multiplier=50 → 0.50
     """
     try:
         multiplier = float(tick_multiplier)
         if multiplier <= 0:
-            return 0.05  # fallback default
+            return 0.05
         decimal_tick = multiplier / 100.0
         return round(decimal_tick, 4)
     except (ValueError, TypeError):
-        return 0.05  # fallback default
+        return 0.05
 
 
 def load_tick_sizes():
     """
     Load tick sizes from Dhan instrument master CSV.
-    Converts SEM_TICK_SIZE multiplier to actual decimal values.
-    Returns dict: {symbol: tick_size_decimal}
     Caches result globally to avoid repeated downloads.
     """
     global TICK_SIZE_CACHE
@@ -82,18 +139,14 @@ def load_tick_sizes():
         url = "https://images.dhan.co/api-data/api-scrip-master.csv"
         df = pd.read_csv(url, low_memory=False)
 
-        # Filter for NSE equities only
         df = df[
             (df['SEM_EXM_EXCH_ID'] == 'NSE') &
             (df['SEM_SEGMENT'] == 'E')
             ]
 
-        # Build cache: symbol → tick size (converted to decimal)
         for _, row in df.iterrows():
             symbol = str(row.get('SEM_TRADING_SYMBOL', '')).strip().upper()
-            tick_multiplier = row.get('SEM_TICK_SIZE', 5)  # default 5 → 0.05
-
-            # Convert multiplier to decimal tick value
+            tick_multiplier = row.get('SEM_TICK_SIZE', 5)
             tick_decimal = convert_tick_multiplier_to_decimal(tick_multiplier)
 
             if symbol:
@@ -103,26 +156,18 @@ def load_tick_sizes():
         return TICK_SIZE_CACHE
 
     except Exception as e:
-        log(f"❌ Failed to load tick sizes from CSV: {e}")
-        log(f"⚠️  Falling back to default tick=0.05 for all symbols")
+        log(f"❌ Failed to load tick sizes: {e}")
         return {}
 
 
 def get_tick_size(symbol):
-    """
-    Get tick size for a symbol (already in decimal form).
-    symbol: e.g., "ONGC" (without .NS) or "ONGC.NS"
-    Returns: float tick size in decimal form (e.g., 0.01, 0.05, 0.10)
-    """
+    """Get tick size for a symbol"""
     global TICK_SIZE_CACHE
 
-    # Load if not already cached
     if not TICK_SIZE_CACHE:
         load_tick_sizes()
 
     symbol_clean = symbol.replace(".NS", "").strip().upper()
-
-    # Return from cache, or default to 0.05
     tick = TICK_SIZE_CACHE.get(symbol_clean, 0.05)
 
     log(f"   [{symbol}] Tick size: ₹{tick:.4f}")
@@ -130,41 +175,19 @@ def get_tick_size(symbol):
 
 
 def round_to_tick(price, tick, mode="up"):
-    """
-    Round price to nearest tick.
-
-    Args:
-        price (float): Price to round
-        tick (float): Tick size in decimal form (e.g., 0.05, 0.01, 0.10)
-        mode (str): "up" for entry (buy above signal),
-                    "down" for SL (sell below signal),
-                    "nearest" for standard rounding
-
-    Returns:
-        float: Price rounded to tick precision
-
-    Examples:
-        round_to_tick(100.47, 0.05, mode="up") → 100.50
-        round_to_tick(100.47, 0.05, mode="down") → 100.45
-        round_to_tick(100.47, 0.01, mode="up") → 100.47
-    """
+    """Round price to nearest tick"""
     if tick <= 0:
         return round(price, 4)
 
-    # Calculate number of steps: price / tick
     steps = price / tick
 
     if mode == "up":
-        # Ceiling: round up to next tick
         rounded_price = math.ceil(steps) * tick
     elif mode == "down":
-        # Floor: round down to previous tick
         rounded_price = math.floor(steps) * tick
-    else:  # mode == "nearest" or any other
-        # Standard rounding: round to nearest tick
+    else:
         rounded_price = round(steps) * tick
 
-    # Return with 4 decimal precision (enough for 0.01 tick size)
     return round(rounded_price, 4)
 
 
@@ -206,35 +229,205 @@ def get_security_id(stock):
 
 
 # ==========================
-# DATABASE
+# GOOGLE SHEETS CRUD OPERATIONS
 # ==========================
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT NOT NULL,
-            security_id TEXT NOT NULL,
-            qty INTEGER NOT NULL,
-            entry_price REAL NOT NULL,
-            entry_time TEXT NOT NULL,
-            status TEXT DEFAULT 'OPEN',
-            sl_price REAL,
-            target_price REAL,
-            setup_id TEXT,
-            current_price REAL,
-            pnl REAL,
-            pnl_percent REAL,
-            updated_at TEXT,
-            dhan_order_id TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+def get_all_trades():
+    """
+    Get all trades from Google Sheet as list of dicts
+    Returns: List of trade dictionaries or empty list if error
+    """
+    try:
+        if not gsheet:
+            log("❌ Google Sheets not initialized")
+            return []
 
-    conn.commit()
-    conn.close()
-    log("✅ Database initialized")
+        # Get all values (including header)
+        all_values = gsheet.get_all_values()
+
+        if len(all_values) < 2:
+            log("⚠️ No trades found in sheet")
+            return []
+
+        headers = all_values[0]
+        trades = []
+
+        for row in all_values[1:]:
+            if len(row) == len(headers):
+                trade = dict(zip(headers, row))
+                trades.append(trade)
+
+        log(f"✅ Retrieved {len(trades)} trades from Google Sheets")
+        return trades
+
+    except Exception as e:
+        log(f"❌ Error reading trades: {e}")
+        return []
+
+
+def find_trade_row(symbol, dhan_order_id=None):
+    """
+    Find row number of a trade by symbol or dhan_order_id
+    Returns: row_number (int) or None if not found
+    """
+    try:
+        if not gsheet:
+            return None
+
+        all_values = gsheet.get_all_values()
+
+        if len(all_values) < 2:
+            return None
+
+        headers = all_values[0]
+        symbol_col = headers.index("Symbol") + 1
+        order_id_col = headers.index("Dhan_Order_ID") + 1
+
+        for idx, row in enumerate(all_values[1:], start=2):
+            if dhan_order_id and len(row) > order_id_col - 1:
+                if row[order_id_col - 1] == dhan_order_id:
+                    return idx
+
+            if len(row) > symbol_col - 1:
+                if row[symbol_col - 1].upper() == symbol.upper():
+                    return idx
+
+        return None
+
+    except Exception as e:
+        log(f"❌ Error finding trade: {e}")
+        return None
+
+
+def save_trade(symbol, sec_id, qty, entry_price, sl_price, target_price, setup_id, dhan_order_id):
+    """
+    Add new trade to Google Sheet
+    Returns: True/False
+    """
+    try:
+        if not gsheet:
+            log("❌ Google Sheets not initialized")
+            return False
+
+        ts = datetime.now(timezone.utc).isoformat()
+        trade_id = str(uuid.uuid4())[:8]
+
+        new_row = [
+            trade_id,           # ID
+            symbol,             # Symbol
+            sec_id,             # Security_ID
+            qty,                # Qty
+            entry_price,        # Entry_Price
+            ts,                 # Entry_Time
+            "OPEN",             # Status
+            sl_price,           # SL_Price
+            target_price,       # Target_Price
+            setup_id,           # Setup_ID
+            entry_price,        # Current_Price (initially same as entry)
+            0,                  # PnL
+            0,                  # PnL_Percent
+            ts,                 # Updated_At
+            dhan_order_id       # Dhan_Order_ID
+        ]
+
+        gsheet.append_row(new_row)
+        log(f"✅ Trade saved: {symbol} (Order ID: {dhan_order_id})")
+        return True
+
+    except Exception as e:
+        log(f"❌ Failed to save trade: {e}")
+        return False
+
+
+def update_trade(symbol=None, dhan_order_id=None, **kwargs):
+    """
+    Update an existing trade by symbol or dhan_order_id
+
+    Example:
+        update_trade(symbol="ONGC", status="CLOSED", current_price=150.5)
+        update_trade(dhan_order_id="12345", exit_price=150.5, status="CLOSED")
+    """
+    try:
+        if not gsheet:
+            log("❌ Google Sheets not initialized")
+            return False
+
+        row_num = find_trade_row(symbol, dhan_order_id)
+
+        if not row_num:
+            log(f"❌ Trade not found: {symbol or dhan_order_id}")
+            return False
+
+        # Get headers
+        headers = gsheet.row_values(1)
+
+        # Get current row
+        current_row = gsheet.row_values(row_num)
+
+        # Update with provided values
+        for key, value in kwargs.items():
+            if key in headers:
+                col_idx = headers.index(key) + 1
+                gsheet.update_cell(row_num, col_idx, value)
+
+        # Update timestamp
+        updated_at_col = headers.index("Updated_At") + 1
+        ts = datetime.now(timezone.utc).isoformat()
+        gsheet.update_cell(row_num, updated_at_col, ts)
+
+        log(f"✅ Trade updated: {symbol or dhan_order_id}")
+        return True
+
+    except Exception as e:
+        log(f"❌ Failed to update trade: {e}")
+        return False
+
+
+def delete_trade(symbol=None, dhan_order_id=None):
+    """
+    Delete a trade from Google Sheet by symbol or dhan_order_id
+    """
+    try:
+        if not gsheet:
+            log("❌ Google Sheets not initialized")
+            return False
+
+        row_num = find_trade_row(symbol, dhan_order_id)
+
+        if not row_num:
+            log(f"❌ Trade not found: {symbol or dhan_order_id}")
+            return False
+
+        gsheet.delete_rows(row_num)
+        log(f"✅ Trade deleted: {symbol or dhan_order_id}")
+        return True
+
+    except Exception as e:
+        log(f"❌ Failed to delete trade: {e}")
+        return False
+
+
+def filter_trades(status=None, symbol=None):
+    """
+    Filter trades by status (OPEN/CLOSED) or symbol
+    Returns: List of filtered trades
+    """
+    try:
+        trades = get_all_trades()
+        filtered = trades
+
+        if status:
+            filtered = [t for t in filtered if t.get("Status", "").upper() == status.upper()]
+
+        if symbol:
+            filtered = [t for t in filtered if t.get("Symbol", "").upper() == symbol.upper()]
+
+        log(f"✅ Filtered trades: {len(filtered)}")
+        return filtered
+
+    except Exception as e:
+        log(f"❌ Error filtering trades: {e}")
+        return []
 
 
 # ==========================
@@ -243,7 +436,6 @@ def init_db():
 def check_dhan_for_existing_buy(symbol, token):
     """
     Check /v2/forever/orders for existing BUY orders on this symbol.
-    Uses token from parent (app.py) - avoids regeneration!
     """
     try:
         if not token:
@@ -293,44 +485,14 @@ def check_dhan_for_existing_buy(symbol, token):
 
 
 # ==========================
-# SAVE TRADE
-# ==========================
-def save_trade(symbol, sec_id, qty, entry_price, sl_price, target_price, setup_id, dhan_order_id):
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        ts = datetime.now(timezone.utc).isoformat()
-
-        conn.execute("""
-            INSERT INTO trades
-            (symbol, security_id, qty, entry_price, entry_time, status, sl_price, target_price, setup_id, dhan_order_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            symbol, sec_id, qty, entry_price, ts, "OPEN",
-            sl_price, target_price, setup_id, dhan_order_id
-        ))
-        conn.commit()
-        conn.close()
-
-        log(f"✅ Trade saved: {symbol} (Dhan ID: {dhan_order_id})")
-        return True
-    except Exception as e:
-        log(f"❌ Failed to save trade: {e}")
-        return False
-
-
-# ==========================
 # PLACE ORDER
 # ==========================
 def place_order(sec_id, qty, entry, symbol, token):
     """
     Place BUY order on Dhan using token from parent.
-    Uses correct tick size rounding (SEM_TICK_SIZE multiplier → decimal).
     """
     try:
-        # Get tick size for this symbol (corrected logic)
         tick = get_tick_size(symbol)
-
-        # Round prices to correct tick precision
         trigger = round_to_tick(entry, tick, mode="down")
         price = round_to_tick(entry * 1.002, tick, mode="up")
 
@@ -397,11 +559,17 @@ def place_order(sec_id, qty, entry, symbol, token):
 # MAIN
 # ==========================
 def run():
-    init_db()
+    global gsheet
 
     log("=" * 80)
-    log("🚀 ENTRY ENGINE v2.4 (TOKEN FROM PARENT) - TICK SIZE CORRECTED")
+    log("🚀 ENTRY ENGINE v2.5 (GOOGLE SHEETS VERSION)")
     log("=" * 80)
+
+    # Initialize Google Sheets
+    gsheet = init_google_sheets()
+    if not gsheet:
+        log("❌ Failed to initialize Google Sheets")
+        return
 
     # Read env vars
     symbol = os.getenv("SYMBOL", "").strip()
@@ -412,7 +580,6 @@ def run():
     score = float(os.getenv("SCORE", "0") or "0.0")
     setup_id = os.getenv("SETUP_ID", "")
 
-    # GET TOKEN FROM PARENT - KEY FIX!
     token = os.getenv("DHAN_TOKEN")
 
     log(f"Input: {symbol} | Qty={qty} | Entry={entry} | SL={sl} | Target={target}")
@@ -476,11 +643,10 @@ def run():
     log(f"   Symbol: {symbol}")
     log(f"   Qty: {qty}")
 
-    # Save to database
+    # Save to Google Sheets
     if save_trade(symbol, sec_id, qty, entry, sl, target, setup_id, dhan_order_id):
-        log(f"✅ Trade recorded in database")
+        log(f"✅ Trade recorded in Google Sheets")
 
-        # Output JSON
         result = {
             "success": True,
             "order_id": dhan_order_id,
