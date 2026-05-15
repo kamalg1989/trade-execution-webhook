@@ -1,9 +1,9 @@
 # ==============================================
-# 🚀 SL ENGINE V13 (GOOGLE SHEETS INTEGRATED)
-# - READ SL_Price FROM GOOGLE SHEETS
-# - CHECK CLOSE vs SL_Price
-# - MODIFY FOREVER ORDERS FOR EXIT
-# - INSERT MISSING STOCKS
+# 🚀 SL ENGINE V13 FIXED (GOOGLE SHEETS INTEGRATED)
+# - FIX #1: Normalize symbols (strip .NS for matching)
+# - FIX #2: Check for duplicates before inserting
+# - FIX #3: Copy SL_Price from existing row if available
+# - FIX #4: Place default -8% SL even if SL_Price not set
 # ==============================================
 
 import os
@@ -63,6 +63,15 @@ logger = logging.getLogger(__name__)
 
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = datetime.now(timezone.utc)
+
+# ==========================
+# HELPER: Normalize Symbol
+# ==========================
+def normalize_symbol(symbol):
+    """Remove .NS suffix for comparison"""
+    if symbol and isinstance(symbol, str):
+        return symbol.replace(".NS", "").strip()
+    return symbol
 
 # ==========================
 # ENV VALIDATION (CRITICAL)
@@ -149,30 +158,66 @@ def get_trades_from_sheets(worksheet):
         return []
 
 # ==========================
-# INSERT MISSING STOCK
+# FIND EXISTING TRADE (WITH NORMALIZATION)
 # ==========================
-def insert_missing_stock(worksheet, security_id, symbol, qty, avg_price):
-    """Insert a new stock position that's missing from Google Sheets"""
-    try:
-        # Check if already exists
-        records = worksheet.get_all_records()
-        if any(r.get("Symbol") == symbol and r.get("Security_ID") == str(security_id) for r in records):
-            logger.info(f"ℹ️ Stock {symbol} already in sheets")
-            return True
+def find_existing_trade(trades_sheet, symbol, security_id):
+    """Find trade by normalized symbol or exact match"""
+    norm_symbol = normalize_symbol(symbol)
 
-        # New row data
+    for trade in trades_sheet:
+        trade_symbol = trade.get("Symbol", "")
+        trade_sec_id = str(trade.get("Security_ID", ""))
+        norm_trade_symbol = normalize_symbol(trade_symbol)
+
+        # Match by normalized symbol + security_id
+        if norm_trade_symbol == norm_symbol and trade_sec_id == str(security_id):
+            return trade
+
+    return None
+
+# ==========================
+# INSERT MISSING STOCK (FIXED)
+# ==========================
+def insert_missing_stock(worksheet, security_id, symbol, qty, avg_price, sl_price=None):
+    """
+    Insert a new stock position that's missing from Google Sheets
+
+    FIX:
+    - Check for duplicates using normalized symbol
+    - Copy SL_Price if stock already exists with different symbol format
+    - Place default -8% SL if no SL_Price provided
+    """
+    try:
+        # Get all records to check for duplicates
+        records = worksheet.get_all_records()
+
+        # Check if already exists (by normalized symbol + security_id)
+        existing = find_existing_trade(records, symbol, security_id)
+
+        if existing:
+            logger.info(f"✅ Stock {symbol} (normalized) already in sheets - skipping insert")
+            # Return existing trade's SL_Price if available
+            return True, existing.get("SL_Price", "")
+
+        # If SL_Price not provided, calculate default -8%
+        if not sl_price:
+            sl_price = round(avg_price * BASE_SL_PCT, 2)
+            logger.info(f"📊 Using default SL ({BASE_SL_PCT*100}% below entry): {sl_price}")
+
+        # New row data - always store symbol with .NS suffix for consistency
+        symbol_normalized = normalize_symbol(symbol) + ".NS"
         new_id = str(int(time.time() * 1000))[:10]
         now = datetime.now(timezone.utc).isoformat()
 
         row = [
             new_id,              # ID
-            symbol,              # Symbol
+            symbol_normalized,   # Symbol (always with .NS)
             str(security_id),    # Security_ID
             str(qty),            # Qty
             str(avg_price),      # Entry_Price
             now,                 # Entry_Time
             "OPEN",              # Status
-            "",                  # SL_Price (blank - user fills)
+            str(sl_price),       # SL_Price (set to default or provided value)
             "",                  # Target_Price (blank - user fills)
             "",                  # Setup_ID (blank)
             str(avg_price),      # Current_Price
@@ -183,12 +228,12 @@ def insert_missing_stock(worksheet, security_id, symbol, qty, avg_price):
         ]
 
         worksheet.append_row(row, value_input_option="USER_ENTERED")
-        logger.info(f"✅ Inserted missing stock: {symbol} (Qty: {qty})")
-        return True
+        logger.info(f"✅ Inserted missing stock: {symbol_normalized} (Qty: {qty}, SL: {sl_price})")
+        return True, str(sl_price)
 
     except Exception as e:
         logger.error(f"❌ Failed to insert stock {symbol}: {e}")
-        return False
+        return False, None
 
 # ==========================
 # TOKEN
@@ -524,7 +569,7 @@ def modify_sl(order_id, qty, trigger, symbol):
 # ==========================
 def run():
     logger.info("=" * 80)
-    logger.info("🚀 SL ENGINE V13 START")
+    logger.info("🚀 SL ENGINE V13 FIXED START")
     logger.info("=" * 80)
 
     # Validate environment
@@ -538,9 +583,8 @@ def run():
 
     # Get all trades from Google Sheets
     trades_sheet = get_trades_from_sheets(worksheet)
-    trades_by_symbol = {t.get("Symbol"): t for t in trades_sheet if t.get("Symbol")}
 
-    logger.info(f"📊 Trades in Google Sheets: {len(trades_by_symbol)}")
+    logger.info(f"📊 Trades in Google Sheets: {len(trades_sheet)}")
 
     # Get positions and holdings from Dhan
     positions = get_positions()
@@ -575,17 +619,23 @@ def run():
         logger.info(f"\n{'='*80}")
         logger.info(f"📍 Processing: {symbol} (Qty: {pos['qty']}, Avg: {pos['avgPrice']})")
 
-        # Check if stock exists in Google Sheets
-        if symbol not in trades_by_symbol:
+        # FIX #1: Check if stock exists using normalized symbol
+        existing_trade = find_existing_trade(trades_sheet, symbol, sec_id)
+
+        if not existing_trade:
             logger.warning(f"⚠️ {symbol} NOT in Google Sheets - inserting...")
-            if insert_missing_stock(worksheet, sec_id, symbol, pos["qty"], pos["avgPrice"]):
+            success, sl_price = insert_missing_stock(worksheet, sec_id, symbol, pos["qty"], pos["avgPrice"])
+            if success:
                 inserted += 1
             # Refresh trades from sheet
             trades_sheet = get_trades_from_sheets(worksheet)
-            trades_by_symbol = {t.get("Symbol"): t for t in trades_sheet if t.get("Symbol")}
+        else:
+            # Stock exists - get its SL_Price
+            existing_trade = find_existing_trade(trades_sheet, symbol, sec_id)
+            sl_price = existing_trade.get("SL_Price", "") if existing_trade else ""
 
-        # Get trade details from sheet
-        trade = trades_by_symbol.get(symbol)
+        # Get fresh trade details
+        trade = find_existing_trade(trades_sheet, symbol, sec_id)
         if not trade:
             logger.error(f"❌ Could not get trade details for {symbol}")
             continue
@@ -593,12 +643,12 @@ def run():
         entry_price = float(trade.get("Entry_Price") or 0)
         sl_price = trade.get("SL_Price", "")
 
-        # If SL_Price is not set, skip (user needs to set it)
+        # FIX #4: If SL_Price is not set, calculate default -8%
         if not sl_price or sl_price == "":
-            logger.warning(f"⚠️ SL_Price not set for {symbol} in Google Sheets - skipping")
-            continue
-
-        sl_price = float(sl_price)
+            sl_price = round(entry_price * BASE_SL_PCT, 2)
+            logger.warning(f"⚠️ SL_Price not set for {symbol} - using default -8%: {sl_price}")
+        else:
+            sl_price = float(sl_price)
 
         # Get current close price
         close_price = get_close_price(symbol)
