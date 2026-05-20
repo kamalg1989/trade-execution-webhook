@@ -13,7 +13,7 @@ import pyotp
 from threading import Thread
 import pandas as pd
 
-DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tradesdb")
+DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tradedb")
 
 
 def _db_available(path=DB_FILE):
