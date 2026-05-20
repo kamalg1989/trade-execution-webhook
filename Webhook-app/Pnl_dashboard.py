@@ -15,6 +15,13 @@ import pandas as pd
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades.db")
 
+
+def _db_available(path=DB_FILE):
+    try:
+        return bool(path) and os.path.exists(path)
+    except Exception:
+        return False
+
 # ==========================
 # DHAN API CONFIG
 # ==========================
@@ -197,6 +204,10 @@ def sync_entry_price_with_dhan(token):
         if not isinstance(dhan_orders, list):
             return
 
+        if not _db_available():
+            log("⚠️ trades.db not found — skipping sync")
+            return
+
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
 
@@ -245,7 +256,8 @@ class EnhancedPnLDashboard:
     """Enhanced P/L dashboard with live prices and editable fields."""
 
     def __init__(self, db_path=DB_FILE):
-        self.db = db_path
+        # store path but keep functions robust when DB file is removed
+        self.db = db_path if db_path else None
 
     # ==========================
     # OPEN POSITIONS WITH LIVE DATA
@@ -256,6 +268,10 @@ class EnhancedPnLDashboard:
         Returns list of trades with all dashboard columns.
         """
         try:
+            if not self.db or not _db_available(self.db):
+                log("⚠️ trades.db not found — returning empty open trades list")
+                return []
+
             with sqlite3.connect(self.db) as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute("""
@@ -338,6 +354,8 @@ class EnhancedPnLDashboard:
             return False, f"Field '{field_name}' is not editable"
 
         try:
+            if not self.db or not _db_available(self.db):
+                return False, "DB file missing"
             new_value = float(new_value)
 
             with sqlite3.connect(self.db) as conn:
@@ -362,6 +380,8 @@ class EnhancedPnLDashboard:
         safety_sl_pct: 0.92 means 8% below entry price
         """
         try:
+            if not self.db or not _db_available(self.db):
+                return False, "DB file missing"
             safety_sl_pct = float(safety_sl_pct)
 
             with sqlite3.connect(self.db) as conn:
