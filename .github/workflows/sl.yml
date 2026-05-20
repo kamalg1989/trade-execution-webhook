@@ -32,11 +32,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      # ✅ Ensure DB exists BEFORE scripts
-      - name: Prepare DB
-        run: |
-          mkdir -p Webhook-app
-          touch Webhook-app/trades.db
+      # NOTE: Removed automatic creation of trades.db so repository can avoid a committed DB file
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -62,13 +58,11 @@ jobs:
       - name: Run SL Engine
         run: python Webhook-app/sl_engine.py
 
-      - name: Commit DB
+      - name: Push results (no DB commit)
         run: |
           git config user.name "bot"
           git config user.email "bot@github.com"
 
           git pull origin main --rebase || true
 
-          git add Webhook-app/trades.db
-          git commit -m "update trades db" || echo "no changes"
-          git push
+          # Do not add or commit trades.db anymore
