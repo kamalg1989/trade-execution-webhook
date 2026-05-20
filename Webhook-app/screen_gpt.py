@@ -30,6 +30,13 @@ import math
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades.db")
 
+
+def _db_available(path=DB_FILE):
+    try:
+        return bool(path) and os.path.exists(path)
+    except Exception:
+        return False
+
 # ==========================
 # GENERAL CONFIG
 # ==========================
@@ -398,6 +405,17 @@ def get_dhan_token(force_refresh=False):
 # DB
 # ==========================
 def save_trade(payload):
+    # If the SQLite DB file has been removed, fall back to a JSON-lines file
+    if not _db_available():
+        fallback = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trades_fallback.jsonl")
+        try:
+            with open(fallback, "a") as f:
+                f.write(json.dumps(payload, default=str) + "\n")
+            print(f"🔔 trades.db missing — saved trade to {fallback}")
+        except Exception as e:
+            print(f"❌ Failed to write fallback trade file: {e}")
+        return
+
     conn = sqlite3.connect(DB_FILE)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS trade_setups (
@@ -465,6 +483,10 @@ def save_trade(payload):
 
 
 def get_open_risk():
+    if not _db_available():
+        # No DB — assume zero open risk
+        return 0
+
     conn = sqlite3.connect(DB_FILE)
     try:
         cur = conn.execute("""
