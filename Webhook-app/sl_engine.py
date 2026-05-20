@@ -1,11 +1,17 @@
 # ==============================================
-# 🚀 SL ENGINE V14 - FINAL VERSION
+# 🚀 SL ENGINE V15 - COMPLETE WITH DATA CLEANUP
 #
 # FEATURES:
-# ✅ IST Timezone fix for close price fetch
+# ✅ Data cleanup logic (remove stale rows)
+# ✅ Pending buy order detection
+# ✅ Stale row detection & deletion
+# ✅ New columns added (P-AD)
+# ✅ Entry_Order_ID tracking
+# ✅ All previous V14 features retained
+# ✅ IST Timezone fix
 # ✅ Smart fallback: Close → LTP → Entry
-# ✅ Extensive debug logging for troubleshooting
-# ✅ Google Sheets updates with row-by-row fix
+# ✅ Extensive debug logging
+# ✅ Google Sheets updates
 # ✅ Portfolio tracking & archiving
 # ✅ Telegram alerts
 # ==============================================
@@ -59,6 +65,7 @@ DRY_RUN = os.getenv("SL_ENGINE_DRY_RUN", "false").lower() in ("true", "1", "yes"
 BASE_SL_PCT = 0.92
 TRAIL_PROFIT_LOCK = 0.5
 MIN_LTP_BUFFER = 0.05
+STALE_DAYS_THRESHOLD = 7  # Mark row stale if no update for 7 days
 
 session = requests.Session()
 
@@ -66,7 +73,7 @@ session = requests.Session()
 # LOGGING SETUP
 # ==========================
 logging.basicConfig(
-    level=logging.DEBUG,  # Set to DEBUG to capture all logs
+    level=logging.DEBUG,
     format="[%(asctime)s] %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
@@ -192,14 +199,8 @@ def init_google_sheets():
             logger.info(f"✅ Using worksheet: Trades")
         except gspread.exceptions.WorksheetNotFound:
             logger.warning(f"⚠️ Worksheet 'Trades' not found, creating...")
-            trades_ws = spreadsheet.add_worksheet(title="Trades", rows=1000, cols=25)
-            headers = [
-                "ID", "Symbol", "Security_ID", "Qty", "Entry_Price", "Entry_Time",
-                "Current_Price", "Exit_Price", "Exit_Time", "SL_Price", "Previous_SL_Price",
-                "Target_Price", "Status", "Unrealized_PnL", "Realized_PnL", "Unrealized_PnL%",
-                "Realized_PnL%", "Win_Loss", "Return_Pct", "Days_Held", "RR_Ratio",
-                "Entry_Order_ID", "Dhan_Order_ID", "Exit_Order_ID", "Setup_ID", "Updated_At"
-            ]
+            trades_ws = spreadsheet.add_worksheet(title="Trades", rows=1000, cols=30)
+            headers = get_column_headers()
             trades_ws.insert_row(headers, 1)
             logger.info(f"✅ Created Trades worksheet with headers")
 
@@ -222,14 +223,8 @@ def init_google_sheets():
             logger.info(f"✅ Using worksheet: Archive")
         except gspread.exceptions.WorksheetNotFound:
             logger.warning(f"⚠️ Worksheet 'Archive' not found, creating...")
-            archive_ws = spreadsheet.add_worksheet(title="Archive", rows=5000, cols=25)
-            headers = [
-                "ID", "Symbol", "Security_ID", "Qty", "Entry_Price", "Entry_Time",
-                "Current_Price", "Exit_Price", "Exit_Time", "SL_Price", "Previous_SL_Price",
-                "Target_Price", "Status", "Unrealized_PnL", "Realized_PnL", "Unrealized_PnL%",
-                "Realized_PnL%", "Win_Loss", "Return_Pct", "Days_Held", "RR_Ratio",
-                "Entry_Order_ID", "Dhan_Order_ID", "Exit_Order_ID", "Setup_ID", "Updated_At"
-            ]
+            archive_ws = spreadsheet.add_worksheet(title="Archive", rows=5000, cols=30)
+            headers = get_column_headers()
             archive_ws.insert_row(headers, 1)
             logger.info(f"✅ Created Archive worksheet with headers")
 
@@ -242,6 +237,46 @@ def init_google_sheets():
     except Exception as e:
         logger.error(f"❌ Google Sheets init failed: {e}")
         return None
+
+
+# ==========================
+# COLUMN HEADERS (A-AD)
+# ==========================
+def get_column_headers():
+    """Get all column headers A-AD"""
+    return [
+        # A-O: Original columns (NEVER TOUCHED)
+        "ID",                    # A
+        "Symbol",               # B
+        "Security_ID",          # C
+        "Qty",                  # D
+        "Entry_Price",          # E
+        "Entry_Time",           # F
+        "Status",               # G
+        "SL_Price",             # H
+        "Target_Price",         # I
+        "Setup_ID",             # J
+        "Current_Price",        # K
+        "PnL",                  # L
+        "PnL_Percent",          # M
+        "Updated_At",           # N
+        "Dhan_Order_ID",        # O
+
+        # P-AD: New columns (added at END)
+        "Exit_Price",           # P
+        "Exit_Time",            # Q
+        "Previous_SL_Price",    # R
+        "Unrealized_PnL",       # S
+        "Realized_PnL",         # T
+        "Unrealized_PnL%",      # U
+        "Realized_PnL%",        # V
+        "Win_Loss",             # W
+        "Return_Pct",           # X
+        "Days_Held",            # Y
+        "RR_Ratio",             # Z
+        "Entry_Order_ID",       # AA
+        "Exit_Order_ID",        # AB
+    ]
 
 
 # ==========================
@@ -277,6 +312,254 @@ def find_existing_trade(trades_sheet, symbol, security_id):
 
 
 # ==========================
+# V15 NEW: CLEANUP STALE TRADES
+# ==========================
+def cleanup_sheet_data(trades_ws, trades_sheet, positions_map, sl_orders_map):
+    """
+    Remove stale rows that don't match Dhan orders or positions
+
+    Logic:
+    - If stock NOT in positions AND NOT in SL orders → DELETE
+    - If stock NOT in Dhan at all → DELETE
+    - If very old (>STALE_DAYS_THRESHOLD) without updates → DELETE
+    - If Entry_Order_ID is old/stale → DELETE
+    """
+    try:
+        logger.info("\n" + "="*80)
+        logger.info("🧹 PHASE 1: CLEANUP STALE TRADES")
+        logger.info("="*80)
+
+        rows_to_delete = []
+        deletion_reasons = {}
+
+        for idx, trade in enumerate(trades_sheet):
+            symbol = trade.get("Symbol", "")
+            sec_id = str(trade.get("Security_ID", ""))
+            updated_at = trade.get("Updated_At", "")
+            entry_order_id = trade.get("Entry_Order_ID", "")
+
+            delete_reason = None
+
+            # Check 1: Is this stock in any Dhan position/holding?
+            if sec_id not in positions_map:
+                delete_reason = "NOT_IN_DHAN_POSITIONS"
+
+            # Check 2: Is this stock in any SL order?
+            elif sec_id not in sl_orders_map:
+                delete_reason = "NOT_IN_SL_ORDERS"
+
+            # Check 3: Is the Entry_Order_ID very old?
+            if entry_order_id and not delete_reason:
+                try:
+                    entry_time_str = trade.get("Entry_Time", "")
+                    if entry_time_str:
+                        entry_time = datetime.fromisoformat(entry_time_str.replace("Z", "+00:00"))
+                        age_days = (datetime.now(timezone.utc) - entry_time).days
+
+                        # If pending for > STALE_DAYS_THRESHOLD days, mark as stale
+                        if trade.get("Status") == "PENDING" and age_days > STALE_DAYS_THRESHOLD:
+                            delete_reason = f"PENDING_STALE_{age_days}DAYS"
+                except:
+                    pass
+
+            # Check 4: Is updated_at very old?
+            if updated_at and not delete_reason:
+                try:
+                    updated_time = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                    age_days = (datetime.now(timezone.utc) - updated_time).days
+
+                    # If not updated for > STALE_DAYS_THRESHOLD days AND not in positions, delete
+                    if age_days > STALE_DAYS_THRESHOLD and sec_id not in positions_map:
+                        delete_reason = f"NO_UPDATE_{age_days}DAYS"
+                except:
+                    pass
+
+            # Mark for deletion
+            if delete_reason:
+                row_num = idx + 2  # +2 because row 1 is header, list is 0-indexed
+                rows_to_delete.append(row_num)
+                deletion_reasons[symbol] = delete_reason
+                logger.warning(f"🗑️  MARKED FOR DELETE: {symbol} ({sec_id}) - Reason: {delete_reason}")
+
+        # Delete rows from bottom to top (to avoid index shift)
+        if rows_to_delete:
+            logger.info(f"\n📤 Deleting {len(rows_to_delete)} stale rows...")
+            for row_num in sorted(rows_to_delete, reverse=True):
+                try:
+                    if not DRY_RUN:
+                        trades_ws.delete_rows(row_num)
+                        logger.info(f"✅ Deleted row {row_num}")
+                    else:
+                        logger.info(f"🔕 [DRY_RUN] Would delete row {row_num}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to delete row {row_num}: {e}")
+
+            # Send deletion alert
+            deletion_summary = "\n".join([f"{sym}: {reason}" for sym, reason in deletion_reasons.items()])
+            send_telegram_alert("🗑️ STALE ROWS DELETED", {
+                "Count": len(rows_to_delete),
+                "Stocks": ", ".join(deletion_reasons.keys()),
+                "Reasons": deletion_summary[:500]  # Limit to 500 chars for Telegram
+            })
+        else:
+            logger.info("✅ No stale rows to delete")
+
+        return len(rows_to_delete), deletion_reasons
+
+    except Exception as e:
+        logger.error(f"❌ Cleanup failed: {e}")
+        return 0, {}
+
+
+# ==========================
+# V15 NEW: ADD NEW COLUMN HEADERS
+# ==========================
+def add_new_column_headers(trades_ws):
+    """
+    Add headers for new columns P-AD if they don't exist
+    Only adds if columns are empty
+    """
+    try:
+        logger.info("\n" + "="*80)
+        logger.info("📋 PHASE 2: ADD NEW COLUMN HEADERS (P-AD)")
+        logger.info("="*80)
+
+        headers = get_column_headers()
+
+        # Get current header row
+        current_headers = trades_ws.row_values(1)
+
+        # Only add if needed
+        new_headers_needed = []
+        for col_idx, header in enumerate(headers):
+            col_letter = chr(65 + col_idx)  # A=65 in ASCII
+
+            if col_idx >= len(current_headers):
+                new_headers_needed.append((col_letter, header))
+
+        if new_headers_needed:
+            logger.info(f"📝 Adding {len(new_headers_needed)} new column headers...")
+            for col_letter, header in new_headers_needed:
+                try:
+                    if not DRY_RUN:
+                        trades_ws.update(f"{col_letter}1", header)
+                        logger.info(f"✅ Added header: {col_letter} = {header}")
+                    else:
+                        logger.info(f"🔕 [DRY_RUN] Would add header: {col_letter} = {header}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to add header {col_letter}: {e}")
+        else:
+            logger.info("✅ All column headers already exist")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Column header addition failed: {e}")
+        return False
+
+
+# ==========================
+# V15 NEW: CHECK PENDING BUY ORDERS
+# ==========================
+def check_pending_buy_orders(trades_sheet):
+    """
+    Detect and mark pending buy orders (Entry_Order_ID exists but not filled)
+
+    Logic:
+    - If Entry_Order_ID exists, query Dhan for order status
+    - If status = PENDING → mark Status = "PENDING"
+    - If status = FILLED → mark Status = "OPEN"
+    - If status = CANCELLED or old → delete row (stale)
+    """
+    try:
+        logger.info("\n" + "="*80)
+        logger.info("⏳ PHASE 3: CHECK PENDING BUY ORDERS")
+        logger.info("="*80)
+
+        pending_updates = []
+        stale_entry_orders = []
+
+        for trade in trades_sheet:
+            entry_order_id = trade.get("Entry_Order_ID", "")
+            symbol = trade.get("Symbol", "")
+
+            if not entry_order_id or entry_order_id == "":
+                logger.debug(f"ℹ️  {symbol} - No Entry_Order_ID, skipping")
+                continue
+
+            # Query Dhan for this order status
+            logger.info(f"🔍 Checking entry order for {symbol} (ID: {entry_order_id})")
+
+            order_status = get_dhan_order_status(entry_order_id)
+
+            if order_status == "PENDING":
+                logger.warning(f"⏳ {symbol} - Entry order PENDING (waiting to fill)")
+                pending_updates.append({
+                    "symbol": symbol,
+                    "trade": trade,
+                    "status": "PENDING"
+                })
+            elif order_status == "FILLED":
+                logger.info(f"✅ {symbol} - Entry order FILLED (position active)")
+                pending_updates.append({
+                    "symbol": symbol,
+                    "trade": trade,
+                    "status": "OPEN"
+                })
+            elif order_status in ("CANCELLED", "REJECTED", "EXPIRED"):
+                logger.warning(f"❌ {symbol} - Entry order {order_status} (stale)")
+                stale_entry_orders.append({
+                    "symbol": symbol,
+                    "status": order_status
+                })
+
+        logger.info(f"📊 Pending: {len(pending_updates)}, Stale: {len(stale_entry_orders)}")
+
+        return pending_updates, stale_entry_orders
+
+    except Exception as e:
+        logger.error(f"❌ Pending order check failed: {e}")
+        return [], []
+
+
+# ==========================
+# V15 NEW: GET DHAN ORDER STATUS
+# ==========================
+def get_dhan_order_status(order_id):
+    """
+    Query Dhan API to get order status
+
+    Returns: "PENDING", "FILLED", "CANCELLED", "REJECTED", "EXPIRED", or None
+    """
+    try:
+        token = get_token()
+        if not token:
+            logger.warning(f"⚠️ No token for order status check")
+            return None
+
+        logger.debug(f"📡 Querying Dhan API for order {order_id}...")
+
+        r = requests.get(
+            f"https://api.dhan.co/v2/orders/{order_id}",
+            headers={"access-token": token, "client-id": DHAN_CLIENT_ID},
+            timeout=10
+        )
+
+        if r.status_code == 200:
+            data = r.json()
+            status = data.get("orderStatus", "UNKNOWN")
+            logger.debug(f"✅ Order {order_id} status: {status}")
+            return status
+        else:
+            logger.warning(f"⚠️ Order status API error: {r.status_code}")
+            return None
+
+    except Exception as e:
+        logger.error(f"❌ Order status check failed: {e}")
+        return None
+
+
+# ==========================
 # INSERT MISSING STOCK
 # ==========================
 def insert_missing_stock(trades_ws, security_id, symbol, qty, avg_price, sl_price=None):
@@ -294,13 +577,41 @@ def insert_missing_stock(trades_ws, security_id, symbol, qty, avg_price, sl_pric
         new_id = str(int(time.time() * 1000))[:10]
         now = datetime.now(timezone.utc).isoformat()
 
+        # Create row with all columns (A-AB at minimum)
         row = [
-            new_id, symbol_normalized, str(security_id), str(qty), str(avg_price), now,
-            str(avg_price), "", "", str(sl_price), str(sl_price), "", "INITIAL_SL",
-            "0", "", "0", "", "", "", "", "", "", "", "", "", now
+            new_id,                    # A: ID
+            symbol_normalized,         # B: Symbol
+            str(security_id),          # C: Security_ID
+            str(qty),                  # D: Qty
+            str(avg_price),            # E: Entry_Price
+            now,                       # F: Entry_Time
+            "INITIAL_SL",              # G: Status
+            str(sl_price),             # H: SL_Price
+            "",                        # I: Target_Price
+            "",                        # J: Setup_ID
+            str(avg_price),            # K: Current_Price
+            "0",                       # L: PnL
+            "0",                       # M: PnL_Percent
+            now,                       # N: Updated_At
+            "",                        # O: Dhan_Order_ID
+            "",                        # P: Exit_Price
+            "",                        # Q: Exit_Time
+            str(sl_price),             # R: Previous_SL_Price
+            "0",                       # S: Unrealized_PnL
+            "0",                       # T: Realized_PnL
+            "0",                       # U: Unrealized_PnL%
+            "0",                       # V: Realized_PnL%
+            "",                        # W: Win_Loss
+            "0",                       # X: Return_Pct
+            "0",                       # Y: Days_Held
+            "0",                       # Z: RR_Ratio
+            "",                        # AA: Entry_Order_ID
+            "",                        # AB: Exit_Order_ID
         ]
 
-        trades_ws.append_row(row, value_input_option="USER_ENTERED")
+        if not DRY_RUN:
+            trades_ws.append_row(row, value_input_option="USER_ENTERED")
+
         logger.info(f"✅ Inserted: {symbol_normalized} (SL: {sl_price})")
         return True, str(sl_price)
 
@@ -310,27 +621,23 @@ def insert_missing_stock(trades_ws, security_id, symbol, qty, avg_price, sl_pric
 
 
 # ==========================
-# UPDATE TRADE ROW - FIXED
+# UPDATE TRADE ROW - FIXED FOR NEW COLUMNS
 # ==========================
 def update_trade_row(trades_ws, row_number, updates_dict):
-    """Update a single row in Trades sheet"""
+    """Update a single row in Trades sheet (supports A-AB columns)"""
     try:
-        headers = [
-            "ID", "Symbol", "Security_ID", "Qty", "Entry_Price", "Entry_Time",
-            "Current_Price", "Exit_Price", "Exit_Time", "SL_Price", "Previous_SL_Price",
-            "Target_Price", "Status", "Unrealized_PnL", "Realized_PnL", "Unrealized_PnL%",
-            "Realized_PnL%", "Win_Loss", "Return_Pct", "Days_Held", "RR_Ratio",
-            "Entry_Order_ID", "Dhan_Order_ID", "Exit_Order_ID", "Setup_ID", "Updated_At"
-        ]
+        headers = get_column_headers()
 
-        cell_range = trades_ws.range(f'A{row_number}:Y{row_number}')
+        cell_range = trades_ws.range(f'A{row_number}:{chr(64 + len(headers))}{row_number}')
 
         for col_idx, cell in enumerate(cell_range):
             col_name = headers[col_idx]
             if col_name in updates_dict:
                 cell.value = updates_dict[col_name]
 
-        trades_ws.update_cells(cell_range, value_input_option="USER_ENTERED")
+        if not DRY_RUN:
+            trades_ws.update_cells(cell_range, value_input_option="USER_ENTERED")
+
         logger.debug(f"✅ Updated row {row_number} with fields: {', '.join(updates_dict.keys())}")
         return True
 
@@ -475,16 +782,11 @@ def get_forever_orders():
 
 
 # ==========================
-# GET CLOSE PRICE - FIXED IST TIMEZONE
+# GET CLOSE PRICE - IST TIMEZONE
 # ==========================
 def get_close_price_from_dhan(security_id, symbol):
     """
     Fetch today's close price from Dhan API with IST timezone
-
-    Logic:
-    - Use IST timezone (not UTC)
-    - If before market close (3:30 PM IST): fetch yesterday's close
-    - If after market close (3:30 PM IST): fetch today's close
     """
     try:
         token = get_token()
@@ -492,19 +794,15 @@ def get_close_price_from_dhan(security_id, symbol):
             logger.warning(f"⚠️ No token for close price fetch ({symbol})")
             return None
 
-        # Get current time in IST
         now_ist = datetime.now(IST)
         logger.debug(f"📍 Current IST time: {now_ist.strftime('%Y-%m-%d %H:%M:%S IST')}")
 
-        # Determine trade date based on market hours
         market_close = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
 
         if now_ist < market_close:
-            # Before market close (3:30 PM), get yesterday's close
             trade_date = now_ist - timedelta(days=1)
             logger.debug(f"⏰ Before market close - fetching YESTERDAY'S close")
         else:
-            # After market close (3:30 PM), get today's close
             trade_date = now_ist
             logger.debug(f"⏰ After market close - fetching TODAY'S close")
 
@@ -548,11 +846,9 @@ def get_close_price_from_dhan(security_id, symbol):
                 return close_price
             else:
                 logger.warning(f"⚠️ {symbol} close price API returned empty data")
-                logger.debug(f"   Full response: {data}")
                 return None
         else:
             logger.warning(f"⚠️ {symbol} close price API error: Status {r.status_code}")
-            logger.debug(f"   Response: {r.text}")
             return None
 
     except Exception as e:
@@ -564,10 +860,7 @@ def get_close_price_from_dhan(security_id, symbol):
 # GET LTP FROM DHAN - FALLBACK
 # ==========================
 def get_ltp_from_dhan(security_id, symbol):
-    """
-    Fetch intraday LTP as fallback when close price fails
-    Uses 60-minute candles for more data availability
-    """
+    """Fetch intraday LTP as fallback when close price fails"""
     try:
         token = get_token()
         if not token:
@@ -589,8 +882,6 @@ def get_ltp_from_dhan(security_id, symbol):
             "fromDate": from_date,
             "toDate": to_date
         }
-
-        logger.debug(f"📤 Payload: {payload}")
 
         headers = {
             "Content-Type": "application/json",
@@ -616,11 +907,9 @@ def get_ltp_from_dhan(security_id, symbol):
                 return ltp
             else:
                 logger.warning(f"⚠️ {symbol} LTP API returned empty data")
-                logger.debug(f"   Full response: {data}")
                 return None
         else:
             logger.warning(f"⚠️ {symbol} LTP API error: Status {r.status_code}")
-            logger.debug(f"   Response: {r.text}")
             return None
 
     except Exception as e:
@@ -632,26 +921,20 @@ def get_ltp_from_dhan(security_id, symbol):
 # GET CURRENT PRICE - SMART FALLBACK
 # ==========================
 def get_current_price(security_id, symbol):
-    """
-    Get current price with smart fallback strategy
-    Priority: Close (IST) → LTP (Intraday) → None
-    """
+    """Get current price with smart fallback strategy"""
     logger.info(f"🔍 Getting current price for {symbol}...")
 
-    # Try 1: Close price (IST-fixed)
     close_price = get_close_price_from_dhan(security_id, symbol)
     if close_price:
         logger.info(f"✅ Using CLOSE price for {symbol}: {close_price}")
         return close_price, "CLOSE"
 
-    # Try 2: Fallback to LTP
     logger.info(f"⚠️ Close price failed, trying LTP fallback for {symbol}...")
     ltp = get_ltp_from_dhan(security_id, symbol)
     if ltp:
         logger.warning(f"⚠️ Using LTP (fallback) for {symbol}: {ltp}")
         return ltp, "LTP"
 
-    # All failed
     logger.error(f"❌ No price data available for {symbol}")
     return None, "NONE"
 
@@ -890,7 +1173,9 @@ def update_portfolio_sheet(portfolio_ws, metrics):
         row = [today, metrics["active_count"], metrics["open_pnl"], metrics["realized_pnl"],
                metrics["win_rate"], 0, 0, 0, metrics["total_trades"], now]
 
-        portfolio_ws.append_row(row, value_input_option="USER_ENTERED")
+        if not DRY_RUN:
+            portfolio_ws.append_row(row, value_input_option="USER_ENTERED")
+
         logger.info(f"✅ Updated Portfolio sheet")
         return True
     except Exception as e:
@@ -899,11 +1184,13 @@ def update_portfolio_sheet(portfolio_ws, metrics):
 
 
 # ==========================
-# MAIN ENGINE
+# MAIN ENGINE V15
 # ==========================
 def run():
     logger.info("=" * 80)
-    logger.info("🚀 SL ENGINE V14 - START (IST Timezone Fix + Debug Logging)")
+    logger.info("🚀 SL ENGINE V15 - COMPLETE WITH DATA CLEANUP")
+    logger.info("=" * 80)
+    logger.info(f"🔕 DRY_RUN: {DRY_RUN}")
     logger.info("=" * 80)
 
     validate_env()
@@ -917,6 +1204,9 @@ def run():
     portfolio_ws = sheets["portfolio"]
     trades_sheet = get_trades_from_sheets(trades_ws)
 
+    logger.info(f"📊 Current trades in sheet: {len(trades_sheet)}")
+
+    # Get Dhan data
     positions = get_positions()
     holdings = get_holdings()
 
@@ -924,16 +1214,41 @@ def run():
     for h in holdings:
         all_pos.setdefault(h["securityId"], h)
 
-    logger.info(f"📊 Total positions: {len(all_pos)}")
+    logger.info(f"📊 Total positions in Dhan: {len(all_pos)}")
 
     forever = get_forever_orders()
     sl_map = {str(o["securityId"]): o for o in forever if o.get("transactionType") == "SELL" and o.get("orderStatus") == "PENDING"}
 
-    logger.info(f"📊 Existing SL orders: {len(sl_map)}")
+    logger.info(f"📊 Existing SL orders in Dhan: {len(sl_map)}")
+
+    # ==========================
+    # V15 PHASE 1: CLEANUP STALE TRADES
+    # ==========================
+    deleted_count, deletion_reasons = cleanup_sheet_data(trades_ws, trades_sheet, all_pos, sl_map)
+
+    # Refresh trades after cleanup
+    trades_sheet = get_trades_from_sheets(trades_ws)
+    logger.info(f"📊 Trades after cleanup: {len(trades_sheet)}")
+
+    # ==========================
+    # V15 PHASE 2: ADD NEW COLUMN HEADERS
+    # ==========================
+    add_new_column_headers(trades_ws)
+
+    # ==========================
+    # V15 PHASE 3: CHECK PENDING BUY ORDERS
+    # ==========================
+    pending_updates, stale_entry_orders = check_pending_buy_orders(trades_sheet)
+
+    # ==========================
+    # V15 PHASE 4: PROCESS TRADES (SL LOGIC)
+    # ==========================
+    logger.info("\n" + "="*80)
+    logger.info("⚙️ PHASE 4: PROCESS TRADES - SL LOGIC")
+    logger.info("="*80)
 
     placed = modified = marked_exit = 0
 
-    # Process each position
     for sec_id, pos in all_pos.items():
         symbol = pos['symbol']
         logger.info(f"\n{'='*80}")
@@ -954,7 +1269,7 @@ def run():
         sl_price = float(trade.get("SL_Price") or round(entry_price * BASE_SL_PCT, 2))
         previous_sl_price = float(trade.get("Previous_SL_Price") or sl_price)
 
-        # FIXED: Get current price with IST timezone + LTP fallback
+        # Get current price
         logger.info(f"🔍 Fetching current price for {symbol}...")
         current_price, price_source = get_current_price(sec_id, symbol)
 
@@ -1011,25 +1326,37 @@ def run():
 
         time.sleep(0.5)
 
-    # Update portfolio
+    # ==========================
+    # PHASE 5: UPDATE PORTFOLIO
+    # ==========================
     trades_sheet = get_trades_from_sheets(trades_ws)
     metrics = calculate_portfolio_metrics(trades_sheet)
     if metrics:
         update_portfolio_sheet(portfolio_ws, metrics)
 
+    # ==========================
+    # FINAL SUMMARY
+    # ==========================
     logger.info(f"\n{'='*80}")
-    logger.info(f"✅ SL ENGINE COMPLETED")
+    logger.info(f"✅ SL ENGINE V15 COMPLETED")
     logger.info(f"{'='*80}")
+    logger.info(f"   🗑️  Stale rows deleted: {deleted_count}")
     logger.info(f"   📊 SL Placed: {placed}")
     logger.info(f"   🔄 SL Modified (Trailing): {modified}")
     logger.info(f"   🔴 SL Modified (Exit): {marked_exit}")
+    logger.info(f"   ⏳ Pending orders: {len(pending_updates)}")
+    logger.info(f"   ❌ Stale entry orders: {len(stale_entry_orders)}")
+    logger.info(f"   📈 Active positions: {metrics['active_count'] if metrics else 'N/A'}")
+    logger.info(f"   💰 Open PnL: ₹{metrics['open_pnl'] if metrics else 'N/A'}")
     logger.info(f"{'='*80}")
 
-    send_telegram_alert("🚀 SL ENGINE V14 COMPLETED", {
+    send_telegram_alert("🚀 SL ENGINE V15 COMPLETED", {
+        "Deleted": deleted_count,
         "Placed": placed,
         "Modified": modified,
         "Exit": marked_exit,
-        "Total": len(all_pos),
+        "Pending": len(pending_updates),
+        "Stale": len(stale_entry_orders),
         "Active": metrics["active_count"] if metrics else 0,
         "Open PnL": f"₹{metrics['open_pnl']}" if metrics else "N/A"
     })
