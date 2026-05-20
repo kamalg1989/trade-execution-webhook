@@ -658,27 +658,29 @@ def run():
 
         logger.info(f"   Entry: {entry_price} | Close: {close_price} | SL_Price: {sl_price}")
 
-        # ===== KEY LOGIC: Check if close < SL_Price =====
-        if close_price < sl_price:
-            logger.warning(f"🔴 {symbol} CLOSE ({close_price}) < SL_Price ({sl_price}) - MARKING FOR EXIT")
+        # ===== KEY LOGIC: Check if LTP < SL_Price (REAL-TIME EXIT CHECK) =====
+        ltp = get_ltp(symbol)
+        if ltp:
+            logger.info(f"   Real-time LTP: {ltp}")
+            
+            if ltp < sl_price:
+                logger.warning(f"🔴 {symbol} LTP ({ltp}) < SL_Price ({sl_price}) - MARKING FOR EXIT")
 
-            if sec_id in sl_map:
-                sl_order = sl_map[sec_id]
-                if modify_sl_for_exit(sl_order["orderId"], pos["qty"], symbol):
-                    marked_exit += 1
+                if sec_id in sl_map:
+                    sl_order = sl_map[sec_id]
+                    if modify_sl_for_exit(sl_order["orderId"], pos["qty"], symbol):
+                        marked_exit += 1
+                else:
+                    logger.warning(f"⚠️ No SL order found for {symbol} to modify")
             else:
-                logger.warning(f"⚠️ No SL order found for {symbol} to modify")
-        else:
-            logger.info(f"✅ {symbol} close price OK (Close >= SL_Price)")
+                logger.info(f"✅ {symbol} LTP OK (LTP >= SL_Price)")
 
-            # SL exists - check for trailing adjustment (only if not marked for exit)
-            if sec_id in sl_map:
-                existing_order = sl_map[sec_id]
-                current_trigger = existing_order.get("triggerPrice")
+                # SL exists - check for trailing adjustment (only if not marked for exit)
+                if sec_id in sl_map:
+                    existing_order = sl_map[sec_id]
+                    current_trigger = existing_order.get("triggerPrice")
 
-                # Get LTP for trailing logic
-                ltp = get_ltp(symbol)
-                if ltp:
+                    # LTP already fetched above, use it for trailing logic
                     new_trigger = calculate_sl(entry_price, ltp, current_trigger)
                     logger.info(f"   Current SL: {current_trigger} → Calculated: {new_trigger}")
 
@@ -687,12 +689,20 @@ def run():
                             modified += 1
                     else:
                         logger.info(f"✅ SL optimal for {symbol} (no change)")
-            else:
-                logger.warning(f"⚠️ No SL order for {symbol} - placing new SL")
-                if place_sl(sec_id, pos["qty"], entry_price, symbol):
-                    placed += 1
+                else:
+                    logger.warning(f"⚠️ No SL order for {symbol} - placing new SL")
+                    if place_sl(sec_id, pos["qty"], entry_price, symbol):
+                        placed += 1
 
-            time.sleep(0.5)
+                time.sleep(0.5)
+        else:
+            logger.warning(f"⚠️ Could not fetch LTP for {symbol} - falling back to close price check")
+            if close_price < sl_price:
+                logger.warning(f"🔴 {symbol} CLOSE ({close_price}) < SL_Price ({sl_price}) - MARKING FOR EXIT")
+                if sec_id in sl_map:
+                    sl_order = sl_map[sec_id]
+                    if modify_sl_for_exit(sl_order["orderId"], pos["qty"], symbol):
+                        marked_exit += 1
 
     # ===== SUMMARY =====
     logger.info(f"\n{'='*80}")
