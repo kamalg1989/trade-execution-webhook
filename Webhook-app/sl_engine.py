@@ -380,39 +380,55 @@ def get_forever_orders():
 
 
 # ==========================
-# ADD NEW COLUMN HEADERS
+# ADD NEW COLUMN HEADERS - FIXED
 # ==========================
 def add_new_column_headers(trades_ws):
-    """Add headers for new columns P-AB at the END"""
+    """Add headers for new columns P-AB using CORRECT gspread API"""
     try:
-        existing_headers = trades_ws.row_values(1)
-        logger.info(f"📊 Current headers count: {len(existing_headers)}")
+        logger.info("\n" + "="*80)
+        logger.info("📋 ADDING NEW COLUMN HEADERS (P-AB)")
+        logger.info("="*80)
 
-        if len(existing_headers) < 16:
-            logger.info(f"🔧 Adding new column headers...")
+        current_headers = trades_ws.row_values(1)
+        logger.info(f"📊 Current headers in row 1: {len(current_headers)} columns")
 
-            col_letters = ['P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'AA', 'AB']
-            col_names = [
-                "Exit_Price", "Exit_Time", "Previous_SL_Price", "Unrealized_PnL",
-                "Realized_PnL", "Unrealized_PnL%", "Realized_PnL%", "Win_Loss",
-                "Return_Pct", "Days_Held", "RR_Ratio", "Entry_Order_ID", "Exit_Order_ID"
-            ]
+        new_headers = [
+            "Exit_Price",           # P (column 16)
+            "Exit_Time",            # Q (column 17)
+            "Previous_SL_Price",    # R (column 18)
+            "Unrealized_PnL",       # S (column 19)
+            "Realized_PnL",         # T (column 20)
+            "Unrealized_PnL%",      # U (column 21)
+            "Realized_PnL%",        # V (column 22)
+            "Win_Loss",             # W (column 23)
+            "Return_Pct",           # X (column 24)
+            "Days_Held",            # Y (column 25)
+            "RR_Ratio",             # Z (column 26)
+            "Entry_Order_ID",       # AA (column 27)
+            "Exit_Order_ID",        # AB (column 28)
+        ]
 
-            for col_letter, col_name in zip(col_letters, col_names):
-                try:
-                    trades_ws.update(f"{col_letter}1", col_name)
-                    logger.debug(f"✅ Added header: {col_letter}1 = {col_name}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Could not add header {col_letter}1: {e}")
+        logger.info(f"🔧 Adding {len(new_headers)} headers using batch update...")
 
-            logger.info(f"✅ New column headers added successfully")
-        else:
-            logger.info(f"ℹ️ Column headers already present")
+        # Use update_cells with proper Cell objects - THIS IS THE FIX!
+        cell_list = []
+        for col_idx, header_name in enumerate(new_headers, start=16):
+            cell_list.append(gspread.Cell(1, col_idx, header_name))
 
+        if not DRY_RUN:
+            trades_ws.update_cells(cell_list, value_input_option="USER_ENTERED")
+
+        for col_idx, header_name in enumerate(new_headers, start=16):
+            col_letter = chr(64 + col_idx)
+            logger.info(f"✅ Added header: {col_letter}1 = {header_name}")
+
+        logger.info(f"✅ New column headers added successfully!")
         return True
 
     except Exception as e:
         logger.error(f"❌ Add headers failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return False
 
 
@@ -484,8 +500,8 @@ def cleanup_stale_trades(trades_ws, trades_sheet):
 # ==========================
 # GET CLOSE PRICE - IST FIXED
 # ==========================
-def get_close_price_from_dhan(security_id, symbol):
-    """Fetch close price with IST timezone"""
+def get_close_price_from_dhan(security_id, symbol, debug=False):
+    """Fetch close price with IST timezone and optional debug logging"""
     try:
         token = get_token()
         if not token:
@@ -496,11 +512,20 @@ def get_close_price_from_dhan(security_id, symbol):
 
         if now_ist < market_close:
             trade_date = now_ist - timedelta(days=1)
+            date_reason = "Before market close - using yesterday"
         else:
             trade_date = now_ist
+            date_reason = "After market close - using today"
 
         from_date = trade_date.strftime("%Y-%m-%d")
         to_date = (trade_date + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        if debug:
+            logger.debug(f"🔍 [DEBUG] {symbol} close price fetch:")
+            logger.debug(f"   Current IST: {now_ist.strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.debug(f"   Market close: {market_close.strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.debug(f"   Date reason: {date_reason}")
+            logger.debug(f"   From: {from_date}, To: {to_date}")
 
         logger.info(f"📊 Fetching {symbol} close | Date: {from_date} to {to_date}")
 
@@ -513,6 +538,9 @@ def get_close_price_from_dhan(security_id, symbol):
             "toDate": to_date
         }
 
+        if debug:
+            logger.debug(f"   Payload: {payload}")
+
         r = requests.post(
             "https://api.dhan.co/v2/charts/historical",
             json=payload,
@@ -520,17 +548,28 @@ def get_close_price_from_dhan(security_id, symbol):
             timeout=15
         )
 
+        logger.debug(f"📡 Response status: {r.status_code}")
+
         if r.status_code == 200:
             data = r.json()
+
+            if debug:
+                logger.debug(f"   Response keys: {data.keys()}")
+                logger.debug(f"   Close data length: {len(data.get('close', []))}")
+
             if data.get("close") and len(data.get("close", [])) > 0:
                 close_price = float(data["close"][-1])
                 logger.info(f"✅ {symbol} close: {close_price}")
                 return close_price
             else:
                 logger.warning(f"⚠️ {symbol} close empty")
+                if debug:
+                    logger.debug(f"   Full response: {data}")
                 return None
         else:
             logger.warning(f"⚠️ {symbol} close API error: {r.status_code}")
+            if debug:
+                logger.debug(f"   Response: {r.text}")
             return None
 
     except Exception as e:
@@ -746,11 +785,12 @@ def modify_sl(order_id, qty, trigger, symbol):
 
 
 def modify_sl_for_exit(order_id, qty, symbol):
-    """Exit position"""
+    """Exit position with improved error handling"""
     logger.info(f"🔴 Exiting: {symbol}")
 
     token = get_token()
     if not token:
+        logger.error(f"❌ No token for exit")
         return False
 
     payload = {
@@ -771,18 +811,60 @@ def modify_sl_for_exit(order_id, qty, symbol):
             timeout=15
         )
 
+        logger.debug(f"📡 Exit response status: {r.status_code}")
+
         if r.status_code in (200, 201):
             logger.info(f"✅ Exit placed: {symbol}")
             send_telegram_alert("🔴 EXIT (CLOSE < SL)", {
-                "Symbol": symbol, "Action": "MARKET EXIT"
+                "Symbol": symbol, "Qty": qty, "Action": "MARKET EXIT", "Status": "SUCCESS"
             })
             return True
+
+        elif r.status_code == 400:
+            # 400 error - might be order state issue, try to get details
+            logger.warning(f"⚠️ Exit got 400 error for {symbol} (order_id: {order_id})")
+            logger.debug(f"   Response: {r.text}")
+
+            # Check if order already triggered/cancelled
+            try:
+                order_status = get_dhan_order_status(order_id)
+                if order_status:
+                    logger.warning(f"   Order status: {order_status}")
+                    if order_status == "TRIGGERED":
+                        logger.info(f"✅ Order already TRIGGERED for {symbol}")
+                        return True
+                    elif order_status in ("CANCELLED", "REJECTED", "EXPIRED"):
+                        logger.error(f"❌ Order {order_status} for {symbol} - cannot exit")
+                        send_telegram_alert("⚠️ EXIT FAILED", {
+                            "Symbol": symbol, "Reason": f"Order {order_status}", "Status": "NEED_MANUAL_EXIT"
+                        })
+                        return False
+            except Exception as e:
+                logger.debug(f"   Could not check order status: {e}")
+
+            # Mark for retry
+            logger.warning(f"⚠️ Exit will retry on next run for {symbol}")
+            send_telegram_alert("⚠️ EXIT FAILED - WILL RETRY", {
+                "Symbol": symbol, "OrderID": order_id, "Status": "PENDING_RETRY"
+            })
+            return False
+
+        elif r.status_code == 401:
+            logger.error(f"❌ Authentication failed - token may be invalid")
+            return False
+
         else:
-            logger.error(f"❌ Exit failed")
+            logger.error(f"❌ Exit failed: HTTP {r.status_code}")
+            logger.debug(f"   Response: {r.text}")
+            send_telegram_alert("❌ EXIT FAILED", {
+                "Symbol": symbol, "Status": f"HTTP {r.status_code}"
+            })
             return False
 
     except Exception as e:
         logger.error(f"❌ Exit exception: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return False
 
 
