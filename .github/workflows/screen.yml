@@ -56,15 +56,13 @@ jobs:
             run_*/
             charts/
 
-      - name: Commit DB (persist)
+      - name: Push results (no DB persist)
         run: |
           git config user.name "bot"
           git config user.email "bot@github.com"
-      
+
           git pull origin main --rebase || true
-      
-          git add -f Webhook-app/trades.db
-      
-          git diff --cached --quiet || git commit -m "screen update db"
-      
-          git push
+
+          # Intentionally not adding or committing trades.db to repo
+          git diff --cached --quiet || git commit -m "screen update" || true
+          git push || true
