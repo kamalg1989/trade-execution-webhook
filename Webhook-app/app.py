@@ -1,8 +1,9 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK (app.py) v9 - DASHBOARD REMOVED
+# 🚀 TELEGRAM WEBHOOK (app.py) v10 - AGGREGATE-RISK GATE ADDED
 # Webhook + entry-engine execution (dashboard retired)
 # Token passed to subprocess, no double generation
 # Smart token validation - tests with Dhan API
+# NEW (v10): advisory open-risk gate at Confirm time (§10, warn-only)
 # ==============================================
 
 import os
@@ -20,6 +21,9 @@ import sys
 # Ensure current directory is in path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dotenv import load_dotenv
+
+# Consolidated data layer (single source of truth for sheet ops — §9)
+import google_sheets_db as gsdb
 
 # ==========================
 # GLOBAL STATE
@@ -58,6 +62,22 @@ VENV_PYTHON = "/root/trade-execution-webhook/venv/bin/python"
 # ==========================
 def log(*args):
     print(*args, flush=True)
+
+
+# ==========================
+# AGGREGATE-RISK GATE CONFIG (advisory / warn-only — §10)
+# Read from env; fall back to in-code defaults if env param not available.
+# ==========================
+def _env_float(name, default):
+    try:
+        v = os.getenv(name)
+        return float(v) if v not in (None, "") else float(default)
+    except (ValueError, TypeError):
+        log(f"⚠️ Bad value for {name!r}; using default {default}")
+        return float(default)
+
+CAPITAL = _env_float("CAPITAL", 1_000_000)                 # ₹ total capital
+MAX_OPEN_RISK_PCT = _env_float("MAX_OPEN_RISK_PCT", 0.10)  # 10% of capital
 
 
 # ==========================
@@ -314,6 +334,85 @@ def validate_symbol(symbol_input):
 
 
 # ==========================
+# AGGREGATE-RISK GATE (advisory / warn-only — §10)
+# ==========================
+def check_aggregate_risk(symbol, entry, sl, qty):
+    """Advisory open-risk check at Confirm time.
+
+    Sums open risk across all live trades (OPEN / PARTIAL / EXIT_PENDING),
+    adds this new trade's risk, and compares against CAPITAL * MAX_OPEN_RISK_PCT.
+
+    WARN-ONLY: this function NEVER blocks. It does not return anything used
+    for flow control — it just fires a Telegram warning if the cap would be
+    breached, or if open risk can't be read. The caller proceeds regardless.
+
+    To make this a HARD gate later: have this return True on breach (False
+    otherwise), then at the call site: `if check_aggregate_risk(...): return "OK"`.
+    """
+    cap = CAPITAL * MAX_OPEN_RISK_PCT
+
+    # --- new trade's risk (from the webhook payload) ---
+    try:
+        new_trade_risk = (float(entry) - float(sl)) * int(qty)
+    except (ValueError, TypeError) as e:
+        log(f"⚠️ Risk gate: bad new-trade inputs ({e}); skipping risk check")
+        return
+
+    # --- sum open risk from the sheet (fail-OPEN on any read error) ---
+    try:
+        open_trades = gsdb.get_open_trades()
+    except Exception as e:
+        log(f"⚠️ Risk gate: could not read open trades ({e}); "
+            f"allowing trade (fail-open)")
+        send_telegram(
+            f"⚠️ Could not verify open risk for {symbol} "
+            f"(sheet read failed) — proceeding anyway. Check positions manually."
+        )
+        return
+
+    total_open_risk = 0.0
+    for t in open_trades:
+        try:
+            t_entry = float(t.get("Entry_Price") or 0)
+            t_sl = float(t.get("Structural_SL") or 0)
+            t_qty = float(t.get("Remaining_Qty") or 0)
+        except (ValueError, TypeError):
+            log(f"⚠️ Risk gate: skipping malformed row {t.get('Symbol', '?')}")
+            continue
+
+        # Guard against blank/garbage values inflating risk in a warn-only world.
+        if t_sl <= 0 or t_entry <= 0 or t_qty <= 0:
+            log(f"⚠️ Risk gate: row {t.get('Symbol', '?')} has "
+                f"entry={t_entry} sl={t_sl} qty={t_qty}; skipping from sum")
+            continue
+
+        row_risk = (t_entry - t_sl) * t_qty
+        if row_risk < 0:
+            log(f"⚠️ Risk gate: {t.get('Symbol', '?')} negative risk "
+                f"(SL above entry?); skipping")
+            continue
+        total_open_risk += row_risk
+
+    projected = total_open_risk + new_trade_risk
+
+    log(f"📊 Risk gate: open=₹{total_open_risk:,.0f} "
+        f"+ new=₹{new_trade_risk:,.0f} = ₹{projected:,.0f} vs cap ₹{cap:,.0f}")
+
+    if projected > cap:
+        msg = (
+            f"⚠️ RISK WARNING: {symbol} | "
+            f"Open risk ₹{total_open_risk:,.0f} + new risk ₹{new_trade_risk:,.0f} "
+            f"= ₹{projected:,.0f} exceeds cap ₹{cap:,.0f} "
+            f"({MAX_OPEN_RISK_PCT*100:.0f}% of ₹{CAPITAL:,.0f}). "
+            f"Proceeding anyway (advisory)."
+        )
+        log(msg)
+        send_telegram(msg)
+    else:
+        log(f"✅ Risk gate: within cap (₹{projected:,.0f} ≤ ₹{cap:,.0f})")
+
+
+# ==========================
 # EXECUTE ENTRY ENGINE
 # ==========================
 def execute_entry_engine_subprocess(payload, token):
@@ -509,6 +608,10 @@ def webhook():
 
         log(f"✅ {symbol} is clear on Dhan\n")
 
+        # ==== AGGREGATE-RISK GATE (advisory / warn-only — §10) ====
+        # Non-blocking: warns via Telegram if cap would be breached, then proceeds.
+        check_aggregate_risk(symbol, entry, sl, qty)
+
         # ==== ALL VALIDATIONS PASSED ====
         log("✅ ALL VALIDATIONS PASSED")
 
@@ -560,11 +663,13 @@ def health():
 
 if __name__ == "__main__":
     log("=" * 80)
-    log("🚀 TELEGRAM WEBHOOK (app.py v9) - DASHBOARD REMOVED")
+    log("🚀 TELEGRAM WEBHOOK (app.py v10) - AGGREGATE-RISK GATE ADDED")
     log("=" * 80)
     log("✅ Webhook on /webhook")
     log("✅ Smart token validation with /v2/profile")
     log("✅ Regenerates token only when Dhan rejects it")
+    log(f"✅ Risk gate (advisory): cap ₹{CAPITAL * MAX_OPEN_RISK_PCT:,.0f} "
+        f"({MAX_OPEN_RISK_PCT*100:.0f}% of ₹{CAPITAL:,.0f})")
     log("=" * 80)
 
     app.run(host="0.0.0.0", port=5000, debug=False)
