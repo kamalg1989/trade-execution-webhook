@@ -1,15 +1,14 @@
 # ==============================================
-# 🚀 TELEGRAM WEBHOOK (app.py) v8 - SMART TOKEN VALIDATION
-# Combines webhook + dashboard in single Flask app
+# 🚀 TELEGRAM WEBHOOK (app.py) v9 - DASHBOARD REMOVED
+# Webhook + entry-engine execution (dashboard retired)
 # Token passed to subprocess, no double generation
-# Dashboard integrated for live P&L tracking
-# UPDATED: Smart token validation - tests with Dhan API
+# Smart token validation - tests with Dhan API
 # ==============================================
 
 import os
 import requests
 import pandas as pd
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify
 import threading
 import time
 import subprocess
@@ -21,15 +20,6 @@ import sys
 # Ensure current directory is in path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dotenv import load_dotenv
-
-# ==========================
-# IMPORT DASHBOARD MODULE
-# ==========================
-from Pnl_dashboard import (
-    EnhancedPnLDashboard,
-    get_dhan_token,
-    sync_entry_price_with_dhan
-)
 
 # ==========================
 # GLOBAL STATE
@@ -46,9 +36,6 @@ TICK_SIZE_CACHE = {}
 
 # Reusable session
 session = requests.Session()
-
-# Dashboard instance
-dashboard = EnhancedPnLDashboard()
 
 
 # ==========================
@@ -554,133 +541,6 @@ def webhook():
 
 
 # ==========================
-# DASHBOARD ROUTES
-# ==========================
-
-@app.route("/api/dashboard/open-trades", methods=["GET"])
-def get_open_trades():
-    """Get all open trades with live prices and metrics."""
-    try:
-        trades = dashboard.get_open_trades_dashboard()
-        summary = dashboard.get_dashboard_summary()
-
-        return jsonify({
-            "success": True,
-            "timestamp": summary['timestamp'],
-            "summary": summary,
-            "trades": trades,
-        }), 200
-
-    except Exception as e:
-        log(f"❌ Dashboard error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route("/api/dashboard/update-trade", methods=["POST"])
-def update_trade_field():
-    """Update an editable field in a trade."""
-    try:
-        data = request.get_json()
-
-        setup_id = data.get('setup_id')
-        field_name = data.get('field')
-        value = data.get('value')
-
-        if not all([setup_id, field_name, value is not None]):
-            return jsonify({"success": False, "error": "Missing required fields"}), 400
-
-        field_mapping = {
-            'entry_price_executed': 'entry_price_executed',
-            'entry_price': 'entry_price_executed',
-            'sl_price': 'sl_price',
-            'sl': 'sl_price',
-            'target_price': 'target_price',
-            'target': 'target_price',
-        }
-
-        db_field = field_mapping.get(field_name)
-
-        if not db_field:
-            return jsonify({"success": False, "error": f"Field '{field_name}' is not editable"}), 400
-
-        success, message = dashboard.update_trade_field(setup_id, db_field, value)
-
-        if success:
-            return jsonify({"success": True, "message": message}), 200
-        else:
-            return jsonify({"success": False, "error": message}), 400
-
-    except Exception as e:
-        log(f"❌ Update error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route("/api/dashboard/update-safety-sl", methods=["POST"])
-def update_safety_sl():
-    """Update safety SL level (8% below entry price)."""
-    try:
-        data = request.get_json()
-
-        setup_id = data.get('setup_id')
-        safety_sl_pct = data.get('safety_sl_pct', 0.92)
-
-        if not setup_id:
-            return jsonify({"success": False, "error": "Missing setup_id"}), 400
-
-        success, message = dashboard.update_safety_sl(setup_id, safety_sl_pct)
-
-        if success:
-            return jsonify({"success": True, "message": message}), 200
-        else:
-            return jsonify({"success": False, "error": message}), 400
-
-    except Exception as e:
-        log(f"❌ Safety SL error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route("/api/dashboard/sync-entry-prices", methods=["POST"])
-def sync_entry_prices():
-    """Sync entry prices from database with actual Dhan orders."""
-    try:
-        token = get_token()
-
-        if not token:
-            return jsonify({"success": False, "error": "Failed to generate Dhan token"}), 401
-
-        sync_entry_price_with_dhan(token)
-
-        return jsonify({"success": True, "message": "Entry prices synced with Dhan"}), 200
-
-    except Exception as e:
-        log(f"❌ Sync error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route("/api/dashboard/summary", methods=["GET"])
-def get_summary():
-    """Get dashboard summary stats."""
-    try:
-        summary = dashboard.get_dashboard_summary()
-        return jsonify({"success": True, "summary": summary}), 200
-
-    except Exception as e:
-        log(f"❌ Summary error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
-# Serve dashboard HTML
-@app.route("/dashboard")
-def serve_dashboard():
-    """Serve the dashboard HTML page."""
-    try:
-        return send_file("static/dashboard.html", mimetype="text/html")
-    except Exception as e:
-        log(f"❌ Dashboard serve error: {e}")
-        return "Dashboard HTML not found", 404
-
-
-# ==========================
 # HEALTH CHECK
 # ==========================
 
@@ -700,14 +560,11 @@ def health():
 
 if __name__ == "__main__":
     log("=" * 80)
-    log("🚀 TELEGRAM WEBHOOK + DASHBOARD (app.py v8) - SMART TOKEN VALIDATION")
+    log("🚀 TELEGRAM WEBHOOK (app.py v9) - DASHBOARD REMOVED")
     log("=" * 80)
     log("✅ Webhook on /webhook")
-    log("✅ Dashboard API on /api/dashboard/*")
-    log("✅ Dashboard UI on /dashboard")
     log("✅ Smart token validation with /v2/profile")
     log("✅ Regenerates token only when Dhan rejects it")
-    log("✅ Live prices from Dhan API")
     log("=" * 80)
 
     app.run(host="0.0.0.0", port=5000, debug=False)
