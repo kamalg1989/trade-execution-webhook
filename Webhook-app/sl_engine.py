@@ -1,28 +1,56 @@
-# ==============================================
-# 🚀 SL ENGINE V16 - FINAL SAFE PRODUCTION VERSION
+# ==============================================================
+# 🚀 SL ENGINE — V17 (step 6a)
 #
-# FEATURES:
-# ✅ Data cleanup with SAFETY CHECKS (prevents accidental deletion)
-# ✅ Fix #1: Column headers (proper API method)
-# ✅ Fix #2: Exit order failure handling (with retry logic)
-# ✅ Fix #3: Close price debug (optional)
-# ✅ IST timezone fix for close price
-# ✅ Smart price fallback (Close → LTP)
-# ✅ Extensive debug logging
-# ✅ Status auto-detection (PENDING/OPEN/TRAILING/CLOSE_BELOW_SL)
-# ✅ Google Sheets updates (A-O untouched, P-AB new)
-# ==============================================
+# Trade Setup Enhancement v2 — §2 (two-tier stops), §3 (close-based
+# structural exit), §6 (cancel-and-replace exit).
+#
+# WHAT CHANGED FROM V16
+#   • Shared modules: imports tick_utils (tick rounding + security IDs)
+#     and google_sheets_db (the consolidated data layer). All inline
+#     gspread/sheet logic removed.
+#   • Two-tier stops NO LONGER collapsed. The old
+#         new_sl = max(current_sl, entry * 0.92)
+#     is GONE. Structural_SL (from the sheet) is the operative stop;
+#     Safety_SL (−8%) is a separate dumb broker backstop. Never max()'d.
+#   • Close-based structural exit: exit fires ONLY when the daily CLOSE
+#     < Structural_SL. Intraday wicks ignored. Daily close comes from
+#     Dhan historical, falling back to yfinance, else we SKIP (never act
+#     on an intraday/LTP number for a structural decision).
+#   • Exit mechanism is Path B (cancel-and-replace), NOT modify-in-place:
+#         DELETE forever-order  →  POST regular MARKET sell
+#         →  poll GET /orders/{id} until TRADED  →  mark CLOSED
+#     On sell/confirm FAILURE → re-place the −8% safety forever-order,
+#     set status back to OPEN, fire a loud Telegram alert.
+#   • Every price sent to Dhan is rounded with
+#         tick_utils.round_to_tick(value, tick, mode="down")
+#     at the payload-construction boundary. No more round(x, 2).
+#   • Telegram alert on every Dhan order action (cancel / place / confirm
+#     / fail / re-protect / initial safety placement).
+#
+# EXPLICITLY OUT OF SCOPE (step 6b, separate chat):
+#   • Trailing (Phase 1/2/3), ATR, breakeven, hybrid half-at-2R partial.
+#     This file places the −8% safety once and leaves it; it does not
+#     move any stop. Target/trail logic is untouched here.
+#
+# DEPLOYMENT NOTE
+#   • Requires yfinance on the VPS:  pip install yfinance
+#     (used only as the daily-close fallback; if not installed the
+#      fallback is skipped and the engine simply skips the exit decision
+#      when Dhan-historical fails — it will not crash.)
+# ==============================================================
 
 import os
+import uuid
+import time
+import logging
 import requests
 import pyotp
-import logging
-import time
-import uuid
-import gspread
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
-from google.oauth2.service_account import Credentials
+
+# ---- Shared modules (build steps 1 & 2) ----------------------
+import tick_utils
+import google_sheets_db as db
 
 # ==========================
 # LOAD ENV
@@ -59,14 +87,23 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 DRY_RUN = os.getenv("SL_ENGINE_DRY_RUN", "false").lower() in ("true", "1", "yes")
 
-BASE_SL_PCT = 0.92
-TRAIL_PROFIT_LOCK = 0.5
-MIN_LTP_BUFFER = 0.05
+# −8% catastrophe backstop level. The Safety_SL = entry * SAFETY_SL_PCT.
+SAFETY_SL_PCT = 0.92
+# Limit price for the resting safety SELL sits just under its trigger.
+SAFETY_LIMIT_OFFSET = 0.995
+
+# Fill-confirmation polling for the Path B market sell.
+EXIT_POLL_ATTEMPTS = 6      # number of GET /orders/{id} polls
+EXIT_POLL_SLEEP = 2.0       # seconds between polls
+# Dhan order statuses that mean "filled".
+FILLED_STATUSES = {"TRADED", "EXECUTED", "COMPLETE", "FILLED"}
+# Statuses that mean "definitively dead, will never fill".
+DEAD_STATUSES = {"REJECTED", "CANCELLED", "CANCELED", "EXPIRED", "FAILED"}
 
 session = requests.Session()
 
 # ==========================
-# LOGGING SETUP
+# LOGGING
 # ==========================
 logging.basicConfig(
     level=logging.DEBUG,
@@ -74,17 +111,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# IST Timezone
 IST = timezone(timedelta(hours=5, minutes=30))
 
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = datetime.now(timezone.utc)
 
+# yfinance is an optional fallback; import defensively so a missing
+# package degrades to "skip the exit" rather than crashing the engine.
+try:
+    import yfinance as yf
+    _YF_AVAILABLE = True
+except Exception:
+    yf = None
+    _YF_AVAILABLE = False
+    logger.warning("⚠️ yfinance not installed — daily-close fallback disabled "
+                   "(pip install yfinance to enable)")
+
+
 # ==========================
 # TELEGRAM HELPERS
 # ==========================
 def escape_markdown_v2(text):
-    """Escape special characters for Telegram MarkdownV2"""
     if text is None:
         return ""
     escape_chars = r"_*[]()~`>#+-=|{}.!"
@@ -95,7 +142,6 @@ def escape_markdown_v2(text):
 
 
 def send_telegram_alert(title, content_dict):
-    """Send structured Telegram alert"""
     if DRY_RUN:
         print(f"🔕 [DRY_RUN] Would send Telegram: {title}")
         for k, v in content_dict.items():
@@ -118,137 +164,50 @@ def send_telegram_alert(title, content_dict):
         payload = {
             "chat_id": TELEGRAM_CHAT_ID,
             "text": message,
-            "parse_mode": "MarkdownV2"
+            "parse_mode": "MarkdownV2",
         }
-
         r = requests.post(url, data=payload, timeout=10)
-
         if r.status_code == 200:
             logger.info(f"✅ Telegram alert sent: {title}")
         else:
             logger.warning(f"⚠️ Telegram failed ({r.status_code})")
-
     except Exception as e:
         logger.error(f"❌ Telegram error: {e}")
 
 
 # ==========================
-# HELPER: Normalize Symbol
+# HELPERS
 # ==========================
 def normalize_symbol(symbol):
-    """Remove .NS suffix for comparison"""
     if symbol and isinstance(symbol, str):
         return symbol.replace(".NS", "").strip()
     return symbol
 
 
-# ==========================
-# ENV VALIDATION
-# ==========================
 def validate_env():
     missing = []
-    if not DHAN_CLIENT_ID:
-        missing.append("DHAN_CLIENT_ID")
-    if not DHAN_PIN:
-        missing.append("DHAN_PIN")
-    if not DHAN_TOTP_SECRET:
-        missing.append("DHAN_TOTP_SECRET")
-    if not SPREADSHEET_ID:
-        missing.append("SPREADSHEET_ID")
-    if not SERVICE_ACCOUNT_KEY_PATH:
-        missing.append("SERVICE_ACCOUNT_KEY_PATH")
-
+    for name, val in [
+        ("DHAN_CLIENT_ID", DHAN_CLIENT_ID),
+        ("DHAN_PIN", DHAN_PIN),
+        ("DHAN_TOTP_SECRET", DHAN_TOTP_SECRET),
+        ("SPREADSHEET_ID", SPREADSHEET_ID),
+        ("SERVICE_ACCOUNT_KEY_PATH", SERVICE_ACCOUNT_KEY_PATH),
+    ]:
+        if not val:
+            missing.append(name)
     if missing:
         raise ValueError(f"❌ Missing ENV: {', '.join(missing)}")
+    logger.info("✅ ENV OK")
 
-    logger.info(f"✅ ENV OK")
 
-
-# ==========================
-# GOOGLE SHEETS INIT
-# ==========================
-def init_google_sheets():
-    """Initialize Google Sheets connection"""
+def _f(value, default=0.0):
+    """float() that tolerates blanks/garbage (mirrors db._f)."""
     try:
-        scopes = [
-            'https://www.googleapis.com/auth/spreadsheets',
-            'https://www.googleapis.com/auth/drive'
-        ]
-
-        if not os.path.exists(SERVICE_ACCOUNT_KEY_PATH):
-            logger.error(f"❌ Key file not found: {SERVICE_ACCOUNT_KEY_PATH}")
-            return None
-
-        credentials = Credentials.from_service_account_file(
-            SERVICE_ACCOUNT_KEY_PATH,
-            scopes=scopes
-        )
-
-        client = gspread.authorize(credentials)
-        spreadsheet = client.open_by_key(SPREADSHEET_ID)
-
-        logger.info(f"✅ Google Sheets connected: {spreadsheet.title}")
-
-        try:
-            trades_ws = spreadsheet.worksheet("Trades")
-            logger.info(f"✅ Using worksheet: Trades")
-        except gspread.exceptions.WorksheetNotFound:
-            logger.error(f"❌ Worksheet 'Trades' not found")
-            return None
-
-        try:
-            portfolio_ws = spreadsheet.worksheet("Portfolio")
-            logger.info(f"✅ Using worksheet: Portfolio")
-        except gspread.exceptions.WorksheetNotFound:
-            logger.warning(f"⚠️ Worksheet 'Portfolio' not found, creating...")
-            portfolio_ws = spreadsheet.add_worksheet(title="Portfolio", rows=1000, cols=10)
-            headers = ["Date", "Active_Count", "Total_Open_PnL", "Total_Realized_PnL",
-                       "Win_Rate%", "Avg_Days_Held", "Best_Trade%", "Worst_Trade%",
-                       "Total_Trades", "Updated_At"]
-            portfolio_ws.insert_row(headers, 1)
-            logger.info(f"✅ Created Portfolio worksheet")
-
-        return {
-            "trades": trades_ws,
-            "portfolio": portfolio_ws,
-            "spreadsheet": spreadsheet
-        }
-
-    except Exception as e:
-        logger.error(f"❌ Google Sheets init failed: {e}")
-        return None
-
-
-# ==========================
-# GET ALL TRADES FROM SHEETS
-# ==========================
-def get_trades_from_sheets(trades_ws):
-    """Get all trades from Google Sheets"""
-    try:
-        records = trades_ws.get_all_records()
-        logger.info(f"✅ Retrieved {len(records)} trades from sheets")
-        return records
-    except Exception as e:
-        logger.error(f"❌ Failed to get trades: {e}")
-        return []
-
-
-# ==========================
-# FIND EXISTING TRADE
-# ==========================
-def find_existing_trade(trades_sheet, symbol, security_id):
-    """Find trade by normalized symbol"""
-    norm_symbol = normalize_symbol(symbol)
-
-    for trade in trades_sheet:
-        trade_symbol = trade.get("Symbol", "")
-        trade_sec_id = str(trade.get("Security_ID", ""))
-        norm_trade_symbol = normalize_symbol(trade_symbol)
-
-        if norm_trade_symbol == norm_symbol and trade_sec_id == str(security_id):
-            return trade
-
-    return None
+        if value is None or value == "":
+            return default
+        return float(value)
+    except (ValueError, TypeError):
+        return default
 
 
 # ==========================
@@ -263,62 +222,49 @@ def get_token():
     try:
         totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
         logger.info("🔑 Generating new token...")
-
         r = session.post(
             "https://auth.dhan.co/app/generateAccessToken",
-            params={
-                "dhanClientId": DHAN_CLIENT_ID,
-                "pin": DHAN_PIN,
-                "totp": totp
-            },
-            timeout=10
+            params={"dhanClientId": DHAN_CLIENT_ID, "pin": DHAN_PIN, "totp": totp},
+            timeout=10,
         )
-
         data = r.json()
         if "accessToken" not in data:
             logger.error(f"❌ Token failed: {data}")
             return None
-
         CURRENT_TOKEN = data["accessToken"]
         TOKEN_EXPIRY = datetime.now(timezone.utc) + timedelta(hours=23)
-        logger.info(f"✅ Token generated")
+        logger.info("✅ Token generated")
         return CURRENT_TOKEN
-
     except Exception as e:
         logger.error(f"❌ Token error: {e}")
         return None
 
 
 # ==========================
-# GET POSITIONS & HOLDINGS
+# POSITIONS / HOLDINGS / FOREVER ORDERS
 # ==========================
 def get_positions():
     token = get_token()
     if not token:
         return []
-
     try:
         r = session.get(
             "https://api.dhan.co/v2/positions",
             headers={"access-token": token, "client-id": DHAN_CLIENT_ID},
-            timeout=10
+            timeout=10,
         )
-
         data = r.json()
         result = []
-
         for p in data:
             if p.get("netQty", 0) > 0:
                 result.append({
                     "securityId": str(p["securityId"]),
                     "symbol": p["tradingSymbol"],
                     "qty": p["netQty"],
-                    "avgPrice": p.get("buyAvg") or p.get("costPrice")
+                    "avgPrice": p.get("buyAvg") or p.get("costPrice"),
                 })
-
         logger.info(f"📊 Found {len(result)} positions")
         return result
-
     except Exception as e:
         logger.error(f"❌ Get positions failed: {e}")
         return []
@@ -328,267 +274,52 @@ def get_holdings():
     token = get_token()
     if not token:
         return []
-
     try:
         r = session.get(
             "https://api.dhan.co/v2/holdings",
             headers={"access-token": token, "client-id": DHAN_CLIENT_ID},
-            timeout=10
+            timeout=10,
         )
-
         data = r.json()
         result = []
-
         for h in data:
             if h.get("totalQty", 0) > 0:
                 result.append({
                     "securityId": str(h["securityId"]),
                     "symbol": h["tradingSymbol"],
                     "qty": h["totalQty"],
-                    "avgPrice": h.get("avgCostPrice")
+                    "avgPrice": h.get("avgCostPrice"),
                 })
-
         logger.info(f"📊 Found {len(result)} holdings")
         return result
-
     except Exception as e:
         logger.error(f"❌ Get holdings failed: {e}")
         return []
 
 
-# ==========================
-# FOREVER ORDERS
-# ==========================
 def get_forever_orders():
     token = get_token()
     if not token:
         return []
-
     try:
         r = session.get(
             "https://api.dhan.co/v2/forever/orders",
             headers={"access-token": token},
-            timeout=10
+            timeout=10,
         )
-
         data = r.json()
         logger.info(f"📊 Found {len(data) if isinstance(data, list) else 0} forever orders")
         return data if isinstance(data, list) else []
-
     except Exception as e:
         logger.error(f"❌ Get forever orders failed: {e}")
         return []
 
 
 # ==========================
-# SAFETY: VALIDATE DHAN CONNECTION (V16 NEW - CRITICAL)
+# DAILY CLOSE  (Dhan historical → yfinance → None)
 # ==========================
-def validate_dhan_connection():
-    """Validate Dhan connection BEFORE any destructive operations"""
-    try:
-        logger.info("🔐 Validating Dhan connection...")
-
-        token = get_token()
-        if not token:
-            logger.error("❌ FATAL: No token from Dhan - aborting")
-            logger.error("   Likely: TOTP failed, system time wrong, or API down")
-            return False
-
-        # Try positions as sanity check
-        r = session.get(
-            "https://api.dhan.co/v2/positions",
-            headers={"access-token": token, "client-id": DHAN_CLIENT_ID},
-            timeout=10
-        )
-
-        if r.status_code != 200:
-            logger.error(f"❌ FATAL: Dhan API error - Status {r.status_code}")
-            logger.error(f"   Response: {r.text}")
-            return False
-
-        data = r.json()
-        if not isinstance(data, list):
-            logger.error(f"❌ FATAL: Invalid response type")
-            return False
-
-        logger.info(f"✅ Dhan connection valid")
-        return True
-
-    except Exception as e:
-        logger.error(f"❌ FATAL: Connection validation failed: {e}")
-        return False
-
-
-# ==========================
-# CLEANUP STALE TRADES - V16 WITH SAFETY CHECKS
-# ==========================
-def cleanup_stale_trades(trades_ws, trades_sheet):
-    """Remove rows not in active Dhan orders - WITH SAFETY CHECKS"""
-    try:
-        logger.info("\n" + "=" * 80)
-        logger.info("🧹 CLEANING UP STALE TRADES")
-        logger.info("=" * 80)
-
-        # SAFETY CHECK #1: Validate Dhan connection first!
-        if not validate_dhan_connection():
-            logger.error("❌ ABORTING cleanup - Dhan connection invalid!")
-            logger.error("   This prevents accidental data deletion")
-            send_telegram_alert("❌ CLEANUP ABORTED", {
-                "Reason": "Dhan connection failed",
-                "Status": "No data deleted - safe exit"
-            })
-            return [], []
-
-        positions = get_positions()
-        holdings = get_holdings()
-        sl_orders = get_forever_orders()
-
-        active_sec_ids = set()
-        for p in positions:
-            active_sec_ids.add(p["securityId"])
-        for h in holdings:
-            active_sec_ids.add(h["securityId"])
-        for o in sl_orders:
-            active_sec_ids.add(str(o.get("securityId", "")))
-
-        logger.info(f"📊 Active stocks in Dhan: {len(active_sec_ids)}")
-        logger.info(f"📊 Stocks in Sheet: {len(trades_sheet)}")
-
-        # SAFETY CHECK #2: Ensure we got valid data
-        if len(active_sec_ids) == 0 and len(trades_sheet) > 0:
-            logger.error("❌ SAFETY CHECK FAILED: No stocks found in Dhan!")
-            logger.error("   Sheet has {0} rows, Dhan is empty".format(len(trades_sheet)))
-            logger.error("   Likely: Token failed, API error, or system time wrong")
-            logger.error("   ABORTING cleanup to prevent data loss")
-            send_telegram_alert("❌ CLEANUP ABORTED - SAFETY CHECK", {
-                "Reason": "No positions in Dhan (API error?)",
-                "Sheet rows": len(trades_sheet),
-                "Dhan active": len(active_sec_ids),
-                "Status": "Preventing accidental deletion"
-            })
-            return [], []
-
-        # SAFETY CHECK #3: Prevent massive deletions
-        sheet_count = len(trades_sheet)
-        if sheet_count > 0:
-            potential_deletes = sheet_count - len(active_sec_ids)
-            delete_percent = (potential_deletes / sheet_count) * 100 if sheet_count > 0 else 0
-
-            logger.info(f"   Would delete: {potential_deletes}/{sheet_count} ({delete_percent:.1f}%)")
-
-            if delete_percent > 80:
-                logger.error("❌ SAFETY CHECK FAILED: Would delete > 80% of data!")
-                logger.error("   Total: {0}, To delete: {1}".format(sheet_count, potential_deletes))
-                logger.error("   This seems like a major error - aborting")
-                send_telegram_alert("❌ CLEANUP ABORTED - SAFETY", {
-                    "Reason": "Would delete > 80%",
-                    "Total rows": sheet_count,
-                    "To delete": potential_deletes,
-                    "Status": "Likely API error"
-                })
-                return [], []
-
-        # NOW it's safe to delete
-        rows_to_delete = []
-        rows_to_keep = []
-
-        for idx, trade in enumerate(trades_sheet):
-            sec_id = str(trade.get("Security_ID", "")).strip()
-            symbol = trade.get("Symbol", "")
-            row_num = idx + 2
-
-            if sec_id not in active_sec_ids:
-                rows_to_delete.append((row_num, symbol, sec_id))
-                logger.warning(f"🗑️ Marked: {symbol} (SEC_ID: {sec_id})")
-            else:
-                rows_to_keep.append((row_num, symbol, sec_id))
-                logger.info(f"✅ Keeping: {symbol}")
-
-        logger.info(f"\n🗑️ Deleting {len(rows_to_delete)} stale rows...")
-        for row_num, symbol, sec_id in sorted(rows_to_delete, reverse=True):
-            try:
-                if not DRY_RUN:
-                    trades_ws.delete_rows(row_num)
-                logger.info(f"✅ Deleted: {symbol} (row {row_num})")
-            except Exception as e:
-                logger.error(f"❌ Failed to delete row {row_num}: {e}")
-
-        logger.info(f"\n✅ Cleanup complete: Deleted={len(rows_to_delete)}, Kept={len(rows_to_keep)}")
-
-        if rows_to_delete:
-            deleted_symbols = ", ".join([r[1] for r in rows_to_delete[:5]])
-            send_telegram_alert("🧹 STALE TRADES REMOVED", {
-                "Deleted": len(rows_to_delete),
-                "Symbols": deleted_symbols,
-                "Remaining": len(rows_to_keep)
-            })
-
-        return rows_to_delete, rows_to_keep
-
-    except Exception as e:
-        logger.error(f"❌ Cleanup failed: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return [], []
-
-
-# ==========================
-# ADD NEW COLUMN HEADERS - FIXED
-# ==========================
-def add_new_column_headers(trades_ws):
-    """Add headers for new columns P-AB using CORRECT gspread API"""
-    try:
-        logger.info("\n" + "="*80)
-        logger.info("📋 ADDING NEW COLUMN HEADERS (P-AB)")
-        logger.info("="*80)
-
-        current_headers = trades_ws.row_values(1)
-        logger.info(f"📊 Current headers in row 1: {len(current_headers)} columns")
-
-        new_headers = [
-            "Exit_Price",           # P (column 16)
-            "Exit_Time",            # Q (column 17)
-            "Previous_SL_Price",    # R (column 18)
-            "Unrealized_PnL",       # S (column 19)
-            "Realized_PnL",         # T (column 20)
-            "Unrealized_PnL%",      # U (column 21)
-            "Realized_PnL%",        # V (column 22)
-            "Win_Loss",             # W (column 23)
-            "Return_Pct",           # X (column 24)
-            "Days_Held",            # Y (column 25)
-            "RR_Ratio",             # Z (column 26)
-            "Entry_Order_ID",       # AA (column 27)
-            "Exit_Order_ID",        # AB (column 28)
-        ]
-
-        logger.info(f"🔧 Adding {len(new_headers)} headers using batch update...")
-
-        cell_list = []
-        for col_idx, header_name in enumerate(new_headers, start=16):
-            cell_list.append(gspread.Cell(1, col_idx, header_name))
-
-        if not DRY_RUN:
-            trades_ws.update_cells(cell_list, value_input_option="USER_ENTERED")
-
-        for col_idx, header_name in enumerate(new_headers, start=16):
-            col_letter = chr(64 + col_idx)
-            logger.info(f"✅ Added header: {col_letter}1 = {header_name}")
-
-        logger.info(f"✅ New column headers added successfully!")
-        return True
-
-    except Exception as e:
-        logger.error(f"❌ Add headers failed: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return False
-
-
-# ==========================
-# GET CLOSE PRICE - IST TIMEZONE (WITH DEBUG)
-# ==========================
-def get_close_price_from_dhan(security_id, symbol, debug=False):
-    """Fetch close price with IST timezone and optional debug logging"""
+def _dhan_daily_close(security_id, symbol, debug=False):
+    """Settled daily close from Dhan historical. None on any failure."""
     try:
         token = get_token()
         if not token:
@@ -596,195 +327,137 @@ def get_close_price_from_dhan(security_id, symbol, debug=False):
 
         now_ist = datetime.now(IST)
         market_close = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
-
         if now_ist < market_close:
             trade_date = now_ist - timedelta(days=1)
-            date_reason = "Before market close - using yesterday"
         else:
             trade_date = now_ist
-            date_reason = "After market close - using today"
 
         from_date = trade_date.strftime("%Y-%m-%d")
         to_date = (trade_date + timedelta(days=1)).strftime("%Y-%m-%d")
 
-        if debug:
-            logger.debug(f"🔍 [DEBUG] {symbol} close price fetch:")
-            logger.debug(f"   Current IST: {now_ist.strftime('%Y-%m-%d %H:%M:%S')}")
-            logger.debug(f"   Market close: {market_close.strftime('%Y-%m-%d %H:%M:%S')}")
-            logger.debug(f"   Date reason: {date_reason}")
-            logger.debug(f"   From: {from_date}, To: {to_date}")
-
-        logger.info(f"📊 Fetching {symbol} close | Date: {from_date} to {to_date}")
-
         payload = {
             "securityId": int(security_id),
             "exchangeSegment": "NSE_EQ",
             "instrument": "EQUITY",
             "oi": False,
             "fromDate": from_date,
-            "toDate": to_date
+            "toDate": to_date,
         }
-
-        if debug:
-            logger.debug(f"   Payload: {payload}")
-
         r = requests.post(
             "https://api.dhan.co/v2/charts/historical",
             json=payload,
             headers={"Content-Type": "application/json", "access-token": token},
-            timeout=15
+            timeout=15,
         )
-
-        logger.debug(f"📡 Response status: {r.status_code}")
-
         if r.status_code == 200:
             data = r.json()
-
-            if debug:
-                logger.debug(f"   Response keys: {data.keys()}")
-                logger.debug(f"   Close data length: {len(data.get('close', []))}")
-
-            if data.get("close") and len(data.get("close", [])) > 0:
-                close_price = float(data["close"][-1])
-                logger.info(f"✅ {symbol} close: {close_price}")
+            closes = data.get("close") or []
+            if closes:
+                close_price = float(closes[-1])
+                logger.info(f"✅ {symbol} Dhan daily close: {close_price}")
                 return close_price
-            else:
-                logger.warning(f"⚠️ {symbol} close empty")
-                if debug:
-                    logger.debug(f"   Full response: {data}")
-                return None
+            logger.warning(f"⚠️ {symbol} Dhan close empty")
         else:
-            logger.warning(f"⚠️ {symbol} close API error: {r.status_code}")
-            if debug:
-                logger.debug(f"   Response: {r.text}")
-            return None
-
+            logger.warning(f"⚠️ {symbol} Dhan close API error: {r.status_code}")
+        return None
     except Exception as e:
-        logger.error(f"❌ {symbol} close error: {e}")
-        if debug:
-            import traceback
-            logger.debug(traceback.format_exc())
+        logger.error(f"❌ {symbol} Dhan close error: {e}")
         return None
 
 
-# ==========================
-# GET LTP - FALLBACK
-# ==========================
-def get_ltp_from_dhan(security_id, symbol):
-    """Fetch LTP as fallback"""
+def _yf_daily_close(symbol):
+    """Daily close from yfinance for SYMBOL.NS. None on failure / unavailable."""
+    if not _YF_AVAILABLE:
+        return None
     try:
-        token = get_token()
-        if not token:
+        ticker = f"{normalize_symbol(symbol)}.NS"
+        logger.info(f"🔁 {symbol} trying yfinance fallback ({ticker})...")
+        hist = yf.Ticker(ticker).history(period="5d")
+        if hist is None or hist.empty or "Close" not in hist:
+            logger.warning(f"⚠️ {symbol} yfinance returned no data")
             return None
-
-        now_ist = datetime.now(IST)
-        from_date = (now_ist - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S")
-        to_date = now_ist.strftime("%Y-%m-%d %H:%M:%S")
-
-        payload = {
-            "securityId": int(security_id),
-            "exchangeSegment": "NSE_EQ",
-            "instrument": "EQUITY",
-            "interval": "60",
-            "oi": False,
-            "fromDate": from_date,
-            "toDate": to_date
-        }
-
-        r = requests.post(
-            "https://api.dhan.co/v2/charts/intraday",
-            json=payload,
-            headers={"Content-Type": "application/json", "access-token": token},
-            timeout=15
-        )
-
-        if r.status_code == 200:
-            data = r.json()
-            if data.get("close") and len(data.get("close", [])) > 0:
-                ltp = float(data["close"][-1])
-                logger.info(f"✅ {symbol} LTP: {ltp}")
-                return ltp
-
-        return None
-
+        close_price = float(hist["Close"].dropna().iloc[-1])
+        logger.info(f"✅ {symbol} yfinance daily close: {close_price}")
+        return close_price
     except Exception as e:
-        logger.error(f"❌ {symbol} LTP error: {e}")
+        logger.error(f"❌ {symbol} yfinance close error: {e}")
         return None
 
 
-# ==========================
-# GET CURRENT PRICE
-# ==========================
-def get_current_price(security_id, symbol):
-    """Get price: Close → LTP → None"""
-    logger.info(f"🔍 Getting price for {symbol}...")
+def get_daily_close(security_id, symbol):
+    """
+    Strictly close-based: Dhan historical → yfinance → None.
 
-    close_price = get_close_price_from_dhan(security_id, symbol)
-    if close_price:
-        logger.info(f"✅ Using CLOSE: {close_price}")
-        return close_price, "CLOSE"
+    Returns (close_price, source) where source ∈ {"DHAN","YFINANCE"},
+    or (None, "NONE") if BOTH sources fail. We deliberately do NOT fall
+    back to intraday/LTP — a structural exit must act on a settled daily
+    close only (design §3). A None close means "skip the exit decision
+    this run", never "guess".
+    """
+    close = _dhan_daily_close(security_id, symbol)
+    if close is not None:
+        return close, "DHAN"
 
-    logger.info(f"⚠️ Close failed, trying LTP...")
-    ltp = get_ltp_from_dhan(security_id, symbol)
-    if ltp:
-        logger.warning(f"⚠️ Using LTP (fallback): {ltp}")
-        return ltp, "LTP"
+    close = _yf_daily_close(symbol)
+    if close is not None:
+        return close, "YFINANCE"
 
-    logger.error(f"❌ No price data")
+    logger.error(f"❌ {symbol} no daily close from Dhan or yfinance — "
+                 f"skipping structural exit decision this run")
     return None, "NONE"
 
 
 # ==========================
-# CALCULATIONS
+# TICK HELPER
 # ==========================
-def calculate_sl(entry, ltp, current_sl):
-    """Calculate SL"""
-    base_sl = entry * BASE_SL_PCT
-    new_sl = max(current_sl or 0, base_sl)
-
-    if ltp > entry:
-        profit = ltp - entry
-        trailing_sl = entry + (profit * TRAIL_PROFIT_LOCK)
-        max_allowed_sl = ltp * (1 - MIN_LTP_BUFFER)
-        new_sl = max(new_sl, min(trailing_sl, max_allowed_sl))
-
-    return round(new_sl, 2)
+def _tick_for(symbol):
+    """Resolve the tick size for a symbol via the shared util."""
+    try:
+        return tick_utils.get_tick_size(symbol)
+    except Exception as e:
+        logger.warning(f"⚠️ tick lookup failed for {symbol}: {e} — using 0.05")
+        return 0.05
 
 
-def calculate_pnl(entry_price, current_price, qty):
-    """Calculate PnL"""
-    if not current_price or not entry_price:
-        return 0, 0
-
-    pnl = (current_price - entry_price) * qty
-    pnl_pct = ((current_price - entry_price) / entry_price) * 100
-
-    return round(pnl, 2), round(pnl_pct, 2)
-
-
-def determine_status(current_price, sl_price, dhan_trigger=None):
-    """Determine status"""
-    if current_price and sl_price and current_price < sl_price:
-        return "CLOSE_BELOW_SL"
-
-    if dhan_trigger and sl_price and dhan_trigger > sl_price:
-        return "TRAILING"
-
-    return "OPEN"
+def _round_down(value, symbol):
+    """Round an outbound SELL price DOWN to the symbol's tick grid."""
+    tick = _tick_for(symbol)
+    return tick_utils.round_to_tick(value, tick, mode="down")
 
 
 # ==========================
-# SL ORDERS
+# SAFETY_SL (−8%) PLACEMENT  — the dumb backstop, placed once
 # ==========================
-def place_sl(sec_id, qty, avg, symbol):
-    """Place SL"""
-    if not avg:
-        return False
+def place_safety_sl(sec_id, qty, entry, symbol):
+    """
+    Place the −8% catastrophe forever-order (the Tier-1 backstop).
 
-    trigger = calculate_sl(avg, avg, None)
-    price = round(trigger * 0.995, 2)
+    Returns (ok: bool, order_id: str|None, safety_level: float|None).
+    Trigger and limit are both rounded DOWN to the tick grid so the stop
+    is never accidentally set higher than intended.
+    """
+    if not entry:
+        logger.error(f"❌ {symbol} cannot place safety SL — no entry price")
+        return False, None, None
 
-    logger.info(f"📤 Placing SL: {symbol} | Trigger: {trigger}")
+    raw_trigger = entry * SAFETY_SL_PCT
+    trigger = _round_down(raw_trigger, symbol)
+    price = _round_down(trigger * SAFETY_LIMIT_OFFSET, symbol)
+
+    logger.info(f"📤 Placing −8% safety SL: {symbol} | Trigger: {trigger} | Limit: {price}")
+
+    # Pre-action alert (touching Dhan).
+    send_telegram_alert("🛡️ PLACING −8% SAFETY SL", {
+        "Symbol": symbol, "Qty": qty, "Trigger": trigger, "Limit": price,
+    })
+
+    if DRY_RUN:
+        logger.info(f"🔕 [DRY_RUN] Would place safety SL for {symbol}")
+        return True, "DRYRUN_SAFETY_ID", trigger
+
+    token = get_token()
+    if not token:
+        return False, None, None
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
@@ -795,337 +468,517 @@ def place_sl(sec_id, qty, avg, symbol):
         "productType": "CNC",
         "orderType": "LIMIT",
         "validity": "DAY",
-        "securityId": sec_id,
-        "quantity": qty,
+        "securityId": str(sec_id),
+        "quantity": int(qty),
         "price": price,
-        "triggerPrice": trigger
+        "triggerPrice": trigger,
     }
-
-    token = get_token()
-    if not token:
-        return False
 
     try:
         r = session.post(
             "https://api.dhan.co/v2/forever/orders",
             json=payload,
             headers={"access-token": token, "client-id": DHAN_CLIENT_ID},
-            timeout=30
+            timeout=30,
         )
-
         if r.status_code in (200, 201):
-            logger.info(f"✅ SL placed: {symbol}")
-            send_telegram_alert("📊 SL PLACED (NEW)", {
-                "Symbol": symbol, "Qty": qty, "Trigger": trigger
+            order_id = None
+            try:
+                order_id = r.json().get("orderId")
+            except Exception:
+                pass
+            logger.info(f"✅ Safety SL placed: {symbol} (order {order_id})")
+            send_telegram_alert("✅ −8% SAFETY SL PLACED", {
+                "Symbol": symbol, "Qty": qty, "Trigger": trigger, "OrderID": order_id,
             })
-            return True
+            return True, order_id, trigger
         else:
-            logger.error(f"❌ Place SL failed")
-            return False
-
+            logger.error(f"❌ Place safety SL failed: HTTP {r.status_code} | {r.text}")
+            send_telegram_alert("❌ −8% SAFETY SL FAILED", {
+                "Symbol": symbol, "Status": f"HTTP {r.status_code}",
+            })
+            return False, None, None
     except Exception as e:
-        logger.error(f"❌ Place SL exception: {e}")
-        return False
+        logger.error(f"❌ Place safety SL exception: {e}")
+        return False, None, None
 
 
-def modify_sl(order_id, qty, trigger, symbol):
-    """Modify SL"""
-    logger.info(f"🔄 Modifying: {symbol} | Trigger: {trigger}")
+# ==========================
+# PATH B — CANCEL  (DELETE the forever-order)
+# ==========================
+def cancel_forever_order(order_id, symbol):
+    """DELETE a pending forever-order. Returns True on success."""
+    logger.info(f"🗑️ Cancelling forever-order for {symbol} (id {order_id})")
+    send_telegram_alert("🗑️ CANCELLING −8% SAFETY ORDER", {
+        "Symbol": symbol, "OrderID": order_id,
+    })
+
+    if DRY_RUN:
+        logger.info(f"🔕 [DRY_RUN] Would DELETE forever-order {order_id}")
+        return True
 
     token = get_token()
     if not token:
+        logger.error("❌ No token for cancel")
         return False
-
-    price = round(trigger * 0.995, 2)
-
-    payload = {
-        "dhanClientId": DHAN_CLIENT_ID,
-        "orderId": order_id,
-        "orderFlag": "SINGLE",
-        "orderType": "LIMIT",
-        "legName": "STOP_LOSS_LEG",
-        "quantity": int(qty),
-        "price": price,
-        "triggerPrice": round(trigger, 2),
-        "disclosedQuantity": max(1, int(qty * 0.3)),
-        "validity": "DAY"
-    }
 
     try:
-        r = session.put(
+        r = session.delete(
             f"https://api.dhan.co/v2/forever/orders/{order_id}",
-            json=payload,
-            headers={"Accept": "application/json", "Content-Type": "application/json", "access-token": token},
-            timeout=15
+            headers={"Accept": "application/json", "access-token": token},
+            timeout=15,
         )
-
-        if r.status_code in (200, 201):
-            logger.info(f"✅ SL modified: {symbol}")
-            send_telegram_alert("🔄 SL MODIFIED (TRAILING)", {
-                "Symbol": symbol, "Trigger": trigger
-            })
+        # Dhan returns 200/202 on a successful delete.
+        if r.status_code in (200, 202):
+            logger.info(f"✅ Forever-order cancelled: {symbol}")
             return True
-        else:
-            logger.error(f"❌ SL modify failed")
-            return False
-
+        logger.error(f"❌ Cancel failed: HTTP {r.status_code} | {r.text}")
+        return False
     except Exception as e:
-        logger.error(f"❌ Modify SL exception: {e}")
+        logger.error(f"❌ Cancel exception: {e}")
         return False
 
 
-def modify_sl_for_exit(order_id, qty, symbol):
-    """Exit position with improved error handling - FIX #2"""
-    logger.info(f"🔴 Exiting: {symbol}")
+# ==========================
+# PATH B — PLACE  (regular MARKET sell)
+# ==========================
+def place_market_sell(sec_id, qty, symbol):
+    """
+    Place a regular MARKET SELL (NOT a forever-order). MARKET orders carry
+    no price/trigger, so there is nothing to tick-round here.
+
+    Returns (ok: bool, order_id: str|None).
+    """
+    logger.info(f"📤 Placing MARKET SELL: {symbol} | Qty: {qty}")
+    send_telegram_alert("📤 PLACING MARKET SELL (EXIT)", {
+        "Symbol": symbol, "Qty": qty,
+    })
+
+    if DRY_RUN:
+        logger.info(f"🔕 [DRY_RUN] Would place MARKET SELL for {symbol}")
+        return True, "DRYRUN_EXIT_ID"
 
     token = get_token()
     if not token:
-        logger.error(f"❌ No token for exit")
-        return False
+        logger.error("❌ No token for market sell")
+        return False, None
 
     payload = {
         "dhanClientId": DHAN_CLIENT_ID,
-        "orderId": order_id,
-        "orderFlag": "SINGLE",
+        "correlationId": str(uuid.uuid4())[:20],
+        "transactionType": "SELL",
+        "exchangeSegment": "NSE_EQ",
+        "productType": "CNC",
         "orderType": "MARKET",
-        "legName": "STOP_LOSS_LEG",
+        "validity": "DAY",
+        "securityId": str(sec_id),
         "quantity": int(qty),
-        "validity": "DAY"
+        "price": "",
+        "triggerPrice": "",
+        "disclosedQuantity": "",
+        "afterMarketOrder": False,
     }
 
     try:
-        r = session.put(
-            f"https://api.dhan.co/v2/forever/orders/{order_id}",
+        r = session.post(
+            "https://api.dhan.co/v2/orders",
             json=payload,
-            headers={"Accept": "application/json", "Content-Type": "application/json", "access-token": token},
-            timeout=15
+            headers={"Content-Type": "application/json",
+                     "access-token": token, "client-id": DHAN_CLIENT_ID},
+            timeout=30,
         )
-
-        logger.debug(f"📡 Exit response status: {r.status_code}")
-
         if r.status_code in (200, 201):
-            logger.info(f"✅ Exit placed: {symbol}")
-            send_telegram_alert("🔴 EXIT (CLOSE < SL)", {
-                "Symbol": symbol, "Qty": qty, "Action": "MARKET EXIT", "Status": "SUCCESS"
-            })
-            return True
-
-        elif r.status_code == 400:
-            logger.warning(f"⚠️ Exit got 400 error for {symbol}")
-            logger.debug(f"   Response: {r.text}")
-
-            logger.warning(f"⚠️ Exit will retry on next run for {symbol}")
-            send_telegram_alert("⚠️ EXIT FAILED - WILL RETRY", {
-                "Symbol": symbol, "OrderID": order_id, "Status": "PENDING_RETRY"
-            })
-            return False
-
-        elif r.status_code == 401:
-            logger.error(f"❌ Authentication failed")
-            return False
-
-        else:
-            logger.error(f"❌ Exit failed: HTTP {r.status_code}")
-            logger.debug(f"   Response: {r.text}")
-            send_telegram_alert("❌ EXIT FAILED", {
-                "Symbol": symbol, "Status": f"HTTP {r.status_code}"
-            })
-            return False
-
+            order_id = None
+            try:
+                order_id = r.json().get("orderId")
+            except Exception:
+                pass
+            logger.info(f"✅ MARKET SELL placed: {symbol} (order {order_id})")
+            return True, order_id
+        logger.error(f"❌ MARKET SELL failed: HTTP {r.status_code} | {r.text}")
+        return False, None
     except Exception as e:
-        logger.error(f"❌ Exit exception: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return False
+        logger.error(f"❌ MARKET SELL exception: {e}")
+        return False, None
 
 
 # ==========================
-# UPDATE TRADE ROW
+# PATH B — CONFIRM  (poll GET /orders/{id})
 # ==========================
-def update_trade_row(trades_ws, row_number, updates_dict):
-    """Update row - ONLY columns A-O"""
+def confirm_fill(order_id, symbol):
+    """
+    Poll the order book until the order is TRADED (or dead, or timeout).
+
+    Returns (status: str, exit_price: float|None) where status is one of:
+        "FILLED"   — order traded; exit_price is the avg traded price
+        "DEAD"     — order rejected/cancelled/expired (will never fill)
+        "PENDING"  — still working after the poll budget (limbo)
+    """
+    if DRY_RUN:
+        logger.info(f"🔕 [DRY_RUN] Would poll fill for {order_id}")
+        return "FILLED", None
+
+    token = get_token()
+    if not token:
+        return "PENDING", None
+
+    last_status = None
+    for attempt in range(1, EXIT_POLL_ATTEMPTS + 1):
+        try:
+            r = session.get(
+                f"https://api.dhan.co/v2/orders/{order_id}",
+                headers={"Accept": "application/json",
+                         "access-token": token, "client-id": DHAN_CLIENT_ID},
+                timeout=15,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                # Dhan may return a dict or a single-element list.
+                if isinstance(data, list):
+                    data = data[0] if data else {}
+                status = str(data.get("orderStatus", "")).upper()
+                last_status = status
+                logger.info(f"   poll {attempt}/{EXIT_POLL_ATTEMPTS}: {symbol} → {status}")
+
+                if status in FILLED_STATUSES:
+                    exit_price = None
+                    for k in ("averageTradedPrice", "avgPrice", "price", "tradedPrice"):
+                        v = data.get(k)
+                        if v:
+                            exit_price = _f(v, None)
+                            break
+                    return "FILLED", exit_price
+
+                if status in DEAD_STATUSES:
+                    logger.error(f"❌ {symbol} exit order dead: {status}")
+                    return "DEAD", None
+            else:
+                logger.warning(f"⚠️ {symbol} order poll HTTP {r.status_code}")
+        except Exception as e:
+            logger.error(f"❌ {symbol} order poll exception: {e}")
+
+        time.sleep(EXIT_POLL_SLEEP)
+
+    logger.warning(f"⚠️ {symbol} exit not confirmed after "
+                   f"{EXIT_POLL_ATTEMPTS} polls (last={last_status})")
+    return "PENDING", None
+
+
+# ==========================
+# REALIZED R-MULTIPLE  (logged, not stored — §11)
+# ==========================
+def realized_r(entry, structural_sl, exit_price):
+    """
+    R = (exit − entry) / (entry − structural_SL).
+    Risk per share is (entry − structural_SL). None if undefined.
+    """
     try:
-        headers = [
-            "ID", "Symbol", "Security_ID", "Qty", "Entry_Price", "Entry_Time",
-            "Status", "SL_Price", "Target_Price", "Setup_ID", "Current_Price",
-            "PnL", "PnL_Percent", "Updated_At", "Dhan_Order_ID"
-        ]
-
-        cell_range = trades_ws.range(f'A{row_number}:O{row_number}')
-
-        for col_idx, cell in enumerate(cell_range):
-            if col_idx < len(headers):
-                col_name = headers[col_idx]
-                if col_name in updates_dict:
-                    cell.value = updates_dict[col_name]
-
-        trades_ws.update_cells(cell_range, value_input_option="USER_ENTERED")
-        logger.debug(f"✅ Updated row {row_number}")
-        return True
-
-    except Exception as e:
-        logger.error(f"❌ Row update failed: {e}")
-        return False
+        risk = entry - structural_sl
+        if not risk or risk <= 0 or exit_price is None:
+            return None
+        return round((exit_price - entry) / risk, 2)
+    except Exception:
+        return None
 
 
 # ==========================
-# PORTFOLIO METRICS
+# PATH B ORCHESTRATION  (the whole exit, end to end)
 # ==========================
-def calculate_portfolio_metrics(trades_sheet):
-    """Calculate portfolio metrics"""
-    try:
-        active = [t for t in trades_sheet if t.get("Status") not in ["CLOSED", "PENDING"]]
-        open_pnl = sum(float(t.get("PnL", 0) or 0) for t in active)
+def execute_structural_exit(trade, pos, close_price, safety_order):
+    """
+    Run the full cancel-and-replace exit for ONE position.
 
-        logger.info(f"📊 Portfolio: Active={len(active)}, PnL={open_pnl}")
+      1. (alert) structural exit detected
+      2. cancel the −8% forever-order  (skip if none exists)
+      3. place a fresh MARKET sell
+      4. confirm fill
+         • FILLED  → mark CLOSED, write exit cols, log realized R
+         • PENDING → leave EXIT_PENDING, alert (sell is live, no re-protect)
+         • DEAD / place-failed → re-place −8% safety, status OPEN, loud alert
 
-        return {
-            "active_count": len(active),
-            "open_pnl": round(open_pnl, 2)
-        }
-    except Exception as e:
-        logger.error(f"❌ Metrics failed: {e}")
-        return {"active_count": 0, "open_pnl": 0}
+    `safety_order`: the live forever-order dict for this sec_id, or None.
+    Returns one of: "CLOSED", "EXIT_PENDING", "REPROTECTED", "ABORTED".
+    """
+    symbol = pos["symbol"]
+    sec_id = pos["securityId"]
+    trade_id = trade.get("ID")
+
+    entry = _f(trade.get("Entry_Price"))
+    structural_sl = _f(trade.get("Structural_SL"))
+    # Full position in 6a; Remaining_Qty defaults to full qty via the data
+    # layer, so this is already correct once 6b introduces partials.
+    qty = int(_f(trade.get("Remaining_Qty"), pos["qty"]) or pos["qty"])
+
+    r_est = realized_r(entry, structural_sl, close_price)  # estimate at close
+
+    # 1) Detected (fired only now that we have a real close + located trade).
+    logger.warning(f"🔴 STRUCTURAL EXIT: {symbol} close {close_price} < "
+                   f"Structural_SL {structural_sl}")
+    send_telegram_alert("🔴 STRUCTURAL EXIT DETECTED", {
+        "Symbol": symbol,
+        "Close": close_price,
+        "Structural_SL": structural_sl,
+        "Entry": entry,
+        "Est_R_at_close": r_est,
+        "Qty": qty,
+    })
+
+    # 2) Cancel the −8% safety order if one exists.
+    safety_order_id = safety_order.get("orderId") if safety_order else None
+    if safety_order_id:
+        if not cancel_forever_order(safety_order_id, symbol):
+            # Couldn't cancel → do NOT place a market sell (would orphan the
+            # −8% order against a position we'd then be selling). Abort and
+            # leave everything as-is; next run retries. Loud alert.
+            logger.error(f"❌ {symbol} cancel failed — aborting exit, "
+                         f"position remains protected by existing −8%")
+            send_telegram_alert("⚠️ EXIT ABORTED — CANCEL FAILED", {
+                "Symbol": symbol,
+                "OrderID": safety_order_id,
+                "Status": "−8% safety still in place; will retry next run",
+            })
+            return "ABORTED"
+    else:
+        logger.info(f"ℹ️ {symbol} no −8% safety order to cancel "
+                    f"(never placed) — placing fresh sell directly")
+
+    # 3) Place the fresh MARKET sell.
+    ok, exit_order_id = place_market_sell(sec_id, qty, symbol)
+    if not ok:
+        # Sell never accepted. Position is now bare (we deleted the −8% if it
+        # existed). Re-protect immediately.
+        return _reprotect_after_failed_exit(
+            trade, pos, entry, qty, reason="market sell rejected at placement")
+
+    # 4) Confirm the fill.
+    status, fill_price = confirm_fill(exit_order_id, symbol)
+    exit_price = fill_price if fill_price is not None else close_price
+    now = datetime.now(timezone.utc).isoformat()
+
+    if status == "FILLED":
+        r_real = realized_r(entry, structural_sl, exit_price)
+        db.update_trade(
+            trade_id=trade_id,
+            Status=db.STATUS_CLOSED,
+            Exit_Price=exit_price,
+            Exit_Time=now,
+            Exit_Reason="structural",
+            Exit_Order_ID=exit_order_id,
+            Current_Price=exit_price,
+        )
+        logger.info(f"✅ {symbol} CLOSED @ {exit_price} (R={r_real})")
+        send_telegram_alert("✅ EXIT CONFIRMED — CLOSED", {
+            "Symbol": symbol,
+            "Exit_Price": exit_price,
+            "Realized_R": r_real,
+            "Exit_Reason": "structural",
+            "Exit_Order_ID": exit_order_id,
+        })
+        return "CLOSED"
+
+    if status == "PENDING":
+        # Sell is live but unconfirmed. Do NOT re-protect (would double-sell).
+        # Leave EXIT_PENDING so a later run reconciles.
+        db.update_trade(
+            trade_id=trade_id,
+            Status=db.STATUS_EXIT_PENDING,
+            Exit_Order_ID=exit_order_id,
+            Exit_Reason="structural",
+        )
+        logger.warning(f"⚠️ {symbol} exit not confirmed — left EXIT_PENDING")
+        send_telegram_alert("⚠️ EXIT PLACED — NOT YET CONFIRMED", {
+            "Symbol": symbol,
+            "Exit_Order_ID": exit_order_id,
+            "Status": "EXIT_PENDING — sell live, NOT re-protected; reconcile next run",
+        })
+        return "EXIT_PENDING"
+
+    # status == "DEAD" → order rejected/expired; position bare. Re-protect.
+    return _reprotect_after_failed_exit(
+        trade, pos, entry, qty, reason=f"exit order {exit_order_id} dead")
 
 
-def update_portfolio_sheet(portfolio_ws, metrics):
-    """Update portfolio"""
-    try:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        now = datetime.now(timezone.utc).isoformat()
+def _reprotect_after_failed_exit(trade, pos, entry, qty, reason):
+    """
+    The exit sell failed and the position may be bare. Re-place the −8%
+    safety, flip status back to OPEN, fire a LOUD alert. Never leave the
+    position silently unprotected (§6).
+    """
+    symbol = pos["symbol"]
+    sec_id = pos["securityId"]
+    trade_id = trade.get("ID")
 
-        row = [today, metrics["active_count"], metrics["open_pnl"], 0, 0, 0, 0, 0, 0, now]
-        portfolio_ws.append_row(row, value_input_option="USER_ENTERED")
-        logger.info(f"✅ Portfolio updated")
-        return True
-    except Exception as e:
-        logger.error(f"❌ Portfolio update failed: {e}")
-        return False
+    logger.error(f"🚨 {symbol} EXIT FAILED ({reason}) — re-placing −8% safety")
+
+    ok, new_safety_id, safety_level = place_safety_sl(sec_id, qty, entry, symbol)
+
+    updates = {"Status": db.STATUS_OPEN}
+    if ok and safety_level is not None:
+        updates["Safety_SL"] = safety_level
+    db.update_trade(trade_id=trade_id, **updates)
+
+    send_telegram_alert("🚨 EXIT FAILED — POSITION RE-PROTECTED", {
+        "Symbol": symbol,
+        "Reason": reason,
+        "Re-protect": "OK" if ok else "FAILED — MANUAL ACTION NEEDED",
+        "New_Safety_OrderID": new_safety_id,
+        "Status": "OPEN (will retry exit next run)",
+    })
+
+    if not ok:
+        # Worst case: couldn't even re-protect. Make it impossible to miss.
+        send_telegram_alert("‼️‼️ UNPROTECTED POSITION — ACT NOW", {
+            "Symbol": symbol,
+            "Qty": qty,
+            "Issue": "exit failed AND −8% re-placement failed",
+        })
+
+    return "REPROTECTED"
 
 
 # ==========================
-# MAIN ENGINE V16
+# PnL  (for the routine row refresh on non-exiting positions)
+# ==========================
+def calculate_pnl(entry_price, current_price, qty):
+    if not current_price or not entry_price:
+        return 0, 0
+    pnl = (current_price - entry_price) * qty
+    pnl_pct = ((current_price - entry_price) / entry_price) * 100
+    return round(pnl, 2), round(pnl_pct, 2)
+
+
+# ==========================
+# MAIN ENGINE  (step 6a)
 # ==========================
 def run():
     logger.info("=" * 80)
-    logger.info("🚀 SL ENGINE V16 - SAFE PRODUCTION VERSION")
+    logger.info("🚀 SL ENGINE V17 (step 6a) — two-tier + close-based exit + Path B")
     logger.info("=" * 80)
 
     validate_env()
 
-    sheets = init_google_sheets()
-    if not sheets:
-        return
+    # Data layer: connect + ensure the 24-col schema once up front.
+    db.init_sheets()
+    db.ensure_schema()
 
-    trades_ws = sheets["trades"]
-    portfolio_ws = sheets["portfolio"]
-
-    trades_sheet = get_trades_from_sheets(trades_ws)
-    logger.info(f"📊 Trades before cleanup: {len(trades_sheet)}")
-
-    # CLEANUP STALE TRADES (with safety checks)
-    cleanup_stale_trades(trades_ws, trades_sheet)
-
-    # ADD NEW HEADERS
-    add_new_column_headers(trades_ws)
-
-    # REFRESH TRADES
-    trades_sheet = get_trades_from_sheets(trades_ws)
-    logger.info(f"📊 Trades after cleanup: {len(trades_sheet)}")
+    trades = db.get_all_trades()           # new-column blanks already defaulted
+    logger.info(f"📊 Trades in sheet: {len(trades)}")
 
     positions = get_positions()
     holdings = get_holdings()
     forever = get_forever_orders()
-    sl_map = {str(o["securityId"]): o for o in forever if o.get("transactionType") == "SELL" and o.get("orderStatus") == "PENDING"}
 
+    # Map sec_id → live resting SELL forever-order (the −8% safety).
+    safety_map = {
+        str(o["securityId"]): o
+        for o in forever
+        if o.get("transactionType") == "SELL"
+           and str(o.get("orderStatus", "")).upper() in ("PENDING", "CONFIRM")
+    }
+
+    # Union of positions + holdings keyed by sec_id.
     all_pos = {p["securityId"]: p for p in positions}
     for h in holdings:
         all_pos.setdefault(h["securityId"], h)
 
-    logger.info(f"📊 Total positions: {len(all_pos)}")
-    logger.info(f"📊 SL orders: {len(sl_map)}")
+    logger.info(f"📊 Positions/holdings: {len(all_pos)} | Safety orders: {len(safety_map)}")
 
-    placed = modified = marked_exit = 0
+    # Batched routine updates (PnL/price/status) for NON-exiting rows, so a
+    # multi-row run is a single sheet write. Exits write immediately inside
+    # execute_structural_exit (they're rare and need to be durable at once).
+    routine_updates = []
+    exited = safety_placed = skipped_close = 0
 
-    # Process each position
     for sec_id, pos in all_pos.items():
-        symbol = pos['symbol']
-        logger.info(f"\n{'='*80}")
-        logger.info(f"📍 {symbol} (Qty: {pos['qty']}, Avg: {pos['avgPrice']})")
+        symbol = pos["symbol"]
+        logger.info(f"\n{'='*80}\n📍 {symbol} (Qty: {pos['qty']}, Avg: {pos['avgPrice']})")
 
-        trade = find_existing_trade(trades_sheet, symbol, sec_id)
+        trade = db.get_trade(symbol=symbol, security_id=sec_id)
         if not trade:
+            logger.info(f"   ↪ no matching sheet row for {symbol}; skipping")
             continue
 
-        entry_price = float(trade.get("Entry_Price") or 0)
-        sl_price = float(trade.get("SL_Price") or round(entry_price * BASE_SL_PCT, 2))
+        # Skip rows already terminal / in-flight.
+        status = str(trade.get("Status", "")).upper()
+        if status in (db.STATUS_CLOSED, db.STATUS_EXIT_PENDING):
+            logger.info(f"   ↪ {symbol} status={status}; skipping")
+            continue
 
-        # GET CURRENT PRICE
-        current_price, price_source = get_current_price(sec_id, symbol)
-        if not current_price:
-            current_price = entry_price
+        entry_price = _f(trade.get("Entry_Price"))
+        structural_sl = _f(trade.get("Structural_SL"))
+        safety_order = safety_map.get(sec_id)
 
-        logger.info(f"   Entry: {entry_price} | Current: {current_price} | SL: {sl_price}")
+        # ----- Two-tier: ensure the −8% backstop EXISTS (place once) -----
+        # NOTE: we never max() Safety_SL with Structural_SL. They are
+        # independent tracks. Structural_SL governs the exit; Safety_SL
+        # is just the resting catastrophe order at the broker.
+        if not safety_order:
+            ok, new_id, safety_level = place_safety_sl(
+                sec_id, int(pos["qty"]), entry_price, symbol)
+            if ok:
+                safety_placed += 1
+                routine_updates.append({
+                    "trade_id": trade.get("ID"),
+                    "Safety_SL": safety_level,
+                    "Status": db.STATUS_OPEN if status == db.STATUS_PENDING else status,
+                })
 
-        unrealized_pnl, unrealized_pnl_pct = calculate_pnl(entry_price, current_price, pos["qty"])
+        # ----- Close-based structural exit decision -----
+        close_price, source = get_daily_close(sec_id, symbol)
+        if close_price is None:
+            # Strictly close-based: no close → no exit decision this run.
+            skipped_close += 1
+            logger.warning(f"   ↪ {symbol} no daily close; skipping exit check, "
+                           f"routine refresh only")
+            # Still refresh PnL using entry as a neutral price (no LTP guess).
+            continue
 
-        dhan_trigger = sl_map.get(sec_id, {}).get("triggerPrice") if sec_id in sl_map else None
-        status = determine_status(current_price, sl_price, dhan_trigger)
+        logger.info(f"   Close({source}): {close_price} | "
+                    f"Structural_SL: {structural_sl} | Entry: {entry_price}")
 
-        logger.info(f"   Status: {status} | PnL: {unrealized_pnl} ({unrealized_pnl_pct}%)")
+        if structural_sl > 0 and close_price < structural_sl:
+            outcome = execute_structural_exit(trade, pos, close_price, safety_order)
+            if outcome in ("CLOSED", "EXIT_PENDING", "REPROTECTED"):
+                exited += 1
+            # execute_structural_exit already wrote the row; don't queue a
+            # routine update that could clobber the exit columns.
+            continue
 
-        now = datetime.now(timezone.utc).isoformat()
-        update_data = {
-            "Current_Price": current_price,
-            "Status": status,
+        # ----- No exit: routine PnL/price/status refresh (batched) -----
+        unrealized_pnl, unrealized_pnl_pct = calculate_pnl(
+            entry_price, close_price, int(pos["qty"]))
+        routine_updates.append({
+            "trade_id": trade.get("ID"),
+            "Current_Price": close_price,
             "PnL": unrealized_pnl,
             "PnL_Percent": unrealized_pnl_pct,
-            "Updated_At": now
-        }
+            "Status": db.STATUS_OPEN if status == db.STATUS_PENDING else status,
+        })
 
-        # CHECK EXIT
-        if current_price < sl_price:
-            logger.warning(f"🔴 CLOSE < SL - EXIT")
-            if sec_id in sl_map:
-                if modify_sl_for_exit(sl_map[sec_id]["orderId"], pos["qty"], symbol):
-                    marked_exit += 1
-        else:
-            # CHECK TRAILING
-            if sec_id in sl_map:
-                current_trigger = sl_map[sec_id].get("triggerPrice")
-                new_trigger = calculate_sl(entry_price, current_price, current_trigger)
-
-                if new_trigger > current_trigger:
-                    if modify_sl(sl_map[sec_id]["orderId"], pos["qty"], new_trigger, symbol):
-                        modified += 1
-                        update_data["SL_Price"] = new_trigger
+    # Single batched write for all routine (non-exit) updates.
+    if routine_updates:
+        # Collapse multiple dicts for the same trade_id into one (e.g. a
+        # safety-placement update + a routine-refresh update on one row).
+        merged = {}
+        for u in routine_updates:
+            tid = u.get("trade_id")
+            if tid in merged:
+                merged[tid].update({k: v for k, v in u.items() if k != "trade_id"})
             else:
-                if place_sl(sec_id, pos["qty"], entry_price, symbol):
-                    placed += 1
-
-        # UPDATE ROW
-        for idx, record in enumerate(trades_sheet, start=2):
-            if record.get("ID") == trade.get("ID"):
-                update_trade_row(trades_ws, idx, update_data)
-                break
-
-        time.sleep(0.5)
-
-    # PORTFOLIO
-    trades_sheet = get_trades_from_sheets(trades_ws)
-    metrics = calculate_portfolio_metrics(trades_sheet)
-    update_portfolio_sheet(portfolio_ws, metrics)
+                merged[tid] = dict(u)
+        result = db.batch_update_trades(list(merged.values()))
+        logger.info(f"📝 Routine batch update: {result}")
 
     logger.info(f"\n{'='*80}")
-    logger.info(f"✅ COMPLETED | Placed: {placed} | Modified: {modified} | Exit: {marked_exit}")
+    logger.info(f"✅ COMPLETED | Exits: {exited} | Safety placed: {safety_placed} "
+                f"| Close-skipped: {skipped_close}")
     logger.info(f"{'='*80}")
 
-    send_telegram_alert("🚀 SL ENGINE V16 COMPLETED", {
-        "Placed": placed,
-        "Modified": modified,
-        "Exit": marked_exit,
-        "Total": len(all_pos),
-        "Active": metrics["active_count"]
+    send_telegram_alert("🚀 SL ENGINE V17 (6a) COMPLETED", {
+        "Exits": exited,
+        "Safety_placed": safety_placed,
+        "Close_skipped": skipped_close,
+        "Positions": len(all_pos),
     })
 
 
