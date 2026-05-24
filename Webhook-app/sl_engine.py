@@ -80,6 +80,17 @@ DRY_RUN = os.getenv("SL_ENGINE_DRY_RUN", "false").lower() in ("true", "1", "yes"
 SAFETY_SL_PCT = 0.92
 SAFETY_LIMIT_OFFSET = 0.995
 
+# correlationId prefixes so cleanup can tell order roles apart in the Dhan
+# order book. Kept short (Dhan correlationId limit). EXIT_ = a 2R/structural
+# exit-forever (NEVER cancel as a duplicate). SAFE_ = the −8% backstop.
+CID_EXIT = "EXIT_"
+CID_SAFE = "SAFE_"
+
+
+def _cid(prefix):
+    """Build a tagged correlationId, e.g. 'EXIT_a1b2c3d4e5f6' (≤20 chars)."""
+    return f"{prefix}{uuid.uuid4().hex[:12]}"
+
 # Exit forever-order: trigger sits this fraction below the latest close so
 # it fills at next open regardless of small overnight moves. Limit a touch
 # below the trigger. Both rounded DOWN to tick.
@@ -529,7 +540,7 @@ def place_safety_sl(sec_id, qty, entry, symbol):
     if not token:
         return False, None, None
     payload = {
-        "dhanClientId": DHAN_CLIENT_ID, "correlationId": str(uuid.uuid4())[:20],
+        "dhanClientId": DHAN_CLIENT_ID, "correlationId": _cid(CID_SAFE),
         "orderFlag": "SINGLE", "transactionType": "SELL", "exchangeSegment": "NSE_EQ",
         "productType": "CNC", "orderType": "LIMIT", "validity": "DAY",
         "securityId": str(sec_id), "quantity": int(qty),
@@ -610,7 +621,7 @@ def place_exit_forever(sec_id, qty, close_price, symbol):
     if not token:
         return False, None, None
     payload = {
-        "dhanClientId": DHAN_CLIENT_ID, "correlationId": str(uuid.uuid4())[:20],
+        "dhanClientId": DHAN_CLIENT_ID, "correlationId": _cid(CID_EXIT),
         "orderFlag": "SINGLE", "transactionType": "SELL", "exchangeSegment": "NSE_EQ",
         "productType": "CNC", "orderType": "LIMIT", "validity": "DAY",
         "securityId": str(sec_id), "quantity": int(qty),
@@ -905,7 +916,7 @@ def _place_safety_at_level(sec_id, qty, trigger_level, symbol):
     if not token:
         return False, None, None
     payload = {
-        "dhanClientId": DHAN_CLIENT_ID, "correlationId": str(uuid.uuid4())[:20],
+        "dhanClientId": DHAN_CLIENT_ID, "correlationId": _cid(CID_SAFE),
         "orderFlag": "SINGLE", "transactionType": "SELL", "exchangeSegment": "NSE_EQ",
         "productType": "CNC", "orderType": "LIMIT", "validity": "DAY",
         "securityId": str(sec_id), "quantity": int(qty),
@@ -1150,23 +1161,39 @@ def manage_trail_and_target(trade, pos, close_price, safety_order):
 # ==========================
 # STALE / DUPLICATE FOREVER-ORDER CLEANUP
 # ==========================
+def _is_exit_order(o):
+    """True if this forever-order is a tagged EXIT order (correlationId)."""
+    cid = str(o.get("correlationId", "") or "")
+    return cid.startswith(CID_EXIT)
+
+
 def cleanup_forever_orders(forever, all_pos):
     """
     Cancel SELL forever-orders that are stale:
       • ORPHANS — securityId has no matching open position/holding.
-      • DUPLICATES — more than one live SELL for the same securityId;
-        keep the NEWEST (highest orderId), cancel the rest.
+      • DUPLICATES — more than one live −8% SELL for the same securityId;
+        keep the NEWEST, cancel the rest.
 
-    Returns (kept_map: {sec_id: order}, n_cancelled). `kept_map` is the
-    de-duplicated safety map the rest of the run uses.
+    EXIT orders (correlationId prefixed EXIT_) are the 2R/structural
+    exit-forevers; they are NEVER cancelled and NEVER counted as −8%
+    duplicates (a position legitimately holds both an exit-forever and a
+    −8% safety at once). Untagged legacy SELLs are treated as −8% safeties.
+
+    Returns (kept_map: {sec_id: −8% order}, n_cancelled).
     """
     live = [o for o in forever
             if o.get("transactionType") == "SELL"
             and str(o.get("orderStatus", "")).upper() in ("PENDING", "CONFIRM")]
 
-    # Group live SELLs by securityId.
+    # Group live −8% SELLs by securityId, SKIPPING tagged EXIT orders.
     by_sec = {}
+    protected = 0
     for o in live:
+        if _is_exit_order(o):
+            protected += 1
+            logger.info(f"   🔒 keeping EXIT-forever {o.get('orderId')} "
+                        f"({o.get('tradingSymbol')}) — correlationId tagged")
+            continue
         by_sec.setdefault(str(o.get("securityId")), []).append(o)
 
     pos_secs = set(all_pos.keys())
@@ -1179,13 +1206,13 @@ def cleanup_forever_orders(forever, all_pos):
             for o in orders:
                 oid = o.get("orderId")
                 sym = o.get("tradingSymbol", sec_id)
-                logger.warning(f"🧹 Orphan SELL forever (no position): {sym} "
+                logger.warning(f"🧹 Orphan −8% SELL (no position): {sym} "
                                f"sec {sec_id} order {oid} — cancelling")
                 if cancel_forever_order(oid, sym):
                     cancelled += 1
             continue
 
-        # Duplicates: keep newest (max orderId as string-sortable int), cancel rest.
+        # Duplicates among −8% safeties: keep newest, cancel rest.
         if len(orders) > 1:
             try:
                 orders_sorted = sorted(orders, key=lambda x: int(x.get("orderId", 0)))
@@ -1195,7 +1222,7 @@ def cleanup_forever_orders(forever, all_pos):
             for o in orders_sorted[:-1]:
                 oid = o.get("orderId")
                 sym = o.get("tradingSymbol", sec_id)
-                logger.warning(f"🧹 Duplicate SELL forever: {sym} sec {sec_id} "
+                logger.warning(f"🧹 Duplicate −8% SELL: {sym} sec {sec_id} "
                                f"order {oid} — cancelling (keeping {keep.get('orderId')})")
                 if cancel_forever_order(oid, sym):
                     cancelled += 1
@@ -1206,7 +1233,8 @@ def cleanup_forever_orders(forever, all_pos):
     if cancelled:
         send_telegram_alert("🧹 STALE FOREVER ORDERS CLEANED",
                             {"Cancelled": cancelled, "Live_kept": len(kept_map)})
-    logger.info(f"🧹 Cleanup: cancelled {cancelled}, kept {len(kept_map)} live SELL forever-order(s)")
+    logger.info(f"🧹 Cleanup: cancelled {cancelled}, kept {len(kept_map)} −8% order(s), "
+                f"protected {protected} EXIT-forever(s)")
     return kept_map, cancelled
 
 
@@ -1316,7 +1344,7 @@ def protect_all_positions(all_pos, safety_map):
 
 def run():
     logger.info("=" * 80)
-    logger.info("🚀 SL ENGINE V19.4 — + TOTP retry (waits for fresh window)")
+    logger.info("🚀 SL ENGINE V19.5 — protect exit-forevers from cleanup (correlationId tag)")
     logger.info("=" * 80)
     validate_env()
     db.init_sheets()
@@ -1333,7 +1361,8 @@ def run():
     for h in holdings:
         all_pos.setdefault(h["securityId"], h)
 
-    # Cancel orphan + duplicate SELL forever-orders; get a deduped safety map.
+    # Cancel orphan + duplicate −8% forever-orders (EXIT-tagged orders are
+    # protected by correlationId inside cleanup); get a deduped safety map.
     safety_map, _cleaned = cleanup_forever_orders(forever, all_pos)
 
     # OPTION-3: guarantee every position is protected at the correct qty.
@@ -1422,7 +1451,7 @@ def run():
                 f"Close-skipped: {skipped_close} | Invalid-skipped: {skipped_invalid}")
     logger.info(f"{'='*80}")
 
-    send_telegram_alert("🚀 SL ENGINE V19.4 COMPLETED",
+    send_telegram_alert("🚀 SL ENGINE V19.5 COMPLETED",
                         {"Exits": exited, "Partials": partials, "Trailed": trailed,
                          "Protect_placed": protect_stats["placed"],
                          "Protect_reconciled": protect_stats["reconciled"],
