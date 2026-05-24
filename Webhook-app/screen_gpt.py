@@ -437,7 +437,6 @@ def send_document(path, caption=None):
 
 
 def get_stocks():
-
     """
 
     Load NIFTY 500 stocks from NSE.
