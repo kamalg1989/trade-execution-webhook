@@ -207,10 +207,19 @@ def _normalize_status(raw):
 
 
 def has_valid_risk(trade):
-    """Structural_SL must be strictly BELOW entry, else R basis is garbage."""
+    """
+    Valid if the IMMUTABLE R basis (entry + Target) is sound:
+        entry > 0, target > 0, target > entry.
+
+    Deliberately does NOT use live Structural_SL: once a trade closes ≥ 1R,
+    breakeven/trail legitimately push Structural_SL to/above entry, so an
+    `SL < entry` test would wrongly bench healthy trailing positions on the
+    next run. Risk is anchored to Target (see compute_r_basis), which never
+    moves. Only genuinely bad Target/entry data benches a row now.
+    """
     entry = _f(trade.get("Entry_Price"))
-    sl = _f(trade.get("Structural_SL"))
-    return entry > 0 and 0 < sl < entry
+    target = _f(trade.get("Target_Price"))
+    return entry > 0 and target > 0 and target > entry
 
 
 # ==========================
@@ -1344,7 +1353,7 @@ def protect_all_positions(all_pos, safety_map):
 
 def run():
     logger.info("=" * 80)
-    logger.info("🚀 SL ENGINE V19.5 — protect exit-forevers from cleanup (correlationId tag)")
+    logger.info("🚀 SL ENGINE V19.6 — + Target-based risk guard (trail no longer self-benches)")
     logger.info("=" * 80)
     validate_env()
     db.init_sheets()
@@ -1391,11 +1400,12 @@ def run():
         structural_sl = _f(trade.get("Structural_SL"))
         safety_order = safety_map.get(sec_id)
 
-        # ----- INVALID-ROW GUARD: SL must be below entry -----
+        # ----- INVALID-ROW GUARD: entry+Target basis must be sound -----
         # (Safety −8% already placed/reconciled by protect_all_positions.)
         if not has_valid_risk(trade):
-            logger.warning(f"   ⚠️ {symbol} invalid risk (SL {structural_sl} ≥ "
-                           f"entry {entry_price}) — −8% protects it; "
+            tgt = _f(trade.get("Target_Price"))
+            logger.warning(f"   ⚠️ {symbol} invalid risk basis (entry {entry_price}, "
+                           f"target {tgt}) — −8% protects it; "
                            f"NO trail/partial/structural-exit")
             skipped_invalid += 1
             continue
@@ -1451,7 +1461,7 @@ def run():
                 f"Close-skipped: {skipped_close} | Invalid-skipped: {skipped_invalid}")
     logger.info(f"{'='*80}")
 
-    send_telegram_alert("🚀 SL ENGINE V19.5 COMPLETED",
+    send_telegram_alert("🚀 SL ENGINE V19.6 COMPLETED",
                         {"Exits": exited, "Partials": partials, "Trailed": trailed,
                          "Protect_placed": protect_stats["placed"],
                          "Protect_reconciled": protect_stats["reconciled"],
