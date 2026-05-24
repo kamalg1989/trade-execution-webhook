@@ -24,7 +24,6 @@ from tick_utils import get_tick_size, round_to_tick, get_security_id as tu_get_s
 # CONFIG
 # ==========================
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
-DHAN_TOKEN = os.getenv("DHAN_TOKEN")
 
 CAPITAL = float(os.getenv("CAPITAL", "400000"))
 
