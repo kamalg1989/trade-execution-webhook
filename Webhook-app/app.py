@@ -427,7 +427,6 @@ def execute_entry_engine_subprocess(payload, token):
         env = os.environ.copy()
         webhook_app_path = "/root/trade-execution-webhook/Webhook-app"
         existing_pythonpath = env.get("PYTHONPATH", "")
-
         env["PYTHONPATH"] = (
 
             f"{webhook_app_path}:{existing_pythonpath}"
