@@ -800,6 +800,119 @@ def compute_r_basis(trade):
 
 
 # ==========================
+# TRAILING −8% SAFETY  (ratchet the resting backstop up on close ≥ 1R)
+# ==========================
+def trail_safety_sl(trade, pos, close_price, safety_order, r_basis):
+    """
+    Ratchet the resting −8% SELL forever-order UP, based on the daily close.
+
+    Rule (close-based decision; the order itself is a live broker stop):
+      • Only acts once a daily close ≥ 1R (trade is "proven").
+      • New safety level = close × SAFETY_SL_PCT (−8% from latest close),
+        rounded DOWN to tick.
+      • Ratchet UP only: act only if new level > current resting trigger.
+      • Cancel + replace at FULL live Dhan qty (modify is unreliable).
+        Place-first then cancel-old → never bare.
+
+    Returns dict update for the sheet ({"Safety_SL": level}) or {} if nothing
+    changed. Does NOT touch Structural_SL / trail phase (that's separate).
+    """
+    symbol = pos["symbol"]
+    sec_id = pos["securityId"]
+    trade_id = trade.get("ID")
+    qty = int(_f(pos.get("qty")))
+
+    # Gate: only trail the −8% once the trade has closed ≥ 1R.
+    if close_price < r_basis["one_r_price"]:
+        return {}
+
+    new_level = _round_down(close_price * SAFETY_SL_PCT, symbol)
+    cur_trigger = _f(safety_order.get("triggerPrice")) if safety_order else 0.0
+
+    # Ratchet up only.
+    if new_level <= cur_trigger:
+        return {}
+
+    entry = _f(trade.get("Entry_Price"))
+    logger.info(f"   🔼 {symbol} trailing −8%: {cur_trigger} → {new_level} "
+                f"(close {close_price} ≥ 1R {round(r_basis['one_r_price'],4)})")
+
+    # Place the NEW safety first (never leave the position bare), at the
+    # close-based level (not entry*0.92).
+    ok, new_id, _ = _place_safety_at_level(sec_id, qty, new_level, symbol)
+    if not ok:
+        logger.error(f"🚨 {symbol} trailing −8% place FAILED — keeping old order")
+        send_telegram_alert("🚨 TRAIL −8% FAILED — OLD KEPT",
+                            {"Symbol": symbol, "Attempted_Level": new_level})
+        return {}
+
+    # New order live → cancel the old one.
+    old_id = safety_order.get("orderId") if safety_order else None
+    if old_id:
+        cancel_forever_order(old_id, symbol)
+
+    # Update the in-memory safety_map entry so later logic sees the new order.
+    safety_order_new = {"orderId": new_id, "securityId": sec_id,
+                        "quantity": qty, "transactionType": "SELL",
+                        "orderStatus": "PENDING", "tradingSymbol": symbol,
+                        "triggerPrice": new_level}
+    # Mutate the dict in place so the caller's reference updates.
+    if safety_order is not None:
+        safety_order.clear()
+        safety_order.update(safety_order_new)
+
+    send_telegram_alert("🔼 −8% SAFETY TRAILED UP", {
+        "Symbol": symbol, "Old_Trigger": cur_trigger,
+        "New_Trigger": new_level, "Close": close_price, "New_OrderID": new_id})
+    return {"Safety_SL": new_level}
+
+
+def _place_safety_at_level(sec_id, qty, trigger_level, symbol):
+    """
+    Place a −8% SELL forever-order at an EXPLICIT trigger level (used by the
+    trailing-safety path, where the level is close-based, not entry*0.92).
+    Trigger and limit both rounded DOWN to tick.
+
+    Returns (ok, order_id, trigger_level).
+    """
+    trigger = _round_down(trigger_level, symbol)
+    price = _round_down(trigger * SAFETY_LIMIT_OFFSET, symbol)
+    logger.info(f"📤 Placing trailing −8% SL: {symbol} | Trigger: {trigger} | Limit: {price}")
+    send_telegram_alert("🛡️ PLACING TRAILING −8% SL",
+                        {"Symbol": symbol, "Qty": qty, "Trigger": trigger, "Limit": price})
+    if DRY_RUN:
+        logger.info(f"🔕 [DRY_RUN] Would place trailing −8% for {symbol}")
+        return True, "DRYRUN_TRAIL_SAFETY_ID", trigger
+    token = get_token()
+    if not token:
+        return False, None, None
+    payload = {
+        "dhanClientId": DHAN_CLIENT_ID, "correlationId": str(uuid.uuid4())[:20],
+        "orderFlag": "SINGLE", "transactionType": "SELL", "exchangeSegment": "NSE_EQ",
+        "productType": "CNC", "orderType": "LIMIT", "validity": "DAY",
+        "securityId": str(sec_id), "quantity": int(qty),
+        "price": price, "triggerPrice": trigger,
+    }
+    try:
+        r = session.post("https://api.dhan.co/v2/forever/orders", json=payload,
+                         headers={"access-token": token, "client-id": DHAN_CLIENT_ID},
+                         timeout=30)
+        if r.status_code in (200, 201):
+            order_id = None
+            try:
+                order_id = r.json().get("orderId")
+            except Exception:
+                pass
+            logger.info(f"✅ Trailing −8% placed: {symbol} (order {order_id})")
+            return True, order_id, trigger
+        logger.error(f"❌ Trailing −8% failed: HTTP {r.status_code} | {r.text}")
+        return False, None, None
+    except Exception as e:
+        logger.error(f"❌ Trailing −8% exception: {e}")
+        return False, None, None
+
+
+# ==========================
 # SAFETY RECONCILE  (after partial: cancel-then-replace at kept qty)
 # ==========================
 def reconcile_safety_qty(trade, pos, safety_order, new_qty, entry):
@@ -1185,7 +1298,7 @@ def protect_all_positions(all_pos, safety_map):
 
 def run():
     logger.info("=" * 80)
-    logger.info("🚀 SL ENGINE V19.2 — forever exits + cleanup + qty-reconcile + protect-all")
+    logger.info("🚀 SL ENGINE V19.3 — + trailing −8% safety (ratchets up on close ≥ 1R)")
     logger.info("=" * 80)
     validate_env()
     db.init_sheets()
@@ -1256,6 +1369,14 @@ def run():
                 exited += 1
             continue
 
+        # ----- Ratchet the −8% safety UP on close (close ≥ 1R) -----
+        r_basis_for_safety = compute_r_basis(trade)
+        if r_basis_for_safety is not None:
+            safety_upd = trail_safety_sl(
+                trade, pos, close_price, safety_order, r_basis_for_safety)
+            if safety_upd:
+                routine_updates.append({"trade_id": trade.get("ID"), **safety_upd})
+
         # ----- No exit → trail + hybrid target -----
         upd = manage_trail_and_target(trade, pos, close_price, safety_order)
         if upd:
@@ -1283,7 +1404,7 @@ def run():
                 f"Close-skipped: {skipped_close} | Invalid-skipped: {skipped_invalid}")
     logger.info(f"{'='*80}")
 
-    send_telegram_alert("🚀 SL ENGINE V19.2 COMPLETED",
+    send_telegram_alert("🚀 SL ENGINE V19.3 COMPLETED",
                         {"Exits": exited, "Partials": partials, "Trailed": trailed,
                          "Protect_placed": protect_stats["placed"],
                          "Protect_reconciled": protect_stats["reconciled"],
