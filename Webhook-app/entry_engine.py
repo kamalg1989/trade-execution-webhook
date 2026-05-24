@@ -279,7 +279,6 @@ def run():
 
     token = get_dhan_token()
 
-
     log(f"Input: {symbol} | Qty={qty} | Entry={entry} | SL={sl} | Target={target}")
     log(f"Token from parent: {token[:30] if token else 'NOT PROVIDED'}...")
 
