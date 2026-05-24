@@ -60,6 +60,47 @@ def get_security_id(stock):
     log(f"✅ {stock} → Security ID: {sec_id}")
     return sec_id
 
+# ==========================
+# GET DHAN TOKEN
+# ==========================
+def get_dhan_token():
+    """Generate a fresh Dhan access token using credentials from env."""
+    try:
+        import pyotp
+        dhan_client_id = os.getenv("DHAN_CLIENT_ID")
+        dhan_pin = os.getenv("DHAN_PIN")
+        dhan_totp_secret = os.getenv("DHAN_TOTP_SECRET")
+
+        if not all([dhan_client_id, dhan_pin, dhan_totp_secret]):
+            log(f"❌ Missing Dhan credentials")
+            return None
+
+        totp = pyotp.TOTP(dhan_totp_secret).now()
+        log(f"🔑 Generating Dhan token...")
+
+        r = session.post(
+            "https://auth.dhan.co/app/generateAccessToken",
+            params={"dhanClientId": dhan_client_id, "pin": dhan_pin, "totp": totp},
+            timeout=10,
+        )
+
+        if r.status_code != 200:
+            log(f"❌ Token generation failed: {r.status_code}")
+            return None
+
+        data = r.json()
+        token = data.get("accessToken")
+        if not token:
+            log(f"❌ No accessToken in response: {data}")
+            return None
+
+        log(f"✅ Token generated (valid 23h)")
+        return token
+
+    except Exception as e:
+        log(f"❌ Token generation error: {e}")
+        return None
+
 
 # ==========================
 # RISK VALIDATION  (per-order, defends against bad/replayed payloads)
