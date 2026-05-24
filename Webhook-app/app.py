@@ -429,11 +429,8 @@ def execute_entry_engine_subprocess(payload, token):
         existing_pythonpath = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = (
             f"{webhook_app_path}:{existing_pythonpath}"
-
             if existing_pythonpath
-
             else webhook_app_path
-
         )
         env.update({
             "SYMBOL": str(payload["symbol"]),
