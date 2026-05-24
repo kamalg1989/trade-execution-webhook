@@ -437,39 +437,68 @@ def send_document(path, caption=None):
 
 
 def get_stocks():
-    """
-    Load NIFTY 500 stocks from NSE's official list.
-    Falls back to hardcoded list if NSE fetch fails.
-    Returns ~500 stocks (vs 3221 all NSE equities).
-    """
-    import pandas as pd
 
-    # Try live fetch from NSE
+    """
+
+    Load NIFTY 500 stocks from NSE.
+
+    Handles NSE 403 by using browser headers.
+
+    Returns ~500 stocks.
+
+    """
+
     try:
+
         print("📥 Loading NIFTY 500 from NSE...")
-        url = "https://www.nseindia.com/products/content/indices/index_data/nifty_500list.csv"
-        df = pd.read_csv(url, timeout=10)
+
+        url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+
+        headers = {
+
+            "User-Agent": (
+
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+
+                "Chrome/124.0.0.0 Safari/537.36"
+
+            ),
+
+            "Accept": "text/csv,*/*",
+
+            "Referer": "https://www.nseindia.com/"
+
+        }
+
+        response = requests.get(url, headers=headers, timeout=20)
+
+        response.raise_for_status()
+
+        df = pd.read_csv(StringIO(response.text))
+
+        print("Columns:", df.columns.tolist())
 
         stocks = sorted([
+
             str(s).strip().upper() + ".NS"
+
             for s in df["Symbol"].dropna()
+
             if str(s).strip().upper().isalpha()
+
         ])
 
-        print(f"✅ Loaded {len(stocks)} NIFTY 500 stocks from NSE")
+        print(f"✅ Loaded {len(stocks)} NIFTY 500 stocks")
+
         return stocks
 
     except Exception as e:
-        print(f"⚠️ NSE fetch failed: {e} — using hardcoded fallback")
 
-        # Hardcoded NIFTY 500 fallback (last 100 stocks shown above)
-        nifty_500 = [
-            "RELIANCE.NS", "TCS.NS", "INFA.NS", "HINDUNILVR.NS", "ICICIBANK.NS",
-            "HDFC.NS", "LT.NS", "AXISBANK.NS", "WIPRO.NS", "MARUTI.NS",
-            # ... add all 500 from file above or fetch live
-        ]
+        print(f"⚠️ NSE fetch failed: {e}")
 
-        return sorted(nifty_500)
+        return []
 
 # ==========================
 # DHAN DATA FETCH
