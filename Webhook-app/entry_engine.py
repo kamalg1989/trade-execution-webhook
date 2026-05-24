@@ -277,7 +277,8 @@ def run():
     score = float(os.getenv("SCORE", "0") or "0.0")
     setup_id = os.getenv("SETUP_ID", "")
 
-    token = os.getenv("DHAN_TOKEN")
+    token = get_dhan_token()
+
 
     log(f"Input: {symbol} | Qty={qty} | Entry={entry} | SL={sl} | Target={target}")
     log(f"Token from parent: {token[:30] if token else 'NOT PROVIDED'}...")
