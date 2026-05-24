@@ -10,13 +10,16 @@ on:
       - 'Webhook-app/screen_gpt.py'
       - '.github/workflows/**'
   schedule:
-    - cron: '0 23 * * 0-4'   # ✅ 4:30 AM IST (Mon–Fri)
+    - cron: '0 23 * * 0-4'   # 4:30 AM IST (Mon–Fri)
   workflow_dispatch:
 
 jobs:
   run-script:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
+    env:
+      PYTHONUNBUFFERED: 1   # Enable real-time Python logs
 
     steps:
       - name: Checkout repo
@@ -45,7 +48,7 @@ jobs:
           DHAN_CLIENT_ID: ${{ secrets.DHAN_CLIENT_ID }}
           DHAN_PIN: ${{ secrets.DHAN_PIN }}
           DHAN_TOTP_SECRET: ${{ secrets.DHAN_TOTP_SECRET }}
-        run: python Webhook-app/screen_gpt.py
+        run: python -u Webhook-app/screen_gpt.py
 
       - name: Upload Results
         if: always()
