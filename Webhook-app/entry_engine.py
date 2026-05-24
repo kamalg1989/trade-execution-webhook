@@ -1,40 +1,44 @@
 # ==============================================
-# 🚀 ENTRY ENGINE v2.5 (GOOGLE SHEETS VERSION)
-# UPDATED: SQLite → Google Sheets (Excel in Drive)
-# Accepts token via env var from app.py
-# All CRUD operations: Create, Read, Update, Delete
+# 🚀 ENTRY ENGINE v3.0 (CONSOLIDATED)
+# - Uses shared google_sheets_db (24-col schema, Structural_SL, PENDING)
+# - Uses shared tick_utils (no private tick copies)
+# - Per-order 0.25% / 10% risk re-validation
+# - Accepts token via env var from app.py
 # ==============================================
 
 import os
+import sys
 import requests
-import gspread
-from google.oauth2.service_account import Credentials
-from datetime import datetime, timezone
 import uuid
-import pandas as pd
 import json
-import math
+from datetime import datetime, timezone
+
+# Ensure sibling modules (google_sheets_db, tick_utils) are importable
+# whether run directly or as a subprocess from app.py.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import google_sheets_db as db
+from tick_utils import get_tick_size, round_to_tick, get_security_id as tu_get_security_id
 
 # ==========================
 # CONFIG
 # ==========================
-INSTRUMENT_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
-
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID")
 DHAN_TOKEN = os.getenv("DHAN_TOKEN")
 
-# Google Sheets Config
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-SERVICE_ACCOUNT_KEY_PATH = os.getenv("SERVICE_ACCOUNT_KEY_PATH")
-SHEET_NAME = "Trades"  # Name of the sheet in your Google Sheet
+CAPITAL = float(os.getenv("CAPITAL", "400000"))
 
-# Tick size cache
-TICK_SIZE_CACHE = {}
+# Risk caps (mirror the scanner's create_trade sizing rules).
+RISK_PER_TRADE_PCT = 0.0025      # 0.25% base risk unit
+MAX_STAGE_MULTIPLE = 4           # stage 1 = 1x ... worst case 4x base unit
+MAX_ALLOCATION_PCT = 0.10        # 10% of capital per trade
+
+# −8% catastrophe backstop, pre-seeded so the risk gate + intraday cron
+# see a Safety_SL immediately (real broker order placed later by sl_engine
+# / intraday cron).
+SAFETY_SL_PCT = 0.92
 
 session = requests.Session()
-
-# Global Google Sheets client
-gsheet = None
 
 
 # ==========================
@@ -46,397 +50,57 @@ def log(*args):
 
 
 # ==========================
-# GOOGLE SHEETS INIT
-# ==========================
-def init_google_sheets():
-    """
-    Initialize Google Sheets client using service account.
-    Returns: gspread.Worksheet object for the Trades sheet
-    """
-    global gsheet
-
-    try:
-        if not SPREADSHEET_ID:
-            log("❌ SPREADSHEET_ID not set in environment")
-            return None
-
-        if not SERVICE_ACCOUNT_KEY_PATH:
-            log("❌ SERVICE_ACCOUNT_KEY_PATH not set in environment")
-            return None
-
-        # Authenticate with service account
-        scopes = [
-            'https://www.googleapis.com/auth/spreadsheets',
-            'https://www.googleapis.com/auth/drive'
-        ]
-
-        credentials = Credentials.from_service_account_file(
-            SERVICE_ACCOUNT_KEY_PATH,
-            scopes=scopes
-        )
-
-        client = gspread.authorize(credentials)
-        log(f"✅ Authenticated with Google Sheets")
-
-        # Open the spreadsheet
-        spreadsheet = client.open_by_key(SPREADSHEET_ID)
-        log(f"✅ Opened spreadsheet: {spreadsheet.title}")
-
-        # Get or create the Trades worksheet
-        try:
-            gsheet = spreadsheet.worksheet(SHEET_NAME)
-            log(f"✅ Using existing sheet: {SHEET_NAME}")
-        except gspread.exceptions.WorksheetNotFound:
-            log(f"⚠️ Sheet '{SHEET_NAME}' not found, creating...")
-            gsheet = spreadsheet.add_worksheet(title=SHEET_NAME, rows=1000, cols=15)
-            # Add header row
-            headers = [
-                "ID", "Symbol", "Security_ID", "Qty", "Entry_Price",
-                "Entry_Time", "Status", "SL_Price", "Target_Price",
-                "Setup_ID", "Current_Price", "PnL", "PnL_Percent",
-                "Updated_At", "Dhan_Order_ID"
-            ]
-            gsheet.insert_row(headers, 1)
-            log(f"✅ Created sheet '{SHEET_NAME}' with headers")
-
-        return gsheet
-
-    except Exception as e:
-        log(f"❌ Failed to initialize Google Sheets: {e}")
-        return None
-
-
-# ==========================
-# TICK SIZE LOGIC (SAME AS BEFORE)
-# ==========================
-def convert_tick_multiplier_to_decimal(tick_multiplier):
-    """
-    Convert SEM_TICK_SIZE multiplier to actual decimal tick value.
-    """
-    try:
-        multiplier = float(tick_multiplier)
-        if multiplier <= 0:
-            return 0.05
-        decimal_tick = multiplier / 100.0
-        return round(decimal_tick, 4)
-    except (ValueError, TypeError):
-        return 0.05
-
-
-def load_tick_sizes():
-    """
-    Load tick sizes from Dhan instrument master CSV.
-    Caches result globally to avoid repeated downloads.
-    """
-    global TICK_SIZE_CACHE
-
-    if TICK_SIZE_CACHE:
-        log(f"✅ Using cached tick sizes ({len(TICK_SIZE_CACHE)} symbols)")
-        return TICK_SIZE_CACHE
-
-    try:
-        log("📥 Loading tick sizes from Dhan instrument master...")
-        url = "https://images.dhan.co/api-data/api-scrip-master.csv"
-        df = pd.read_csv(url, low_memory=False)
-
-        df = df[
-            (df['SEM_EXM_EXCH_ID'] == 'NSE') &
-            (df['SEM_SEGMENT'] == 'E')
-            ]
-
-        for _, row in df.iterrows():
-            symbol = str(row.get('SEM_TRADING_SYMBOL', '')).strip().upper()
-            tick_multiplier = row.get('SEM_TICK_SIZE', 5)
-            tick_decimal = convert_tick_multiplier_to_decimal(tick_multiplier)
-
-            if symbol:
-                TICK_SIZE_CACHE[symbol] = tick_decimal
-
-        log(f"✅ Loaded tick sizes for {len(TICK_SIZE_CACHE)} NSE equity symbols")
-        return TICK_SIZE_CACHE
-
-    except Exception as e:
-        log(f"❌ Failed to load tick sizes: {e}")
-        return {}
-
-
-def get_tick_size(symbol):
-    """Get tick size for a symbol"""
-    global TICK_SIZE_CACHE
-
-    if not TICK_SIZE_CACHE:
-        load_tick_sizes()
-
-    symbol_clean = symbol.replace(".NS", "").strip().upper()
-    tick = TICK_SIZE_CACHE.get(symbol_clean, 0.05)
-
-    log(f"   [{symbol}] Tick size: ₹{tick:.4f}")
-    return tick
-
-
-def round_to_tick(price, tick, mode="up"):
-    """Round price to nearest tick"""
-    if tick <= 0:
-        return round(price, 4)
-
-    steps = price / tick
-
-    if mode == "up":
-        rounded_price = math.ceil(steps) * tick
-    elif mode == "down":
-        rounded_price = math.floor(steps) * tick
-    else:
-        rounded_price = round(steps) * tick
-
-    return round(rounded_price, 4)
-
-
-# ==========================
-# LOAD INSTRUMENTS
-# ==========================
-def load_instruments():
-    try:
-        df = pd.read_csv(INSTRUMENT_URL, low_memory=False)
-        df = df[
-            (df['SEM_EXM_EXCH_ID'] == 'NSE') &
-            (df['SEM_SEGMENT'] == 'E')
-            ]
-        df['SEM_TRADING_SYMBOL'] = df['SEM_TRADING_SYMBOL'].astype(str).str.strip().str.upper()
-        log(f"✅ Instruments Loaded: {len(df)}")
-        return df
-    except Exception as e:
-        log(f"❌ Failed to load instruments: {e}")
-        return pd.DataFrame()
-
-
-INSTRUMENT_DF = load_instruments()
-
-
-# ==========================
-# GET SECURITY ID
+# GET SECURITY ID  (via shared tick_utils instrument master)
 # ==========================
 def get_security_id(stock):
-    symbol = stock.replace(".NS", "").strip().upper()
-    row = INSTRUMENT_DF[INSTRUMENT_DF['SEM_TRADING_SYMBOL'] == symbol]
-
-    if row.empty:
-        log(f"❌ Security ID NOT FOUND: {symbol}")
+    sec_id = tu_get_security_id(stock)
+    if not sec_id:
+        log(f"❌ Security ID NOT FOUND: {stock}")
         return None
-
-    sec_id = str(row.iloc[0]['SEM_SMST_SECURITY_ID'])
-    log(f"✅ {symbol} → Security ID: {sec_id}")
+    log(f"✅ {stock} → Security ID: {sec_id}")
     return sec_id
 
 
 # ==========================
-# GOOGLE SHEETS CRUD OPERATIONS
+# RISK VALIDATION  (per-order, defends against bad/replayed payloads)
 # ==========================
-
-def get_all_trades():
+def validate_risk(symbol, entry, sl, qty):
     """
-    Get all trades from Google Sheet as list of dicts
-    Returns: List of trade dictionaries or empty list if error
+    Re-validate position size at execution time. The scanner sizes trades,
+    but the callback qty is otherwise trusted blindly — this is the gate.
+
+    Returns True if the order is within risk + allocation caps.
     """
-    try:
-        if not gsheet:
-            log("❌ Google Sheets not initialized")
-            return []
-
-        # Get all values (including header)
-        all_values = gsheet.get_all_values()
-
-        if len(all_values) < 2:
-            log("⚠️ No trades found in sheet")
-            return []
-
-        headers = all_values[0]
-        trades = []
-
-        for row in all_values[1:]:
-            if len(row) == len(headers):
-                trade = dict(zip(headers, row))
-                trades.append(trade)
-
-        log(f"✅ Retrieved {len(trades)} trades from Google Sheets")
-        return trades
-
-    except Exception as e:
-        log(f"❌ Error reading trades: {e}")
-        return []
-
-
-def find_trade_row(symbol, dhan_order_id=None):
-    """
-    Find row number of a trade by symbol or dhan_order_id
-    Returns: row_number (int) or None if not found
-    """
-    try:
-        if not gsheet:
-            return None
-
-        all_values = gsheet.get_all_values()
-
-        if len(all_values) < 2:
-            return None
-
-        headers = all_values[0]
-        symbol_col = headers.index("Symbol") + 1
-        order_id_col = headers.index("Dhan_Order_ID") + 1
-
-        for idx, row in enumerate(all_values[1:], start=2):
-            if dhan_order_id and len(row) > order_id_col - 1:
-                if row[order_id_col - 1] == dhan_order_id:
-                    return idx
-
-            if len(row) > symbol_col - 1:
-                if row[symbol_col - 1].upper() == symbol.upper():
-                    return idx
-
-        return None
-
-    except Exception as e:
-        log(f"❌ Error finding trade: {e}")
-        return None
-
-
-def save_trade(symbol, sec_id, qty, entry_price, sl_price, target_price, setup_id, dhan_order_id):
-    """
-    Add new trade to Google Sheet
-    Returns: True/False
-    """
-    try:
-        if not gsheet:
-            log("❌ Google Sheets not initialized")
-            return False
-
-        ts = datetime.now(timezone.utc).isoformat()
-        trade_id = str(uuid.uuid4())[:8]
-
-        new_row = [
-            trade_id,           # ID
-            symbol,             # Symbol
-            sec_id,             # Security_ID
-            qty,                # Qty
-            entry_price,        # Entry_Price
-            ts,                 # Entry_Time
-            "OPEN",             # Status
-            sl_price,           # SL_Price
-            target_price,       # Target_Price
-            setup_id,           # Setup_ID
-            entry_price,        # Current_Price (initially same as entry)
-            0,                  # PnL
-            0,                  # PnL_Percent
-            ts,                 # Updated_At
-            dhan_order_id       # Dhan_Order_ID
-        ]
-
-        gsheet.append_row(new_row)
-        log(f"✅ Trade saved: {symbol} (Order ID: {dhan_order_id})")
-        return True
-
-    except Exception as e:
-        log(f"❌ Failed to save trade: {e}")
+    risk_per_share = entry - sl
+    if risk_per_share <= 0:
+        log(f"❌ {symbol} invalid risk/share (entry {entry} <= sl {sl})")
         return False
 
-
-def update_trade(symbol=None, dhan_order_id=None, **kwargs):
-    """
-    Update an existing trade by symbol or dhan_order_id
-
-    Example:
-        update_trade(symbol="ONGC", status="CLOSED", current_price=150.5)
-        update_trade(dhan_order_id="12345", exit_price=150.5, status="CLOSED")
-    """
-    try:
-        if not gsheet:
-            log("❌ Google Sheets not initialized")
-            return False
-
-        row_num = find_trade_row(symbol, dhan_order_id)
-
-        if not row_num:
-            log(f"❌ Trade not found: {symbol or dhan_order_id}")
-            return False
-
-        # Get headers
-        headers = gsheet.row_values(1)
-
-        # Get current row
-        current_row = gsheet.row_values(row_num)
-
-        # Update with provided values
-        for key, value in kwargs.items():
-            if key in headers:
-                col_idx = headers.index(key) + 1
-                gsheet.update_cell(row_num, col_idx, value)
-
-        # Update timestamp
-        updated_at_col = headers.index("Updated_At") + 1
-        ts = datetime.now(timezone.utc).isoformat()
-        gsheet.update_cell(row_num, updated_at_col, ts)
-
-        log(f"✅ Trade updated: {symbol or dhan_order_id}")
-        return True
-
-    except Exception as e:
-        log(f"❌ Failed to update trade: {e}")
+    trade_risk = risk_per_share * qty
+    max_trade_risk = CAPITAL * RISK_PER_TRADE_PCT * MAX_STAGE_MULTIPLE
+    if trade_risk > max_trade_risk:
+        log(f"❌ {symbol} risk ₹{trade_risk:,.0f} exceeds per-trade cap "
+            f"₹{max_trade_risk:,.0f} — rejecting")
         return False
 
-
-def delete_trade(symbol=None, dhan_order_id=None):
-    """
-    Delete a trade from Google Sheet by symbol or dhan_order_id
-    """
-    try:
-        if not gsheet:
-            log("❌ Google Sheets not initialized")
-            return False
-
-        row_num = find_trade_row(symbol, dhan_order_id)
-
-        if not row_num:
-            log(f"❌ Trade not found: {symbol or dhan_order_id}")
-            return False
-
-        gsheet.delete_rows(row_num)
-        log(f"✅ Trade deleted: {symbol or dhan_order_id}")
-        return True
-
-    except Exception as e:
-        log(f"❌ Failed to delete trade: {e}")
+    allocation = entry * qty
+    max_allocation = CAPITAL * MAX_ALLOCATION_PCT
+    if allocation > max_allocation:
+        log(f"❌ {symbol} allocation ₹{allocation:,.0f} exceeds 10% cap "
+            f"₹{max_allocation:,.0f} — rejecting")
         return False
 
-
-def filter_trades(status=None, symbol=None):
-    """
-    Filter trades by status (OPEN/CLOSED) or symbol
-    Returns: List of filtered trades
-    """
-    try:
-        trades = get_all_trades()
-        filtered = trades
-
-        if status:
-            filtered = [t for t in filtered if t.get("Status", "").upper() == status.upper()]
-
-        if symbol:
-            filtered = [t for t in filtered if t.get("Symbol", "").upper() == symbol.upper()]
-
-        log(f"✅ Filtered trades: {len(filtered)}")
-        return filtered
-
-    except Exception as e:
-        log(f"❌ Error filtering trades: {e}")
-        return []
+    log(f"✅ {symbol} risk OK | risk=₹{trade_risk:,.0f} "
+        f"(cap ₹{max_trade_risk:,.0f}) | alloc=₹{allocation:,.0f} "
+        f"(cap ₹{max_allocation:,.0f})")
+    return True
 
 
 # ==========================
 # CHECK DHAN FOR EXISTING ORDERS
 # ==========================
 def check_dhan_for_existing_buy(symbol, token):
-    """
-    Check /v2/forever/orders for existing BUY orders on this symbol.
-    """
+    """Check /v2/forever/orders for existing BUY orders on this symbol."""
     try:
         if not token:
             log("❌ No token provided from parent")
@@ -488,9 +152,7 @@ def check_dhan_for_existing_buy(symbol, token):
 # PLACE ORDER
 # ==========================
 def place_order(sec_id, qty, entry, symbol, token):
-    """
-    Place BUY order on Dhan using token from parent.
-    """
+    """Place BUY forever-order on Dhan using token from parent."""
     try:
         tick = get_tick_size(symbol)
         trigger = round_to_tick(entry, tick, mode="down")
@@ -523,32 +185,26 @@ def place_order(sec_id, qty, entry, symbol, token):
             log("❌ No token provided from parent")
             return False, {"error": "no_token"}
 
-        try:
-            log(f"📤 Placing BUY: Qty={qty}, Entry={entry}, Trigger={trigger}, Price={price}")
+        log(f"📤 Placing BUY: Qty={qty}, Entry={entry}, Trigger={trigger}, Price={price}")
 
-            r = session.post(
-                "https://api.dhan.co/v2/forever/orders",
-                json=payload,
-                headers={
-                    "access-token": token,
-                    "Content-Type": "application/json"
-                },
-                timeout=15
-            )
+        r = session.post(
+            "https://api.dhan.co/v2/forever/orders",
+            json=payload,
+            headers={
+                "access-token": token,
+                "Content-Type": "application/json"
+            },
+            timeout=15
+        )
 
-            if r.status_code not in (200, 201):
-                log(f"❌ Order placement failed: {r.status_code}")
-                log(f"   Response: {r.text[:200]}")
-                return False, {"error": f"http_{r.status_code}"}
+        if r.status_code not in (200, 201):
+            log(f"❌ Order placement failed: {r.status_code}")
+            log(f"   Response: {r.text[:200]}")
+            return False, {"error": f"http_{r.status_code}"}
 
-            data = r.json()
-            log(f"   Response: {data}")
-
-            return True, data
-
-        except Exception as e:
-            log(f"❌ Order placement exception: {e}")
-            return False, {"error": "exception"}
+        data = r.json()
+        log(f"   Response: {data}")
+        return True, data
 
     except Exception as e:
         log(f"❌ Error in place_order: {e}")
@@ -559,19 +215,19 @@ def place_order(sec_id, qty, entry, symbol, token):
 # MAIN
 # ==========================
 def run():
-    global gsheet
-
     log("=" * 80)
-    log("🚀 ENTRY ENGINE v2.5 (GOOGLE SHEETS VERSION)")
+    log("🚀 ENTRY ENGINE v3.0 (CONSOLIDATED)")
     log("=" * 80)
 
-    # Initialize Google Sheets
-    gsheet = init_google_sheets()
-    if not gsheet:
-        log("❌ Failed to initialize Google Sheets")
+    # ==== INIT SHARED DATA LAYER ====
+    try:
+        db.init_sheets()
+        db.ensure_schema()
+    except Exception as e:
+        log(f"❌ Failed to initialize Google Sheets: {e}")
         return
 
-    # Read env vars
+    # ==== READ ENV VARS ====
     symbol = os.getenv("SYMBOL", "").strip()
     qty = int(os.getenv("QTY", "0") or "0")
     entry = float(os.getenv("ENTRY", "0") or "0.0")
@@ -600,6 +256,10 @@ def run():
 
     if not token:
         log("❌ No token provided from parent!")
+        return
+
+    # ==== PER-ORDER RISK VALIDATION ====
+    if not validate_risk(symbol, entry, sl, qty):
         return
 
     # ==== GET SECURITY ID ====
@@ -643,19 +303,40 @@ def run():
     log(f"   Symbol: {symbol}")
     log(f"   Qty: {qty}")
 
-    # Save to Google Sheets
-    if save_trade(symbol, sec_id, qty, entry, sl, target, setup_id, dhan_order_id):
-        log(f"✅ Trade recorded in Google Sheets")
+    # ==== RECORD VIA SHARED DATA LAYER ====
+    # add_trade writes Structural_SL (NOT SL_Price), seeds Remaining_Qty
+    # and Trail_Phase, sets Status=PENDING. Pre-seed Safety_SL at −8% so
+    # the risk gate / intraday cron can read it immediately.
+    safety_sl = round(entry * SAFETY_SL_PCT, 2)
+
+    trade_id = db.add_trade(
+        symbol=symbol,
+        sec_id=sec_id,
+        qty=qty,
+        entry_price=entry,
+        structural_sl=sl,
+        target_price=target,
+        setup_id=setup_id,
+        dhan_order_id=dhan_order_id,
+        safety_sl=safety_sl,
+    )
+
+    if trade_id:
+        log(f"✅ Trade recorded in Google Sheets (ID: {trade_id})")
 
         result = {
             "success": True,
             "order_id": dhan_order_id,
+            "trade_id": trade_id,
             "symbol": symbol,
             "qty": qty,
             "entry": entry,
             "message": "Order placed successfully"
         }
         print(json.dumps(result))
+    else:
+        log(f"⚠️ Order placed on Dhan but sheet write FAILED — reconcile manually")
+        log(f"   Order ID: {dhan_order_id}, Symbol: {symbol}")
 
     log("=" * 80)
 
