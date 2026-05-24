@@ -209,25 +209,43 @@ def get_token():
     global CURRENT_TOKEN, TOKEN_EXPIRY
     if CURRENT_TOKEN and datetime.now(timezone.utc) < TOKEN_EXPIRY:
         return CURRENT_TOKEN
-    try:
-        totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
-        logger.info("🔑 Generating new token...")
-        r = session.post(
-            "https://auth.dhan.co/app/generateAccessToken",
-            params={"dhanClientId": DHAN_CLIENT_ID, "pin": DHAN_PIN, "totp": totp},
-            timeout=10,
-        )
-        data = r.json()
-        if "accessToken" not in data:
+
+    # Up to 3 attempts. "Invalid TOTP" means we hit a stale/edge 30s window;
+    # wait into the NEXT fresh window before retrying (a fresh .now() inside
+    # the same window returns the same code, so a plain retry wouldn't help).
+    for attempt in range(1, 4):
+        try:
+            totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
+            logger.info(f"🔑 Generating new token (attempt {attempt}/3)...")
+            r = session.post(
+                "https://auth.dhan.co/app/generateAccessToken",
+                params={"dhanClientId": DHAN_CLIENT_ID, "pin": DHAN_PIN, "totp": totp},
+                timeout=10,
+            )
+            data = r.json()
+            if "accessToken" in data:
+                CURRENT_TOKEN = data["accessToken"]
+                TOKEN_EXPIRY = datetime.now(timezone.utc) + timedelta(hours=23)
+                logger.info("✅ Token generated")
+                return CURRENT_TOKEN
+
+            msg = str(data.get("message", "")).lower()
             logger.error(f"❌ Token failed: {data}")
+            if "totp" in msg and attempt < 3:
+                # Sleep past the current 30s TOTP boundary into a fresh window.
+                secs_into = datetime.now(timezone.utc).timestamp() % 30
+                wait = (30 - secs_into) + 1  # clear the boundary
+                logger.info(f"⏳ Invalid TOTP — waiting {wait:.1f}s for fresh window...")
+                time.sleep(wait)
+                continue
             return None
-        CURRENT_TOKEN = data["accessToken"]
-        TOKEN_EXPIRY = datetime.now(timezone.utc) + timedelta(hours=23)
-        logger.info("✅ Token generated")
-        return CURRENT_TOKEN
-    except Exception as e:
-        logger.error(f"❌ Token error: {e}")
-        return None
+        except Exception as e:
+            logger.error(f"❌ Token error (attempt {attempt}/3): {e}")
+            if attempt < 3:
+                time.sleep(5)
+                continue
+            return None
+    return None
 
 
 # ==========================
@@ -1298,7 +1316,7 @@ def protect_all_positions(all_pos, safety_map):
 
 def run():
     logger.info("=" * 80)
-    logger.info("🚀 SL ENGINE V19.3 — + trailing −8% safety (ratchets up on close ≥ 1R)")
+    logger.info("🚀 SL ENGINE V19.4 — + TOTP retry (waits for fresh window)")
     logger.info("=" * 80)
     validate_env()
     db.init_sheets()
@@ -1404,7 +1422,7 @@ def run():
                 f"Close-skipped: {skipped_close} | Invalid-skipped: {skipped_invalid}")
     logger.info(f"{'='*80}")
 
-    send_telegram_alert("🚀 SL ENGINE V19.3 COMPLETED",
+    send_telegram_alert("🚀 SL ENGINE V19.4 COMPLETED",
                         {"Exits": exited, "Partials": partials, "Trailed": trailed,
                          "Protect_placed": protect_stats["placed"],
                          "Protect_reconciled": protect_stats["reconciled"],
