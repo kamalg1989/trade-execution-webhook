@@ -730,6 +730,34 @@ def export_to_json():
         log(f"❌ Failed to export: {e}")
         return None
 
+# ============================================================
+# DROP-IN PATCH for google_sheets_db.py
+# Replace the existing `_match` function with the two functions below.
+# This makes symbol matching tolerant of .NS / .BO suffixes so that
+# holdings returned as bare "SCHNEIDER" match sheet rows "SCHNEIDER.NS".
+# ============================================================
+
+def _norm_sym(s):
+    """Strip .NS / .BO suffix and uppercase for tolerant symbol matching."""
+    if not s:
+        return ""
+    return str(s).replace(".NS", "").replace(".BO", "").strip().upper()
+
+
+def _match(trade, symbol=None, trade_id=None, dhan_order_id=None, security_id=None):
+    if trade_id and trade.get("ID") == trade_id:
+        return True
+    if dhan_order_id and trade.get("Dhan_Order_ID") == dhan_order_id:
+        return True
+    if symbol and _norm_sym(trade.get("Symbol")) == _norm_sym(symbol):
+        # If a security_id is also given, require both to match (precise).
+        if security_id:
+            return str(trade.get("Security_ID", "")) == str(security_id)
+        return True
+    if security_id and not symbol:
+        return str(trade.get("Security_ID", "")) == str(security_id)
+    return False
+
 
 # ==========================
 # DEMO
