@@ -568,49 +568,6 @@ def cancel_forever_order(order_id, symbol):
 
 
 # ==========================
-# MODIFY forever-order  (NEW — try to turn −8% into the exit order)
-# ==========================
-def modify_forever_order(order_id, sec_id, qty, trigger, price, symbol):
-    """
-    Modify an existing forever SELL's qty/trigger/limit in place.
-
-    Returns True on success. If Dhan rejects modify (the V18 design ASSUMED
-    a 400 here — to be confirmed by test), caller falls back to
-    cancel + place_exit_forever.
-    """
-    logger.info(f"✏️ Modifying forever-order {order_id} for {symbol} "
-                f"→ qty {qty}, trigger {trigger}, limit {price}")
-    if DRY_RUN:
-        logger.info(f"🔕 [DRY_RUN] Would MODIFY forever-order {order_id}")
-        return True
-    token = get_token()
-    if not token:
-        return False
-    payload = {
-        "dhanClientId": DHAN_CLIENT_ID, "orderId": str(order_id),
-        "orderFlag": "SINGLE", "transactionType": "SELL",
-        "exchangeSegment": "NSE_EQ", "productType": "CNC",
-        "orderType": "LIMIT", "validity": "DAY",
-        "securityId": str(sec_id), "quantity": int(qty),
-        "price": price, "triggerPrice": trigger,
-    }
-    try:
-        r = session.put(f"https://api.dhan.co/v2/forever/orders/{order_id}",
-                        json=payload,
-                        headers={"Content-Type": "application/json",
-                                 "access-token": token, "client-id": DHAN_CLIENT_ID},
-                        timeout=30)
-        if r.status_code in (200, 201, 202):
-            logger.info(f"✅ Forever-order modified: {symbol}")
-            return True
-        logger.warning(f"⚠️ Modify forever failed: HTTP {r.status_code} | {r.text}")
-        return False
-    except Exception as e:
-        logger.error(f"❌ Modify forever exception: {e}")
-        return False
-
-
-# ==========================
 # PLACE EXIT FOREVER  (replaces place_market_sell)
 # ==========================
 def place_exit_forever(sec_id, qty, close_price, symbol):
@@ -768,31 +725,30 @@ def execute_structural_exit(trade, pos, close_price, safety_order):
     now = datetime.now(timezone.utc).isoformat()
 
     if safety_order_id:
-        if modify_forever_order(safety_order_id, sec_id, qty, trigger, price, symbol):
-            exit_order_id = safety_order_id
-        else:
-            # Modify rejected → cancel then place fresh exit forever.
-            if not cancel_forever_order(safety_order_id, symbol):
-                logger.error(f"❌ {symbol} modify+cancel both failed — abort, "
-                             f"−8% still protecting; retry next run")
-                send_telegram_alert("⚠️ EXIT ABORTED — MODIFY+CANCEL FAILED",
-                                    {"Symbol": symbol, "OrderID": safety_order_id,
-                                     "Status": "−8% still in place; retry next run"})
-                return "ABORTED"
-            ok, exit_order_id, _ = place_exit_forever(sec_id, qty, close_price, symbol)
-            if not ok:
-                # Bare now — re-place the −8% backstop, abort the exit.
-                logger.error(f"🚨 {symbol} exit forever place FAILED after cancel — "
-                             f"re-placing −8% safety")
-                rok, new_id, lvl = place_safety_sl(sec_id, qty, entry, symbol)
-                upd = {"Status": db.STATUS_OPEN}
-                if rok and lvl is not None:
-                    upd["Safety_SL"] = lvl
-                db.update_trade(trade_id=trade_id, **upd)
-                send_telegram_alert("🚨 EXIT FAILED — RE-PROTECTED",
-                                    {"Symbol": symbol,
-                                     "Re-protect": "OK" if rok else "FAILED — ACT NOW"})
-                return "ABORTED"
+        # Always cancel-and-replace (Dhan forever-modify needs legName and is
+        # unreliable; cancel+replace is proven). Cancel the −8%, then place a
+        # fresh exit forever.
+        if not cancel_forever_order(safety_order_id, symbol):
+            logger.error(f"❌ {symbol} cancel failed — abort, "
+                         f"−8% still protecting; retry next run")
+            send_telegram_alert("⚠️ EXIT ABORTED — CANCEL FAILED",
+                                {"Symbol": symbol, "OrderID": safety_order_id,
+                                 "Status": "−8% still in place; retry next run"})
+            return "ABORTED"
+        ok, exit_order_id, _ = place_exit_forever(sec_id, qty, close_price, symbol)
+        if not ok:
+            # Bare now — re-place the −8% backstop, abort the exit.
+            logger.error(f"🚨 {symbol} exit forever place FAILED after cancel — "
+                         f"re-placing −8% safety")
+            rok, new_id, lvl = place_safety_sl(sec_id, qty, entry, symbol)
+            upd = {"Status": db.STATUS_OPEN}
+            if rok and lvl is not None:
+                upd["Safety_SL"] = lvl
+            db.update_trade(trade_id=trade_id, **upd)
+            send_telegram_alert("🚨 EXIT FAILED — RE-PROTECTED",
+                                {"Symbol": symbol,
+                                 "Re-protect": "OK" if rok else "FAILED — ACT NOW"})
+            return "ABORTED"
     else:
         ok, exit_order_id, _ = place_exit_forever(sec_id, qty, close_price, symbol)
         if not ok:
@@ -1060,9 +1016,176 @@ def manage_trail_and_target(trade, pos, close_price, safety_order):
 # ==========================
 # MAIN
 # ==========================
+# ==========================
+# STALE / DUPLICATE FOREVER-ORDER CLEANUP
+# ==========================
+def cleanup_forever_orders(forever, all_pos):
+    """
+    Cancel SELL forever-orders that are stale:
+      • ORPHANS — securityId has no matching open position/holding.
+      • DUPLICATES — more than one live SELL for the same securityId;
+        keep the NEWEST (highest orderId), cancel the rest.
+
+    Returns (kept_map: {sec_id: order}, n_cancelled). `kept_map` is the
+    de-duplicated safety map the rest of the run uses.
+    """
+    live = [o for o in forever
+            if o.get("transactionType") == "SELL"
+            and str(o.get("orderStatus", "")).upper() in ("PENDING", "CONFIRM")]
+
+    # Group live SELLs by securityId.
+    by_sec = {}
+    for o in live:
+        by_sec.setdefault(str(o.get("securityId")), []).append(o)
+
+    pos_secs = set(all_pos.keys())
+    kept_map = {}
+    cancelled = 0
+
+    for sec_id, orders in by_sec.items():
+        # Orphan: no position/holding for this securityId → cancel ALL.
+        if sec_id not in pos_secs:
+            for o in orders:
+                oid = o.get("orderId")
+                sym = o.get("tradingSymbol", sec_id)
+                logger.warning(f"🧹 Orphan SELL forever (no position): {sym} "
+                               f"sec {sec_id} order {oid} — cancelling")
+                if cancel_forever_order(oid, sym):
+                    cancelled += 1
+            continue
+
+        # Duplicates: keep newest (max orderId as string-sortable int), cancel rest.
+        if len(orders) > 1:
+            try:
+                orders_sorted = sorted(orders, key=lambda x: int(x.get("orderId", 0)))
+            except (ValueError, TypeError):
+                orders_sorted = orders
+            keep = orders_sorted[-1]
+            for o in orders_sorted[:-1]:
+                oid = o.get("orderId")
+                sym = o.get("tradingSymbol", sec_id)
+                logger.warning(f"🧹 Duplicate SELL forever: {sym} sec {sec_id} "
+                               f"order {oid} — cancelling (keeping {keep.get('orderId')})")
+                if cancel_forever_order(oid, sym):
+                    cancelled += 1
+            kept_map[sec_id] = keep
+        else:
+            kept_map[sec_id] = orders[0]
+
+    if cancelled:
+        send_telegram_alert("🧹 STALE FOREVER ORDERS CLEANED",
+                            {"Cancelled": cancelled, "Live_kept": len(kept_map)})
+    logger.info(f"🧹 Cleanup: cancelled {cancelled}, kept {len(kept_map)} live SELL forever-order(s)")
+    return kept_map, cancelled
+
+
+def _order_qty(order):
+    """Extract qty from a forever-order dict (Dhan uses 'quantity')."""
+    for k in ("quantity", "qty", "remainingQuantity"):
+        v = order.get(k)
+        if v not in (None, ""):
+            try:
+                return int(float(v))
+            except (ValueError, TypeError):
+                pass
+    return None
+
+
+def protect_all_positions(all_pos, safety_map):
+    """
+    OPTION-3 guarantee: every Dhan position ends the run with a −8% SELL
+    forever-order at the LIVE DHAN qty, UNLESS the row is EXIT_PENDING (its
+    resting exit SELL is the protection).
+
+    Behaviour per position:
+      • EXIT_PENDING row  → skip (don't fight the resting exit order).
+      • No SELL at all     → place −8% at protect-qty.
+      • SELL qty mismatch  → place-first at correct qty, THEN cancel old
+                             (never bare; brief after-hours overlap is safe
+                             since neither fills until open).
+      • SELL qty correct   → leave it.
+      • No sheet row        → still protect at Dhan qty (force −8%).
+
+    Mutates `safety_map` in place to reflect the new/kept orders.
+    Returns dict counts.
+    """
+    placed = reconciled = ok_already = skipped_pending = 0
+
+    for sec_id, pos in all_pos.items():
+        symbol = pos["symbol"]
+        dhan_qty = int(_f(pos.get("qty")))
+        if dhan_qty <= 0:
+            continue
+
+        trade = db.get_trade(symbol=symbol, security_id=sec_id)
+
+        # EXIT_PENDING → the resting exit SELL is the protection; leave alone.
+        if trade and _normalize_status(trade.get("Status")) == db.STATUS_EXIT_PENDING:
+            logger.info(f"   🛡️ {symbol} EXIT_PENDING — skip protect (exit order rests)")
+            skipped_pending += 1
+            continue
+
+        entry = _f(trade.get("Entry_Price")) if trade else _f(pos.get("avgPrice"))
+        if entry <= 0:
+            logger.warning(f"   ⚠️ {symbol} no entry/avg price — cannot place −8%")
+            continue
+
+        # Protect qty = live Dhan position/holding qty (authoritative).
+        protect_qty = dhan_qty
+        if protect_qty <= 0:
+            continue
+
+        existing = safety_map.get(sec_id)
+        existing_qty = _order_qty(existing) if existing else None
+
+        if existing and existing_qty == protect_qty:
+            ok_already += 1
+            continue
+
+        # Need to (re)place at protect_qty. Place FIRST (never bare).
+        ok, new_id, lvl = place_safety_sl(sec_id, protect_qty, entry, symbol)
+        if not ok:
+            logger.error(f"🚨 {symbol} protect −8% place FAILED — position may be "
+                         f"under-protected")
+            send_telegram_alert("🚨 PROTECT FAILED — CHECK POSITION",
+                                {"Symbol": symbol, "Qty": protect_qty,
+                                 "Issue": "could not place −8%; old order (if any) kept"})
+            continue
+
+        # New −8% is live → now cancel the old wrong-qty one (if any).
+        if existing:
+            old_id = existing.get("orderId")
+            logger.info(f"   ♻️ {symbol} reconcile qty {existing_qty}→{protect_qty}: "
+                        f"placed {new_id}, cancelling old {old_id}")
+            cancel_forever_order(old_id, symbol)
+            reconciled += 1
+        else:
+            logger.info(f"   🛡️ {symbol} had no −8% — placed {new_id} @ qty {protect_qty}")
+            placed += 1
+
+        # Update map to the new order so later per-position logic sees it.
+        safety_map[sec_id] = {"orderId": new_id, "securityId": sec_id,
+                              "quantity": protect_qty, "transactionType": "SELL",
+                              "orderStatus": "PENDING", "tradingSymbol": symbol}
+
+        # Write the new Safety_SL level to the sheet if we have a row.
+        if trade and lvl is not None:
+            db.update_trade(trade_id=trade.get("ID"), Safety_SL=lvl)
+
+    logger.info(f"🛡️ Protect-all: placed {placed}, reconciled {reconciled}, "
+                f"already-ok {ok_already}, skipped(EXIT_PENDING) {skipped_pending}")
+    if placed or reconciled:
+        send_telegram_alert("🛡️ POSITIONS PROTECTED (−8% reconciled)",
+                            {"Placed": placed, "Reconciled": reconciled,
+                             "Already_OK": ok_already})
+    return {"placed": placed, "reconciled": reconciled,
+            "ok": ok_already, "skipped": skipped_pending}
+
+
+
 def run():
     logger.info("=" * 80)
-    logger.info("🚀 SL ENGINE V19 — forever-order exits (after-hours safe)")
+    logger.info("🚀 SL ENGINE V19.2 — forever exits + cleanup + qty-reconcile + protect-all")
     logger.info("=" * 80)
     validate_env()
     db.init_sheets()
@@ -1075,20 +1198,20 @@ def run():
     holdings = get_holdings()
     forever = get_forever_orders()
 
-    safety_map = {
-        str(o["securityId"]): o for o in forever
-        if o.get("transactionType") == "SELL"
-           and str(o.get("orderStatus", "")).upper() in ("PENDING", "CONFIRM")
-    }
-
     all_pos = {p["securityId"]: p for p in positions}
     for h in holdings:
         all_pos.setdefault(h["securityId"], h)
 
+    # Cancel orphan + duplicate SELL forever-orders; get a deduped safety map.
+    safety_map, _cleaned = cleanup_forever_orders(forever, all_pos)
+
+    # OPTION-3: guarantee every position is protected at the correct qty.
+    protect_stats = protect_all_positions(all_pos, safety_map)
+
     logger.info(f"📊 Positions/holdings: {len(all_pos)} | Safety orders: {len(safety_map)}")
 
     routine_updates = []
-    exited = safety_placed = skipped_close = trailed = partials = skipped_invalid = 0
+    exited = skipped_close = trailed = partials = skipped_invalid = 0
 
     for sec_id, pos in all_pos.items():
         symbol = pos["symbol"]
@@ -1109,28 +1232,13 @@ def run():
         safety_order = safety_map.get(sec_id)
 
         # ----- INVALID-ROW GUARD: SL must be below entry -----
+        # (Safety −8% already placed/reconciled by protect_all_positions.)
         if not has_valid_risk(trade):
             logger.warning(f"   ⚠️ {symbol} invalid risk (SL {structural_sl} ≥ "
-                           f"entry {entry_price}) — placing/keeping −8% only, "
+                           f"entry {entry_price}) — −8% protects it; "
                            f"NO trail/partial/structural-exit")
-            if not safety_order:
-                ok, new_id, lvl = place_safety_sl(sec_id, int(pos["qty"]), entry_price, symbol)
-                if ok:
-                    safety_placed += 1
-                    routine_updates.append({
-                        "trade_id": trade.get("ID"), "Safety_SL": lvl,
-                        "Status": db.STATUS_OPEN if status == db.STATUS_PENDING else status})
             skipped_invalid += 1
             continue
-
-        # ----- Ensure the −8% backstop exists -----
-        if not safety_order:
-            ok, new_id, lvl = place_safety_sl(sec_id, int(pos["qty"]), entry_price, symbol)
-            if ok:
-                safety_placed += 1
-                routine_updates.append({
-                    "trade_id": trade.get("ID"), "Safety_SL": lvl,
-                    "Status": db.STATUS_OPEN if status == db.STATUS_PENDING else status})
 
         # ----- Close-based structural exit decision -----
         close_price, source = get_daily_close(sec_id, symbol)
@@ -1170,13 +1278,16 @@ def run():
 
     logger.info(f"\n{'='*80}")
     logger.info(f"✅ COMPLETED | Exits: {exited} | Partials: {partials} | "
-                f"Trailed: {trailed} | Safety: {safety_placed} | "
+                f"Trailed: {trailed} | Protect(placed/recon): "
+                f"{protect_stats['placed']}/{protect_stats['reconciled']} | "
                 f"Close-skipped: {skipped_close} | Invalid-skipped: {skipped_invalid}")
     logger.info(f"{'='*80}")
 
-    send_telegram_alert("🚀 SL ENGINE V19 COMPLETED",
+    send_telegram_alert("🚀 SL ENGINE V19.2 COMPLETED",
                         {"Exits": exited, "Partials": partials, "Trailed": trailed,
-                         "Safety_placed": safety_placed, "Close_skipped": skipped_close,
+                         "Protect_placed": protect_stats["placed"],
+                         "Protect_reconciled": protect_stats["reconciled"],
+                         "Close_skipped": skipped_close,
                          "Invalid_skipped": skipped_invalid, "Positions": len(all_pos)})
 
 
