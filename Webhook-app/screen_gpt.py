@@ -440,23 +440,32 @@ def send_document(path, caption=None):
 # STOCK UNIVERSE
 # ==========================
 def get_stocks():
-    headers = {"User-Agent": "Mozilla/5.0"}
-    indices = ["NIFTY 500", "NIFTY MIDCAP 150", "NIFTY SMALLCAP 250"]
-    stocks = set()
-    for index in indices:
-        try:
-            url = f"https://www.nseindia.com/api/equity-stockIndices?index={index.replace(' ', '%20')}"
-            res = requests.get(url, headers=headers, timeout=10)
-            data = res.json()
-            for item in data.get("data", []):
-                symbol = item.get("symbol")
-                if symbol and symbol.isalpha():
-                    stocks.add(symbol + ".NS")
-            time.sleep(0.5)
-        except:
-            continue
-    return list(stocks)
+    try:
+        print("📥 Loading universe from Dhan master...")
 
+        url = "https://images.dhan.co/api-data/api-scrip-master.csv"
+        df = pd.read_csv(url, low_memory=False)
+
+        df = df[
+            (df["SEM_EXM_EXCH_ID"] == "NSE") &
+            (df["SEM_SEGMENT"] == "E")
+        ]
+
+        stocks = set()
+
+        for symbol in df["SEM_TRADING_SYMBOL"].dropna():
+            symbol = str(symbol).strip().upper()
+
+            if symbol.isalpha():
+                stocks.add(symbol + ".NS")
+
+        print(f"✅ Loaded {len(stocks)} stocks from Dhan")
+
+        return sorted(list(stocks))
+
+    except Exception as e:
+        print(f"❌ Failed to build universe: {e}")
+        return []
 
 # ==========================
 # DHAN DATA FETCH
