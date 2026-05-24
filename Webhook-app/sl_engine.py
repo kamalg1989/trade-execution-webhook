@@ -1,49 +1,36 @@
 # ==============================================================
-# 🚀 SL ENGINE — V18 (step 6b)
+# 🚀 SL ENGINE — V19 (forever-order exits)
 #
-# Trade Setup Enhancement v2 — builds the TRAILING + HYBRID TARGET
-# layer (§4, §5) ON TOP of the 6a exit foundation (§2 two-tier stops,
-# §3 close-based structural exit, §6 cancel-and-replace exit).
+# Same close-based trail + hybrid-target logic as V18 (6b), but the
+# EXIT/PARTIAL execution is reworked to use FOREVER orders instead of
+# MARKET sells — because the SL engine runs at 18:00 IST (after close),
+# when MARKET orders are rejected by Dhan (DH-906 "Market is Closed").
 #
-# 6a is UNCHANGED below this line except for two small wiring edits in
-# run(): the "no structural exit" branch now calls manage_trail_and_target()
-# instead of the plain PnL refresh. The 6a exit primitives
-# (execute_structural_exit / confirm_fill / _reprotect_after_failed_exit /
-# place_safety_sl / cancel_forever_order / place_market_sell) are REUSED
-# verbatim by 6b, never modified.
+# A forever SELL with a trigger just BELOW the latest close rests at the
+# broker and FILLS at next session open — which matches the design's
+# "decide on close, act next session" philosophy exactly.
 #
-# WHAT 6b ADDS (all close-based, after-hours, acted next day)
-#   • 14-day ATR from a NEW ~25-session candle fetch
-#       Dhan candles → yfinance OHLC → 5%-of-highest-close fallback gap.
-#     6a's single-close _dhan_daily_close is left intact (two historical
-#     calls per position per run — deliberate, keeps the exit decision on
-#     exactly the number 6a already trusts).
-#   • R basis from Target_Price (immutable), NOT live Structural_SL
-#     (Phase 2 rewrites Structural_SL to entry, which would zero the risk):
-#         risk = (Target_Price − entry)/2 ; 1R ⟺ close ≥ entry+risk ;
-#         2R ⟺ close ≥ Target_Price. Blank/garbage Target_Price → skip
-#         trail+partial for that row (never guess).
-#   • Three-phase trail, ratchet-up-only, with a CLAMP that keeps the stop
-#     strictly below the latest close (so it can never be a disguised
-#     "exit now" the moment it's written):
-#         P1 fixed  — close < +1R: Structural_SL unchanged.
-#         P2 b/even — first close ≥ +1R: Structural_SL → entry.
-#         P3 trail  — new-high closes:
-#             gap        = 2.5×ATR  (or 0.05×highest_close if no ATR)
-#             trail_stop = highest_close − gap
-#             trail_stop = min(trail_stop, latest_close − one_tick)  # CLAMP
-#             Structural_SL = max(Structural_SL, trail_stop)
-#   • Hybrid target: first 2R close sells floor(Remaining_Qty/2) at MARKET,
-#     logs reason="target" + realized R for the sold half, status PARTIAL,
-#     writes Remaining_Qty, THEN reconciles the −8% safety to the new qty
-#     (cancel-then-replace, re-place-on-failure with a loud alert).
-#   • 6b sizes safety orders off Remaining_Qty (sheet), never pos["qty"]
-#     (Dhan) — robust to post-partial settlement lag.
-#   • Previous_SL_Price records the pre-update Structural_SL on every change.
+# WHAT CHANGED vs V18
+#   • place_market_sell()  → place_exit_forever()  (forever SELL, trigger
+#       just below close, fills at open). Used by BOTH structural exit and
+#       2R partial.
+#   • Exit no longer cancels the −8% then places a MARKET sell. Instead:
+#       - structural exit: MODIFY the existing −8% forever-order up to the
+#         exit trigger (one order becomes the exit); on modify-failure,
+#         cancel + place a fresh exit forever-order.
+#       - 2R partial: the −8% can't double as a half-sell, so place a
+#         SEPARATE half-qty exit forever-order, then reconcile the −8% down
+#         to the kept qty (cancel-then-replace at new qty, as before).
+#   • confirm_fill() now tolerant: a resting forever exit-order will NOT
+#       fill until open, so after-hours we mark EXIT_PENDING (not failure)
+#       and reconcile next run. No re-protect needed — the exit order IS the
+#       protection (it's a resting SELL).
+#   • INVALID-ROW GUARD: rows where Structural_SL >= Entry (old/garbage)
+#       are skipped for trail+partial (their R basis is meaningless).
+#   • Status normalizer: legacy "TRAILING" is treated as OPEN.
 #
-# DEPLOYMENT NOTE
-#   • yfinance optional (daily-close AND candle fallback). Missing → those
-#     fallbacks are skipped; the engine degrades, never crashes.
+# Everything else (ATR, three-phase trail, R-basis from Target, clamp,
+# Telegram, sheet writes via google_sheets_db) is unchanged from V18.
 # ==============================================================
 
 import os
@@ -55,7 +42,6 @@ import pyotp
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
-# ---- Shared modules (build steps 1 & 2) ----------------------
 import tick_utils
 import google_sheets_db as db
 
@@ -63,13 +49,11 @@ import google_sheets_db as db
 # LOAD ENV
 # ==========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 ENV_PATHS = [
     os.path.join(BASE_DIR, ".env"),
     "/root/trade-execution-webhook/.env",
     os.path.expanduser("~/.env"),
 ]
-
 env_loaded = False
 for path in ENV_PATHS:
     if os.path.exists(path):
@@ -77,7 +61,6 @@ for path in ENV_PATHS:
         print(f"✅ Loaded .env from: {path}")
         env_loaded = True
         break
-
 if not env_loaded:
     print("⚠️ WARNING: .env NOT FOUND - using environment variables")
 
@@ -94,57 +77,48 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 DRY_RUN = os.getenv("SL_ENGINE_DRY_RUN", "false").lower() in ("true", "1", "yes")
 
-# −8% catastrophe backstop level. The Safety_SL = entry * SAFETY_SL_PCT.
 SAFETY_SL_PCT = 0.92
-# Limit price for the resting safety SELL sits just under its trigger.
 SAFETY_LIMIT_OFFSET = 0.995
 
-# Fill-confirmation polling for the Path B market sell.
-EXIT_POLL_ATTEMPTS = 6      # number of GET /orders/{id} polls
-EXIT_POLL_SLEEP = 2.0       # seconds between polls
-# Dhan order statuses that mean "filled".
+# Exit forever-order: trigger sits this fraction below the latest close so
+# it fills at next open regardless of small overnight moves. Limit a touch
+# below the trigger. Both rounded DOWN to tick.
+EXIT_TRIGGER_OFFSET = 0.995   # trigger = close * 0.995
+EXIT_LIMIT_OFFSET = 0.990     # limit  = trigger * 0.990 (room to fill at open)
+
+EXIT_POLL_ATTEMPTS = 6
+EXIT_POLL_SLEEP = 2.0
 FILLED_STATUSES = {"TRADED", "EXECUTED", "COMPLETE", "FILLED"}
-# Statuses that mean "definitively dead, will never fill".
 DEAD_STATUSES = {"REJECTED", "CANCELLED", "CANCELED", "EXPIRED", "FAILED"}
 
-# ---- 6b CONFIG (trail + hybrid target) -----------------------
-ONE_R_PHASE_THRESHOLD = 1.0     # +1R close flips Phase 1 → 2 (tunable §17)
-ATR_PERIOD = 14                 # 14-day ATR (§4, §19)
-ATR_TRAIL_MULT = 2.5            # 2.5 × ATR trail distance (§4, §17)
-ATR_FETCH_SESSIONS = 25         # request ~25 sessions to net ≥15 candles
-FALLBACK_TRAIL_PCT = 0.05       # 5% gap when ATR genuinely unavailable
-MIN_CANDLES_FOR_ATR = ATR_PERIOD + 1   # 14 TRs need a prior close → 15
+ONE_R_PHASE_THRESHOLD = 1.0
+ATR_PERIOD = 14
+ATR_TRAIL_MULT = 2.5
+ATR_FETCH_SESSIONS = 25
+FALLBACK_TRAIL_PCT = 0.05
+MIN_CANDLES_FOR_ATR = ATR_PERIOD + 1
 
 session = requests.Session()
 
-# ==========================
-# LOGGING
-# ==========================
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="[%(asctime)s] %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.DEBUG,
+                    format="[%(asctime)s] %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 IST = timezone(timedelta(hours=5, minutes=30))
-
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = datetime.now(timezone.utc)
 
-# yfinance is an optional fallback; import defensively so a missing
-# package degrades to "skip the exit" rather than crashing the engine.
 try:
     import yfinance as yf
     _YF_AVAILABLE = True
 except Exception:
     yf = None
     _YF_AVAILABLE = False
-    logger.warning("⚠️ yfinance not installed — daily-close fallback disabled "
-                   "(pip install yfinance to enable)")
+    logger.warning("⚠️ yfinance not installed — fallback disabled")
 
 
 # ==========================
-# TELEGRAM HELPERS
+# TELEGRAM
 # ==========================
 def escape_markdown_v2(text):
     if text is None:
@@ -162,25 +136,16 @@ def send_telegram_alert(title, content_dict):
         for k, v in content_dict.items():
             print(f"    {k}: {v}")
         return
-
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         logger.warning("⚠️ Telegram not configured")
         return
-
     try:
         lines = [f"*{escape_markdown_v2(title)}*", ""]
         for key, value in content_dict.items():
-            key_str = escape_markdown_v2(str(key))
-            value_str = escape_markdown_v2(str(value))
-            lines.append(f"  • *{key_str}:* `{value_str}`")
-
+            lines.append(f"  • *{escape_markdown_v2(str(key))}:* `{escape_markdown_v2(str(value))}`")
         message = "\n".join(lines)
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "MarkdownV2",
-        }
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "MarkdownV2"}
         r = requests.post(url, data=payload, timeout=10)
         if r.status_code == 200:
             logger.info(f"✅ Telegram alert sent: {title}")
@@ -202,10 +167,8 @@ def normalize_symbol(symbol):
 def validate_env():
     missing = []
     for name, val in [
-        ("DHAN_CLIENT_ID", DHAN_CLIENT_ID),
-        ("DHAN_PIN", DHAN_PIN),
-        ("DHAN_TOTP_SECRET", DHAN_TOTP_SECRET),
-        ("SPREADSHEET_ID", SPREADSHEET_ID),
+        ("DHAN_CLIENT_ID", DHAN_CLIENT_ID), ("DHAN_PIN", DHAN_PIN),
+        ("DHAN_TOTP_SECRET", DHAN_TOTP_SECRET), ("SPREADSHEET_ID", SPREADSHEET_ID),
         ("SERVICE_ACCOUNT_KEY_PATH", SERVICE_ACCOUNT_KEY_PATH),
     ]:
         if not val:
@@ -216,7 +179,6 @@ def validate_env():
 
 
 def _f(value, default=0.0):
-    """float() that tolerates blanks/garbage (mirrors db._f)."""
     try:
         if value is None or value == "":
             return default
@@ -225,15 +187,28 @@ def _f(value, default=0.0):
         return default
 
 
+def _normalize_status(raw):
+    """Legacy 'TRAILING' (pre-enhancement) behaves like OPEN."""
+    s = str(raw or "").upper()
+    if s == "TRAILING":
+        return db.STATUS_OPEN
+    return s
+
+
+def has_valid_risk(trade):
+    """Structural_SL must be strictly BELOW entry, else R basis is garbage."""
+    entry = _f(trade.get("Entry_Price"))
+    sl = _f(trade.get("Structural_SL"))
+    return entry > 0 and 0 < sl < entry
+
+
 # ==========================
 # TOKEN
 # ==========================
 def get_token():
     global CURRENT_TOKEN, TOKEN_EXPIRY
-
     if CURRENT_TOKEN and datetime.now(timezone.utc) < TOKEN_EXPIRY:
         return CURRENT_TOKEN
-
     try:
         totp = pyotp.TOTP(DHAN_TOTP_SECRET).now()
         logger.info("🔑 Generating new token...")
@@ -263,11 +238,9 @@ def get_positions():
     if not token:
         return []
     try:
-        r = session.get(
-            "https://api.dhan.co/v2/positions",
-            headers={"access-token": token, "client-id": DHAN_CLIENT_ID},
-            timeout=10,
-        )
+        r = session.get("https://api.dhan.co/v2/positions",
+                        headers={"access-token": token, "client-id": DHAN_CLIENT_ID},
+                        timeout=10)
         data = r.json()
         result = []
         for p in data:
@@ -290,11 +263,9 @@ def get_holdings():
     if not token:
         return []
     try:
-        r = session.get(
-            "https://api.dhan.co/v2/holdings",
-            headers={"access-token": token, "client-id": DHAN_CLIENT_ID},
-            timeout=10,
-        )
+        r = session.get("https://api.dhan.co/v2/holdings",
+                        headers={"access-token": token, "client-id": DHAN_CLIENT_ID},
+                        timeout=10)
         data = r.json()
         result = []
         for h in data:
@@ -317,11 +288,8 @@ def get_forever_orders():
     if not token:
         return []
     try:
-        r = session.get(
-            "https://api.dhan.co/v2/forever/orders",
-            headers={"access-token": token},
-            timeout=10,
-        )
+        r = session.get("https://api.dhan.co/v2/forever/orders",
+                        headers={"access-token": token}, timeout=10)
         data = r.json()
         logger.info(f"📊 Found {len(data) if isinstance(data, list) else 0} forever orders")
         return data if isinstance(data, list) else []
@@ -331,42 +299,29 @@ def get_forever_orders():
 
 
 # ==========================
-# DAILY CLOSE  (Dhan historical → yfinance → None)   [6a — UNCHANGED]
+# DAILY CLOSE  (Dhan → yfinance → None)
 # ==========================
 def _dhan_daily_close(security_id, symbol, debug=False):
-    """Settled daily close from Dhan historical. None on any failure."""
     try:
         token = get_token()
         if not token:
             return None
-
         now_ist = datetime.now(IST)
         market_close = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
-        if now_ist < market_close:
-            trade_date = now_ist - timedelta(days=1)
-        else:
-            trade_date = now_ist
-
+        trade_date = now_ist - timedelta(days=1) if now_ist < market_close else now_ist
         from_date = trade_date.strftime("%Y-%m-%d")
         to_date = (trade_date + timedelta(days=1)).strftime("%Y-%m-%d")
-
         payload = {
-            "securityId": int(security_id),
-            "exchangeSegment": "NSE_EQ",
-            "instrument": "EQUITY",
-            "oi": False,
-            "fromDate": from_date,
-            "toDate": to_date,
+            "securityId": int(security_id), "exchangeSegment": "NSE_EQ",
+            "instrument": "EQUITY", "oi": False,
+            "fromDate": from_date, "toDate": to_date,
         }
-        r = requests.post(
-            "https://api.dhan.co/v2/charts/historical",
-            json=payload,
-            headers={"Content-Type": "application/json", "access-token": token},
-            timeout=15,
-        )
+        r = requests.post("https://api.dhan.co/v2/charts/historical",
+                          json=payload,
+                          headers={"Content-Type": "application/json", "access-token": token},
+                          timeout=15)
         if r.status_code == 200:
-            data = r.json()
-            closes = data.get("close") or []
+            closes = r.json().get("close") or []
             if closes:
                 close_price = float(closes[-1])
                 logger.info(f"✅ {symbol} Dhan daily close: {close_price}")
@@ -381,7 +336,6 @@ def _dhan_daily_close(security_id, symbol, debug=False):
 
 
 def _yf_daily_close(symbol):
-    """Daily close from yfinance for SYMBOL.NS. None on failure / unavailable."""
     if not _YF_AVAILABLE:
         return None
     try:
@@ -400,73 +354,41 @@ def _yf_daily_close(symbol):
 
 
 def get_daily_close(security_id, symbol):
-    """
-    Strictly close-based: Dhan historical → yfinance → None.
-
-    Returns (close_price, source) where source ∈ {"DHAN","YFINANCE"},
-    or (None, "NONE") if BOTH sources fail. We deliberately do NOT fall
-    back to intraday/LTP — a structural exit must act on a settled daily
-    close only (design §3). A None close means "skip the exit decision
-    this run", never "guess".
-    """
     close = _dhan_daily_close(security_id, symbol)
     if close is not None:
         return close, "DHAN"
-
     close = _yf_daily_close(symbol)
     if close is not None:
         return close, "YFINANCE"
-
-    logger.error(f"❌ {symbol} no daily close from Dhan or yfinance — "
-                 f"skipping structural exit decision this run")
+    logger.error(f"❌ {symbol} no daily close — skipping decision this run")
     return None, "NONE"
 
 
-# ==============================================================
-# CANDLE FETCH FOR ATR  (6b — NEW, separate from _dhan_daily_close)
-# ==============================================================
+# ==========================
+# CANDLES FOR ATR
+# ==========================
 def _dhan_daily_candles(security_id, symbol, sessions=ATR_FETCH_SESSIONS):
-    """
-    Fetch ~`sessions` daily OHLC candles from Dhan historical.
-
-    Returns (highs, lows, closes) parallel lists (oldest→newest), or
-    (None, None, None) on any failure. The calendar-day window is padded
-    (~2x + 10) to clear weekends/holidays so we still net enough sessions.
-    This is a SECOND historical call (6a's _dhan_daily_close is untouched),
-    accepted deliberately to keep the exit decision on 6a's exact number.
-    """
     try:
         token = get_token()
         if not token:
             return None, None, None
-
         now_ist = datetime.now(IST)
         market_close = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
-        if now_ist < market_close:
-            end_date = now_ist - timedelta(days=1)
-        else:
-            end_date = now_ist
-
+        end_date = now_ist - timedelta(days=1) if now_ist < market_close else now_ist
         start_date = end_date - timedelta(days=sessions * 2 + 10)
-
         payload = {
-            "securityId": int(security_id),
-            "exchangeSegment": "NSE_EQ",
-            "instrument": "EQUITY",
-            "oi": False,
+            "securityId": int(security_id), "exchangeSegment": "NSE_EQ",
+            "instrument": "EQUITY", "oi": False,
             "fromDate": start_date.strftime("%Y-%m-%d"),
             "toDate": (end_date + timedelta(days=1)).strftime("%Y-%m-%d"),
         }
-        r = requests.post(
-            "https://api.dhan.co/v2/charts/historical",
-            json=payload,
-            headers={"Content-Type": "application/json", "access-token": token},
-            timeout=15,
-        )
+        r = requests.post("https://api.dhan.co/v2/charts/historical",
+                          json=payload,
+                          headers={"Content-Type": "application/json", "access-token": token},
+                          timeout=15)
         if r.status_code != 200:
             logger.warning(f"⚠️ {symbol} Dhan candles API error: {r.status_code}")
             return None, None, None
-
         data = r.json()
         highs = data.get("high") or []
         lows = data.get("low") or []
@@ -474,8 +396,6 @@ def _dhan_daily_candles(security_id, symbol, sessions=ATR_FETCH_SESSIONS):
         if not (highs and lows and closes):
             logger.warning(f"⚠️ {symbol} Dhan candles empty")
             return None, None, None
-
-        # Defensive: align lengths (Dhan returns parallel arrays).
         n = min(len(highs), len(lows), len(closes))
         highs = [float(x) for x in highs[-n:]]
         lows = [float(x) for x in lows[-n:]]
@@ -488,10 +408,6 @@ def _dhan_daily_candles(security_id, symbol, sessions=ATR_FETCH_SESSIONS):
 
 
 def _yf_daily_candles(symbol):
-    """
-    OHLC candles from yfinance (~1mo). Returns (highs, lows, closes)
-    oldest→newest, or (None, None, None) on failure / unavailable.
-    """
     if not _YF_AVAILABLE:
         return None, None, None
     try:
@@ -519,32 +435,18 @@ def _yf_daily_candles(symbol):
 
 
 def compute_atr(highs, lows, closes, period=ATR_PERIOD):
-    """
-    14-day ATR via simple mean of True Range (§19: flat mean is fine).
-
-        TR_today = max(high − low,
-                       |high − prev_close|,    # gap-up
-                       |prev_close − low|)     # gap-down
-
-    Needs ≥ period+1 candles (first TR needs a prior close). Returns a
-    float ATR, or None if not enough data.
-    """
     try:
         n = min(len(highs), len(lows), len(closes))
         if n < period + 1:
             return None
         highs, lows, closes = highs[-n:], lows[-n:], closes[-n:]
-
         trs = []
         for i in range(1, n):
             prev_close = closes[i - 1]
-            tr = max(
-                highs[i] - lows[i],
-                abs(highs[i] - prev_close),
-                abs(prev_close - lows[i]),
-                )
+            tr = max(highs[i] - lows[i],
+                     abs(highs[i] - prev_close),
+                     abs(prev_close - lows[i]))
             trs.append(tr)
-
         window = trs[-period:]
         if len(window) < period:
             return None
@@ -556,37 +458,27 @@ def compute_atr(highs, lows, closes, period=ATR_PERIOD):
 
 
 def get_atr(security_id, symbol):
-    """
-    Resolve 14-day ATR: Dhan candles → yfinance candles → None.
-
-    Returns (atr: float|None, source: str), source ∈
-    {"DHAN","YFINANCE","NONE"}. A None ATR tells the trail to use the
-    5%-of-highest-close fallback gap (NOT to skip trailing).
-    """
     highs, lows, closes = _dhan_daily_candles(security_id, symbol)
     if closes and len(closes) >= MIN_CANDLES_FOR_ATR:
         atr = compute_atr(highs, lows, closes)
         if atr is not None:
             logger.info(f"   ATR(DHAN,{ATR_PERIOD}d) {symbol}: {round(atr, 4)}")
             return atr, "DHAN"
-
     highs, lows, closes = _yf_daily_candles(symbol)
     if closes and len(closes) >= MIN_CANDLES_FOR_ATR:
         atr = compute_atr(highs, lows, closes)
         if atr is not None:
             logger.info(f"   ATR(YFINANCE,{ATR_PERIOD}d) {symbol}: {round(atr, 4)}")
             return atr, "YFINANCE"
-
-    logger.warning(f"⚠️ {symbol} ATR unavailable (Dhan+yfinance) — "
-                   f"trail will use {int(FALLBACK_TRAIL_PCT*100)}% fallback gap")
+    logger.warning(f"⚠️ {symbol} ATR unavailable — trail uses "
+                   f"{int(FALLBACK_TRAIL_PCT*100)}% fallback gap")
     return None, "NONE"
 
 
 # ==========================
-# TICK HELPER
+# TICK HELPERS
 # ==========================
 def _tick_for(symbol):
-    """Resolve the tick size for a symbol via the shared util."""
     try:
         return tick_utils.get_tick_size(symbol)
     except Exception as e:
@@ -595,66 +487,40 @@ def _tick_for(symbol):
 
 
 def _round_down(value, symbol):
-    """Round an outbound SELL price DOWN to the symbol's tick grid."""
     tick = _tick_for(symbol)
     return tick_utils.round_to_tick(value, tick, mode="down")
 
 
 # ==========================
-# SAFETY_SL (−8%) PLACEMENT  — the dumb backstop   [6a — UNCHANGED]
+# SAFETY_SL (−8%) — the dumb backstop forever-order
 # ==========================
 def place_safety_sl(sec_id, qty, entry, symbol):
-    """
-    Place the −8% catastrophe forever-order (the Tier-1 backstop).
-
-    Returns (ok: bool, order_id: str|None, safety_level: float|None).
-    Trigger and limit are both rounded DOWN to the tick grid so the stop
-    is never accidentally set higher than intended.
-    """
     if not entry:
         logger.error(f"❌ {symbol} cannot place safety SL — no entry price")
         return False, None, None
-
     raw_trigger = entry * SAFETY_SL_PCT
     trigger = _round_down(raw_trigger, symbol)
     price = _round_down(trigger * SAFETY_LIMIT_OFFSET, symbol)
-
     logger.info(f"📤 Placing −8% safety SL: {symbol} | Trigger: {trigger} | Limit: {price}")
-
-    send_telegram_alert("🛡️ PLACING −8% SAFETY SL", {
-        "Symbol": symbol, "Qty": qty, "Trigger": trigger, "Limit": price,
-    })
-
+    send_telegram_alert("🛡️ PLACING −8% SAFETY SL",
+                        {"Symbol": symbol, "Qty": qty, "Trigger": trigger, "Limit": price})
     if DRY_RUN:
         logger.info(f"🔕 [DRY_RUN] Would place safety SL for {symbol}")
         return True, "DRYRUN_SAFETY_ID", trigger
-
     token = get_token()
     if not token:
         return False, None, None
-
     payload = {
-        "dhanClientId": DHAN_CLIENT_ID,
-        "correlationId": str(uuid.uuid4())[:20],
-        "orderFlag": "SINGLE",
-        "transactionType": "SELL",
-        "exchangeSegment": "NSE_EQ",
-        "productType": "CNC",
-        "orderType": "LIMIT",
-        "validity": "DAY",
-        "securityId": str(sec_id),
-        "quantity": int(qty),
-        "price": price,
-        "triggerPrice": trigger,
+        "dhanClientId": DHAN_CLIENT_ID, "correlationId": str(uuid.uuid4())[:20],
+        "orderFlag": "SINGLE", "transactionType": "SELL", "exchangeSegment": "NSE_EQ",
+        "productType": "CNC", "orderType": "LIMIT", "validity": "DAY",
+        "securityId": str(sec_id), "quantity": int(qty),
+        "price": price, "triggerPrice": trigger,
     }
-
     try:
-        r = session.post(
-            "https://api.dhan.co/v2/forever/orders",
-            json=payload,
-            headers={"access-token": token, "client-id": DHAN_CLIENT_ID},
-            timeout=30,
-        )
+        r = session.post("https://api.dhan.co/v2/forever/orders", json=payload,
+                         headers={"access-token": token, "client-id": DHAN_CLIENT_ID},
+                         timeout=30)
         if r.status_code in (200, 201):
             order_id = None
             try:
@@ -662,46 +528,35 @@ def place_safety_sl(sec_id, qty, entry, symbol):
             except Exception:
                 pass
             logger.info(f"✅ Safety SL placed: {symbol} (order {order_id})")
-            send_telegram_alert("✅ −8% SAFETY SL PLACED", {
-                "Symbol": symbol, "Qty": qty, "Trigger": trigger, "OrderID": order_id,
-            })
+            send_telegram_alert("✅ −8% SAFETY SL PLACED",
+                                {"Symbol": symbol, "Qty": qty, "Trigger": trigger, "OrderID": order_id})
             return True, order_id, trigger
-        else:
-            logger.error(f"❌ Place safety SL failed: HTTP {r.status_code} | {r.text}")
-            send_telegram_alert("❌ −8% SAFETY SL FAILED", {
-                "Symbol": symbol, "Status": f"HTTP {r.status_code}",
-            })
-            return False, None, None
+        logger.error(f"❌ Place safety SL failed: HTTP {r.status_code} | {r.text}")
+        send_telegram_alert("❌ −8% SAFETY SL FAILED",
+                            {"Symbol": symbol, "Status": f"HTTP {r.status_code}"})
+        return False, None, None
     except Exception as e:
         logger.error(f"❌ Place safety SL exception: {e}")
         return False, None, None
 
 
 # ==========================
-# PATH B — CANCEL  (DELETE the forever-order)   [6a — UNCHANGED]
+# CANCEL forever-order (DELETE)
 # ==========================
 def cancel_forever_order(order_id, symbol):
-    """DELETE a pending forever-order. Returns True on success."""
     logger.info(f"🗑️ Cancelling forever-order for {symbol} (id {order_id})")
-    send_telegram_alert("🗑️ CANCELLING −8% SAFETY ORDER", {
-        "Symbol": symbol, "OrderID": order_id,
-    })
-
+    send_telegram_alert("🗑️ CANCELLING FOREVER ORDER", {"Symbol": symbol, "OrderID": order_id})
     if DRY_RUN:
         logger.info(f"🔕 [DRY_RUN] Would DELETE forever-order {order_id}")
         return True
-
     token = get_token()
     if not token:
         logger.error("❌ No token for cancel")
         return False
-
     try:
-        r = session.delete(
-            f"https://api.dhan.co/v2/forever/orders/{order_id}",
-            headers={"Accept": "application/json", "access-token": token},
-            timeout=15,
-        )
+        r = session.delete(f"https://api.dhan.co/v2/forever/orders/{order_id}",
+                           headers={"Accept": "application/json", "access-token": token},
+                           timeout=15)
         if r.status_code in (200, 202):
             logger.info(f"✅ Forever-order cancelled: {symbol}")
             return True
@@ -713,97 +568,115 @@ def cancel_forever_order(order_id, symbol):
 
 
 # ==========================
-# PATH B — PLACE  (regular MARKET sell)   [6a — UNCHANGED]
+# MODIFY forever-order  (NEW — try to turn −8% into the exit order)
 # ==========================
-def place_market_sell(sec_id, qty, symbol):
+def modify_forever_order(order_id, sec_id, qty, trigger, price, symbol):
     """
-    Place a regular MARKET SELL (NOT a forever-order). MARKET orders carry
-    no price/trigger, so there is nothing to tick-round here.
+    Modify an existing forever SELL's qty/trigger/limit in place.
 
-    Returns (ok: bool, order_id: str|None).
+    Returns True on success. If Dhan rejects modify (the V18 design ASSUMED
+    a 400 here — to be confirmed by test), caller falls back to
+    cancel + place_exit_forever.
     """
-    logger.info(f"📤 Placing MARKET SELL: {symbol} | Qty: {qty}")
-    send_telegram_alert("📤 PLACING MARKET SELL (EXIT)", {
-        "Symbol": symbol, "Qty": qty,
-    })
-
+    logger.info(f"✏️ Modifying forever-order {order_id} for {symbol} "
+                f"→ qty {qty}, trigger {trigger}, limit {price}")
     if DRY_RUN:
-        logger.info(f"🔕 [DRY_RUN] Would place MARKET SELL for {symbol}")
-        return True, "DRYRUN_EXIT_ID"
-
+        logger.info(f"🔕 [DRY_RUN] Would MODIFY forever-order {order_id}")
+        return True
     token = get_token()
     if not token:
-        logger.error("❌ No token for market sell")
-        return False, None
-
+        return False
     payload = {
-        "dhanClientId": DHAN_CLIENT_ID,
-        "correlationId": str(uuid.uuid4())[:20],
-        "transactionType": "SELL",
-        "exchangeSegment": "NSE_EQ",
-        "productType": "CNC",
-        "orderType": "MARKET",
-        "validity": "DAY",
-        "securityId": str(sec_id),
-        "quantity": int(qty),
-        "price": "",
-        "triggerPrice": "",
-        "disclosedQuantity": "",
-        "afterMarketOrder": False,
+        "dhanClientId": DHAN_CLIENT_ID, "orderId": str(order_id),
+        "orderFlag": "SINGLE", "transactionType": "SELL",
+        "exchangeSegment": "NSE_EQ", "productType": "CNC",
+        "orderType": "LIMIT", "validity": "DAY",
+        "securityId": str(sec_id), "quantity": int(qty),
+        "price": price, "triggerPrice": trigger,
     }
-
     try:
-        r = session.post(
-            "https://api.dhan.co/v2/orders",
-            json=payload,
-            headers={"Content-Type": "application/json",
-                     "access-token": token, "client-id": DHAN_CLIENT_ID},
-            timeout=30,
-        )
+        r = session.put(f"https://api.dhan.co/v2/forever/orders/{order_id}",
+                        json=payload,
+                        headers={"Content-Type": "application/json",
+                                 "access-token": token, "client-id": DHAN_CLIENT_ID},
+                        timeout=30)
+        if r.status_code in (200, 201, 202):
+            logger.info(f"✅ Forever-order modified: {symbol}")
+            return True
+        logger.warning(f"⚠️ Modify forever failed: HTTP {r.status_code} | {r.text}")
+        return False
+    except Exception as e:
+        logger.error(f"❌ Modify forever exception: {e}")
+        return False
+
+
+# ==========================
+# PLACE EXIT FOREVER  (replaces place_market_sell)
+# ==========================
+def place_exit_forever(sec_id, qty, close_price, symbol):
+    """
+    Place a forever SELL whose trigger sits just BELOW the latest close, so
+    it rests now (after hours) and FILLS at next session open.
+
+    Returns (ok: bool, order_id: str|None, trigger: float|None).
+    """
+    raw_trigger = close_price * EXIT_TRIGGER_OFFSET
+    trigger = _round_down(raw_trigger, symbol)
+    price = _round_down(trigger * EXIT_LIMIT_OFFSET, symbol)
+
+    logger.info(f"📤 Placing EXIT forever SELL: {symbol} | Qty: {qty} | "
+                f"Trigger: {trigger} | Limit: {price}")
+    send_telegram_alert("📤 PLACING EXIT FOREVER (fills at open)",
+                        {"Symbol": symbol, "Qty": qty, "Trigger": trigger, "Limit": price})
+    if DRY_RUN:
+        logger.info(f"🔕 [DRY_RUN] Would place EXIT forever for {symbol}")
+        return True, "DRYRUN_EXIT_ID", trigger
+    token = get_token()
+    if not token:
+        return False, None, None
+    payload = {
+        "dhanClientId": DHAN_CLIENT_ID, "correlationId": str(uuid.uuid4())[:20],
+        "orderFlag": "SINGLE", "transactionType": "SELL", "exchangeSegment": "NSE_EQ",
+        "productType": "CNC", "orderType": "LIMIT", "validity": "DAY",
+        "securityId": str(sec_id), "quantity": int(qty),
+        "price": price, "triggerPrice": trigger,
+    }
+    try:
+        r = session.post("https://api.dhan.co/v2/forever/orders", json=payload,
+                         headers={"access-token": token, "client-id": DHAN_CLIENT_ID},
+                         timeout=30)
         if r.status_code in (200, 201):
             order_id = None
             try:
                 order_id = r.json().get("orderId")
             except Exception:
                 pass
-            logger.info(f"✅ MARKET SELL placed: {symbol} (order {order_id})")
-            return True, order_id
-        logger.error(f"❌ MARKET SELL failed: HTTP {r.status_code} | {r.text}")
-        return False, None
+            logger.info(f"✅ EXIT forever placed: {symbol} (order {order_id})")
+            return True, order_id, trigger
+        logger.error(f"❌ EXIT forever failed: HTTP {r.status_code} | {r.text}")
+        return False, None, None
     except Exception as e:
-        logger.error(f"❌ MARKET SELL exception: {e}")
-        return False, None
+        logger.error(f"❌ EXIT forever exception: {e}")
+        return False, None, None
 
 
 # ==========================
-# PATH B — CONFIRM  (poll GET /orders/{id})   [6a — UNCHANGED]
+# CONFIRM FILL  (forever exits won't fill until open → PENDING is normal)
 # ==========================
 def confirm_fill(order_id, symbol):
-    """
-    Poll the order book until the order is TRADED (or dead, or timeout).
-
-    Returns (status: str, exit_price: float|None) where status is one of:
-        "FILLED"   — order traded; exit_price is the avg traded price
-        "DEAD"     — order rejected/cancelled/expired (will never fill)
-        "PENDING"  — still working after the poll budget (limbo)
-    """
     if DRY_RUN:
         logger.info(f"🔕 [DRY_RUN] Would poll fill for {order_id}")
-        return "FILLED", None
-
+        return "PENDING", None
     token = get_token()
     if not token:
         return "PENDING", None
-
     last_status = None
     for attempt in range(1, EXIT_POLL_ATTEMPTS + 1):
         try:
-            r = session.get(
-                f"https://api.dhan.co/v2/orders/{order_id}",
-                headers={"Accept": "application/json",
-                         "access-token": token, "client-id": DHAN_CLIENT_ID},
-                timeout=15,
-            )
+            r = session.get(f"https://api.dhan.co/v2/orders/{order_id}",
+                            headers={"Accept": "application/json",
+                                     "access-token": token, "client-id": DHAN_CLIENT_ID},
+                            timeout=15)
             if r.status_code == 200:
                 data = r.json()
                 if isinstance(data, list):
@@ -811,7 +684,6 @@ def confirm_fill(order_id, symbol):
                 status = str(data.get("orderStatus", "")).upper()
                 last_status = status
                 logger.info(f"   poll {attempt}/{EXIT_POLL_ATTEMPTS}: {symbol} → {status}")
-
                 if status in FILLED_STATUSES:
                     exit_price = None
                     for k in ("averageTradedPrice", "avgPrice", "price", "tradedPrice"):
@@ -820,7 +692,6 @@ def confirm_fill(order_id, symbol):
                             exit_price = _f(v, None)
                             break
                     return "FILLED", exit_price
-
                 if status in DEAD_STATUSES:
                     logger.error(f"❌ {symbol} exit order dead: {status}")
                     return "DEAD", None
@@ -828,22 +699,16 @@ def confirm_fill(order_id, symbol):
                 logger.warning(f"⚠️ {symbol} order poll HTTP {r.status_code}")
         except Exception as e:
             logger.error(f"❌ {symbol} order poll exception: {e}")
-
         time.sleep(EXIT_POLL_SLEEP)
-
-    logger.warning(f"⚠️ {symbol} exit not confirmed after "
-                   f"{EXIT_POLL_ATTEMPTS} polls (last={last_status})")
+    logger.info(f"ℹ️ {symbol} exit forever resting (last={last_status}) — "
+                f"fills at open, will confirm next run")
     return "PENDING", None
 
 
 # ==========================
-# REALIZED R-MULTIPLE  (logged, not stored — §11)   [6a — UNCHANGED]
+# R MULTIPLE
 # ==========================
 def realized_r(entry, structural_sl, exit_price):
-    """
-    R = (exit − entry) / (entry − structural_SL).
-    Risk per share is (entry − structural_SL). None if undefined.
-    """
     try:
         risk = entry - structural_sl
         if not risk or risk <= 0 or exit_price is None:
@@ -854,12 +719,6 @@ def realized_r(entry, structural_sl, exit_price):
 
 
 def realized_r_from_basis(exit_price, entry, risk_per_share):
-    """
-    R for the hybrid partial, using the IMMUTABLE risk basis derived from
-    Target_Price (not the live Structural_SL, which trailing rewrites).
-        R = (exit − entry) / risk_per_share
-    None if risk is non-positive or exit missing.
-    """
     try:
         if not risk_per_share or risk_per_share <= 0 or exit_price is None:
             return None
@@ -869,162 +728,111 @@ def realized_r_from_basis(exit_price, entry, risk_per_share):
 
 
 # ==========================
-# PATH B ORCHESTRATION  (the whole exit, end to end)   [6a — UNCHANGED]
+# STRUCTURAL EXIT  (forever-order: modify −8% → exit, else cancel+place)
 # ==========================
 def execute_structural_exit(trade, pos, close_price, safety_order):
     """
-    Run the full cancel-and-replace exit for ONE position.
+    Convert the position to a resting EXIT forever-order that fills at open.
 
       1. (alert) structural exit detected
-      2. cancel the −8% forever-order  (skip if none exists)
-      3. place a fresh MARKET sell
-      4. confirm fill
-         • FILLED  → mark CLOSED, write exit cols, log realized R
-         • PENDING → leave EXIT_PENDING, alert (sell is live, no re-protect)
-         • DEAD / place-failed → re-place −8% safety, status OPEN, loud alert
+      2. try MODIFY the −8% forever-order → exit trigger/qty
+         • modify ok  → that order IS now the exit; mark EXIT_PENDING
+         • modify fail → cancel −8% + place fresh exit forever
+                          (if cancel also fails → keep −8%, abort, retry next run)
+         • no −8% at all → place fresh exit forever directly
+      3. Status EXIT_PENDING. Position stays PROTECTED (a resting SELL exists)
+         until it fills at open; next run confirms FILLED → CLOSED.
 
-    `safety_order`: the live forever-order dict for this sec_id, or None.
-    Returns one of: "CLOSED", "EXIT_PENDING", "REPROTECTED", "ABORTED".
-
-    NOTE (6b): qty here is read from Remaining_Qty, so a structural exit on
-    a position that already took its 2R partial sells only the remainder.
+    Returns: "EXIT_PENDING" | "CLOSED" | "ABORTED".
     """
     symbol = pos["symbol"]
     sec_id = pos["securityId"]
     trade_id = trade.get("ID")
-
     entry = _f(trade.get("Entry_Price"))
     structural_sl = _f(trade.get("Structural_SL"))
     qty = int(_f(trade.get("Remaining_Qty"), pos["qty"]) or pos["qty"])
 
     r_est = realized_r(entry, structural_sl, close_price)
+    logger.warning(f"🔴 STRUCTURAL EXIT: {symbol} close {close_price} < SL {structural_sl}")
+    send_telegram_alert("🔴 STRUCTURAL EXIT DETECTED",
+                        {"Symbol": symbol, "Close": close_price,
+                         "Structural_SL": structural_sl, "Entry": entry,
+                         "Est_R_at_close": r_est, "Qty": qty})
 
-    logger.warning(f"🔴 STRUCTURAL EXIT: {symbol} close {close_price} < "
-                   f"Structural_SL {structural_sl}")
-    send_telegram_alert("🔴 STRUCTURAL EXIT DETECTED", {
-        "Symbol": symbol,
-        "Close": close_price,
-        "Structural_SL": structural_sl,
-        "Entry": entry,
-        "Est_R_at_close": r_est,
-        "Qty": qty,
-    })
+    # Build the exit trigger/limit (just below close → fills at open).
+    trigger = _round_down(close_price * EXIT_TRIGGER_OFFSET, symbol)
+    price = _round_down(trigger * EXIT_LIMIT_OFFSET, symbol)
 
     safety_order_id = safety_order.get("orderId") if safety_order else None
-    if safety_order_id:
-        if not cancel_forever_order(safety_order_id, symbol):
-            logger.error(f"❌ {symbol} cancel failed — aborting exit, "
-                         f"position remains protected by existing −8%")
-            send_telegram_alert("⚠️ EXIT ABORTED — CANCEL FAILED", {
-                "Symbol": symbol,
-                "OrderID": safety_order_id,
-                "Status": "−8% safety still in place; will retry next run",
-            })
-            return "ABORTED"
-    else:
-        logger.info(f"ℹ️ {symbol} no −8% safety order to cancel "
-                    f"(never placed) — placing fresh sell directly")
-
-    ok, exit_order_id = place_market_sell(sec_id, qty, symbol)
-    if not ok:
-        return _reprotect_after_failed_exit(
-            trade, pos, entry, qty, reason="market sell rejected at placement")
-
-    status, fill_price = confirm_fill(exit_order_id, symbol)
-    exit_price = fill_price if fill_price is not None else close_price
+    exit_order_id = None
     now = datetime.now(timezone.utc).isoformat()
 
+    if safety_order_id:
+        if modify_forever_order(safety_order_id, sec_id, qty, trigger, price, symbol):
+            exit_order_id = safety_order_id
+        else:
+            # Modify rejected → cancel then place fresh exit forever.
+            if not cancel_forever_order(safety_order_id, symbol):
+                logger.error(f"❌ {symbol} modify+cancel both failed — abort, "
+                             f"−8% still protecting; retry next run")
+                send_telegram_alert("⚠️ EXIT ABORTED — MODIFY+CANCEL FAILED",
+                                    {"Symbol": symbol, "OrderID": safety_order_id,
+                                     "Status": "−8% still in place; retry next run"})
+                return "ABORTED"
+            ok, exit_order_id, _ = place_exit_forever(sec_id, qty, close_price, symbol)
+            if not ok:
+                # Bare now — re-place the −8% backstop, abort the exit.
+                logger.error(f"🚨 {symbol} exit forever place FAILED after cancel — "
+                             f"re-placing −8% safety")
+                rok, new_id, lvl = place_safety_sl(sec_id, qty, entry, symbol)
+                upd = {"Status": db.STATUS_OPEN}
+                if rok and lvl is not None:
+                    upd["Safety_SL"] = lvl
+                db.update_trade(trade_id=trade_id, **upd)
+                send_telegram_alert("🚨 EXIT FAILED — RE-PROTECTED",
+                                    {"Symbol": symbol,
+                                     "Re-protect": "OK" if rok else "FAILED — ACT NOW"})
+                return "ABORTED"
+    else:
+        ok, exit_order_id, _ = place_exit_forever(sec_id, qty, close_price, symbol)
+        if not ok:
+            logger.error(f"❌ {symbol} exit forever place failed (no −8% existed)")
+            send_telegram_alert("🚨 EXIT FOREVER FAILED — UNPROTECTED",
+                                {"Symbol": symbol, "Qty": qty,
+                                 "Issue": "no safety + exit place failed; ACT NOW"})
+            return "ABORTED"
+
+    # A resting exit SELL now exists → confirm (won't fill till open).
+    status, fill_price = confirm_fill(exit_order_id, symbol)
     if status == "FILLED":
+        exit_price = fill_price if fill_price is not None else close_price
         r_real = realized_r(entry, structural_sl, exit_price)
-        db.update_trade(
-            trade_id=trade_id,
-            Status=db.STATUS_CLOSED,
-            Exit_Price=exit_price,
-            Exit_Time=now,
-            Exit_Reason="structural",
-            Exit_Order_ID=exit_order_id,
-            Current_Price=exit_price,
-        )
+        db.update_trade(trade_id=trade_id, Status=db.STATUS_CLOSED,
+                        Exit_Price=exit_price, Exit_Time=now,
+                        Exit_Reason="structural", Exit_Order_ID=exit_order_id,
+                        Current_Price=exit_price)
         logger.info(f"✅ {symbol} CLOSED @ {exit_price} (R={r_real})")
-        send_telegram_alert("✅ EXIT CONFIRMED — CLOSED", {
-            "Symbol": symbol,
-            "Exit_Price": exit_price,
-            "Realized_R": r_real,
-            "Exit_Reason": "structural",
-            "Exit_Order_ID": exit_order_id,
-        })
+        send_telegram_alert("✅ EXIT FILLED — CLOSED",
+                            {"Symbol": symbol, "Exit_Price": exit_price,
+                             "Realized_R": r_real, "Exit_Reason": "structural"})
         return "CLOSED"
 
-    if status == "PENDING":
-        db.update_trade(
-            trade_id=trade_id,
-            Status=db.STATUS_EXIT_PENDING,
-            Exit_Order_ID=exit_order_id,
-            Exit_Reason="structural",
-        )
-        logger.warning(f"⚠️ {symbol} exit not confirmed — left EXIT_PENDING")
-        send_telegram_alert("⚠️ EXIT PLACED — NOT YET CONFIRMED", {
-            "Symbol": symbol,
-            "Exit_Order_ID": exit_order_id,
-            "Status": "EXIT_PENDING — sell live, NOT re-protected; reconcile next run",
-        })
-        return "EXIT_PENDING"
-
-    return _reprotect_after_failed_exit(
-        trade, pos, entry, qty, reason=f"exit order {exit_order_id} dead")
+    # PENDING (normal after-hours) or DEAD-but-order-exists → EXIT_PENDING.
+    db.update_trade(trade_id=trade_id, Status=db.STATUS_EXIT_PENDING,
+                    Exit_Order_ID=exit_order_id, Exit_Reason="structural",
+                    Safety_SL="")  # the −8% is now the exit; clear stale level
+    logger.info(f"⏳ {symbol} EXIT_PENDING — exit forever resting, fills at open")
+    send_telegram_alert("⏳ EXIT RESTING — FILLS AT OPEN",
+                        {"Symbol": symbol, "Exit_Order_ID": exit_order_id,
+                         "Trigger": trigger,
+                         "Status": "EXIT_PENDING; confirm next run"})
+    return "EXIT_PENDING"
 
 
-def _reprotect_after_failed_exit(trade, pos, entry, qty, reason):
-    """
-    The exit sell failed and the position may be bare. Re-place the −8%
-    safety, flip status back to OPEN, fire a LOUD alert. Never leave the
-    position silently unprotected (§6).   [6a — UNCHANGED]
-    """
-    symbol = pos["symbol"]
-    sec_id = pos["securityId"]
-    trade_id = trade.get("ID")
-
-    logger.error(f"🚨 {symbol} EXIT FAILED ({reason}) — re-placing −8% safety")
-
-    ok, new_safety_id, safety_level = place_safety_sl(sec_id, qty, entry, symbol)
-
-    updates = {"Status": db.STATUS_OPEN}
-    if ok and safety_level is not None:
-        updates["Safety_SL"] = safety_level
-    db.update_trade(trade_id=trade_id, **updates)
-
-    send_telegram_alert("🚨 EXIT FAILED — POSITION RE-PROTECTED", {
-        "Symbol": symbol,
-        "Reason": reason,
-        "Re-protect": "OK" if ok else "FAILED — MANUAL ACTION NEEDED",
-        "New_Safety_OrderID": new_safety_id,
-        "Status": "OPEN (will retry exit next run)",
-    })
-
-    if not ok:
-        send_telegram_alert("‼️‼️ UNPROTECTED POSITION — ACT NOW", {
-            "Symbol": symbol,
-            "Qty": qty,
-            "Issue": "exit failed AND −8% re-placement failed",
-        })
-
-    return "REPROTECTED"
-
-
-# ==============================================================
-# R BASIS  (6b — from Target_Price, immutable across Phase-2 rewrite)
-# ==============================================================
+# ==========================
+# R BASIS  (from Target_Price)
+# ==========================
 def compute_r_basis(trade):
-    """
-    Derive (risk_per_share, one_r_price, two_r_price) from Target_Price.
-
-        risk        = (Target_Price − entry) / 2
-        one_r_price = entry + risk
-        two_r_price = Target_Price            (= entry + 2*risk)
-
-    Returns None if Target_Price is blank/garbage or implies risk ≤ 0
-    (caller then SKIPS trail+partial for that row — never guesses).
-    """
     entry = _f(trade.get("Entry_Price"))
     target = _f(trade.get("Target_Price"))
     if entry <= 0 or target <= 0:
@@ -1032,223 +840,125 @@ def compute_r_basis(trade):
     risk = (target - entry) / 2.0
     if risk <= 0:
         return None
-    return {
-        "risk": risk,
-        "one_r_price": entry + risk,
-        "two_r_price": target,
-    }
+    return {"risk": risk, "one_r_price": entry + risk, "two_r_price": target}
 
 
-# ==============================================================
-# SAFETY RECONCILE  (6b — after a partial: cancel-then-replace at new qty)
-# ==============================================================
+# ==========================
+# SAFETY RECONCILE  (after partial: cancel-then-replace at kept qty)
+# ==========================
 def reconcile_safety_qty(trade, pos, safety_order, new_qty, entry):
-    """
-    Reconcile the −8% safety order to `new_qty` after a partial sale.
-
-    cancel-then-replace (design §5 decision): cancel the old full-qty
-    forever-order, place a fresh one at new_qty. On a re-place FAILURE the
-    remaining position is briefly bare → LOUD alert so the next run (or a
-    human) re-protects. Mirrors 6a's exit philosophy.
-
-    Returns (ok: bool, new_safety_level: float|None).
-    """
     symbol = pos["symbol"]
     sec_id = pos["securityId"]
-
     safety_order_id = safety_order.get("orderId") if safety_order else None
 
     if safety_order_id:
         if not cancel_forever_order(safety_order_id, symbol):
-            # Couldn't cancel the OLD order. Don't place a second one (would
-            # leave two live SELLs, old at full qty → oversell risk). Leave
-            # the old order resting; alert; reconcile next run.
-            logger.error(f"❌ {symbol} safety cancel failed during partial "
-                         f"reconcile — leaving OLD −8% (full qty) in place")
-            send_telegram_alert("⚠️ PARTIAL RECONCILE — CANCEL FAILED", {
-                "Symbol": symbol,
-                "OrderID": safety_order_id,
-                "Issue": "old −8% (full qty) still resting; oversized vs remaining",
-                "Action": "will retry reconcile next run",
-            })
+            logger.error(f"❌ {symbol} safety cancel failed during reconcile — "
+                         f"leaving OLD −8% (full qty)")
+            send_telegram_alert("⚠️ PARTIAL RECONCILE — CANCEL FAILED",
+                                {"Symbol": symbol, "OrderID": safety_order_id,
+                                 "Issue": "old −8% oversized vs remaining; retry next run"})
             return False, None
     else:
-        logger.info(f"ℹ️ {symbol} no existing −8% to cancel during reconcile "
-                    f"— placing fresh at new qty")
+        logger.info(f"ℹ️ {symbol} no −8% to cancel during reconcile — placing fresh")
 
     ok, new_id, safety_level = place_safety_sl(sec_id, int(new_qty), entry, symbol)
     if ok:
-        logger.info(f"✅ {symbol} −8% safety reconciled to qty {new_qty}")
-        send_telegram_alert("✅ −8% SAFETY RECONCILED (POST-PARTIAL)", {
-            "Symbol": symbol,
-            "New_Qty": new_qty,
-            "New_Safety_Level": safety_level,
-            "New_Safety_OrderID": new_id,
-        })
+        logger.info(f"✅ {symbol} −8% reconciled to qty {new_qty}")
+        send_telegram_alert("✅ −8% RECONCILED (POST-PARTIAL)",
+                            {"Symbol": symbol, "New_Qty": new_qty,
+                             "New_Safety_Level": safety_level, "New_Safety_OrderID": new_id})
         return True, safety_level
-
-    logger.error(f"🚨 {symbol} −8% re-place FAILED post-partial — "
-                 f"remaining {new_qty} shares BARE")
-    send_telegram_alert("🚨 POST-PARTIAL UNPROTECTED — ACT NOW", {
-        "Symbol": symbol,
-        "Remaining_Qty": new_qty,
-        "Issue": "half sold, old −8% cancelled, re-place failed",
-        "Action": "position OPEN + bare; re-protect next run or manually",
-    })
+    logger.error(f"🚨 {symbol} −8% re-place FAILED post-partial — {new_qty} BARE")
+    send_telegram_alert("🚨 POST-PARTIAL UNPROTECTED — ACT NOW",
+                        {"Symbol": symbol, "Remaining_Qty": new_qty,
+                         "Issue": "half sold, old −8% cancelled, re-place failed"})
     return False, None
 
 
-# ==============================================================
-# HYBRID TARGET  (6b — half at 2R; writes immediately, like exits)
-# ==============================================================
+# ==========================
+# HYBRID TARGET  (half at 2R via a SEPARATE exit forever-order)
+# ==========================
 def execute_partial_target(trade, pos, close_price, safety_order, r_basis):
     """
-    Sell floor(Remaining_Qty/2) at MARKET on the first 2R close.
+    On the first 2R close, place a forever SELL for floor(Remaining_Qty/2)
+    (fills at open), then reconcile the −8% to the kept qty.
 
-    GATED BY THE CALLER (status not PARTIAL/EXIT_PENDING/CLOSED AND
-    Remaining_Qty == Qty AND close ≥ 2R). On a confirmed fill: write
-    Remaining_Qty + log target partial + status PARTIAL FIRST, THEN
-    reconcile the −8% to the new qty. Sheet reflects reality before the
-    (riskier) broker reconcile, so a reconcile failure leaves correct
-    position state + a loud "unprotected" alert.
+    Unlike structural exit, the −8% is NOT reused here (it must keep
+    protecting the kept half), so the partial gets its OWN exit forever.
 
-    Returns (did_partial: bool, remaining_qty: int, new_safety_level: float|None).
-    On any failure to sell, returns (False, full_qty, None) and leaves the
-    row untouched (caller then just trails the full position this run).
+    Returns (did_partial, remaining_qty, new_safety_level|None).
     """
     symbol = pos["symbol"]
     sec_id = pos["securityId"]
     trade_id = trade.get("ID")
-
     entry = _f(trade.get("Entry_Price"))
     full_qty = int(_f(trade.get("Remaining_Qty"), pos["qty"]) or pos["qty"])
 
-    sell_qty = full_qty // 2          # floor; odd 7 → sell 3, keep 4
+    sell_qty = full_qty // 2
     keep_qty = full_qty - sell_qty
-
     if sell_qty < 1:
-        logger.info(f"ℹ️ {symbol} qty {full_qty} too small to halve — "
-                    f"no partial, trailing whole position")
+        logger.info(f"ℹ️ {symbol} qty {full_qty} too small to halve — trailing whole")
         return False, full_qty, None
 
     r_real_est = realized_r_from_basis(close_price, entry, r_basis["risk"])
     logger.warning(f"🎯 2R TARGET HIT: {symbol} close {close_price} ≥ "
                    f"2R {round(r_basis['two_r_price'],4)} | selling {sell_qty}/{full_qty}")
-    send_telegram_alert("🎯 2R TARGET — SELLING HALF", {
-        "Symbol": symbol,
-        "Close": close_price,
-        "Two_R_Price": round(r_basis["two_r_price"], 4),
-        "Sell_Qty": sell_qty,
-        "Keep_Qty": keep_qty,
-        "Est_R": r_real_est,
-    })
+    send_telegram_alert("🎯 2R TARGET — SELLING HALF (fills at open)",
+                        {"Symbol": symbol, "Close": close_price,
+                         "Two_R_Price": round(r_basis["two_r_price"], 4),
+                         "Sell_Qty": sell_qty, "Keep_Qty": keep_qty, "Est_R": r_real_est})
 
-    # 1) Place the half MARKET sell + confirm (reuse 6a primitives).
-    ok, exit_order_id = place_market_sell(sec_id, sell_qty, symbol)
+    ok, exit_order_id, _ = place_exit_forever(sec_id, sell_qty, close_price, symbol)
     if not ok:
-        logger.error(f"❌ {symbol} partial sell rejected at placement — "
-                     f"no partial this run")
-        send_telegram_alert("❌ 2R PARTIAL SELL REJECTED", {
-            "Symbol": symbol,
-            "Status": "no partial taken; full position intact + still protected",
-        })
+        logger.error(f"❌ {symbol} partial exit forever rejected — no partial this run")
+        send_telegram_alert("❌ 2R PARTIAL REJECTED",
+                            {"Symbol": symbol,
+                             "Status": "full position intact + protected; retry next run"})
         return False, full_qty, None
 
     status, fill_price = confirm_fill(exit_order_id, symbol)
     exit_price = fill_price if fill_price is not None else close_price
 
-    if status == "PENDING":
-        # Half-sell LIVE but unconfirmed. Do NOT touch Remaining_Qty (sheet
-        # would understate shares we may still hold) and do NOT reconcile the
-        # −8% (old full-qty order still matches if the sell silently fails).
-        # Leave qty/status; record the order id for the audit; reconcile next
-        # run. Do not trail this run.
-        logger.warning(f"⚠️ {symbol} partial sell unconfirmed — leaving qty "
-                       f"untouched, reconcile next run")
-        db.update_trade(
-            trade_id=trade_id,
-            Exit_Order_ID=exit_order_id,
-            Exit_Reason="target_pending",
-        )
-        send_telegram_alert("⚠️ 2R PARTIAL — NOT YET CONFIRMED", {
-            "Symbol": symbol,
-            "Exit_Order_ID": exit_order_id,
-            "Status": "sell live, qty NOT reduced; reconcile next run",
-        })
-        return False, full_qty, None
-
     if status == "DEAD":
-        logger.error(f"❌ {symbol} partial sell DEAD ({exit_order_id}) — "
-                     f"no partial, full position still protected")
-        send_telegram_alert("❌ 2R PARTIAL SELL DEAD", {
-            "Symbol": symbol,
-            "Exit_Order_ID": exit_order_id,
-            "Status": "full position intact + protected; retry next run",
-        })
+        logger.error(f"❌ {symbol} partial exit DEAD ({exit_order_id})")
+        send_telegram_alert("❌ 2R PARTIAL DEAD",
+                            {"Symbol": symbol, "Exit_Order_ID": exit_order_id,
+                             "Status": "full position intact + protected; retry"})
         return False, full_qty, None
 
-    # status == "FILLED" → the half is sold.
+    # FILLED (rare, same-run) OR PENDING (normal — rests, fills at open).
+    # In BOTH cases the half-sell is committed/queued, so we reduce qty and
+    # reconcile the −8% now. (If a queued partial silently fails to fill,
+    # next run's reconciliation + the kept −8% still cover us.)
     r_real = realized_r_from_basis(exit_price, entry, r_basis["risk"])
     now = datetime.now(timezone.utc).isoformat()
 
-    # 2) Write sheet state FIRST (Remaining_Qty + target log + PARTIAL).
-    db.update_trade(
-        trade_id=trade_id,
-        Status=db.STATUS_PARTIAL,
-        Remaining_Qty=keep_qty,
-        Exit_Price=exit_price,
-        Exit_Time=now,
-        Exit_Reason="target",
-        Exit_Order_ID=exit_order_id,
-    )
-    logger.info(f"✅ {symbol} HALF SOLD @ {exit_price} (R={r_real}) | "
-                f"Remaining_Qty {full_qty} → {keep_qty}")
-    send_telegram_alert("✅ 2R PARTIAL FILLED — HALF BANKED", {
-        "Symbol": symbol,
-        "Sold_Qty": sell_qty,
-        "Exit_Price": exit_price,
-        "Realized_R_half": r_real,
-        "Remaining_Qty": keep_qty,
-        "Exit_Reason": "target",
-    })
+    db.update_trade(trade_id=trade_id, Status=db.STATUS_PARTIAL,
+                    Remaining_Qty=keep_qty, Exit_Price=exit_price, Exit_Time=now,
+                    Exit_Reason="target", Exit_Order_ID=exit_order_id)
+    logger.info(f"✅ {symbol} HALF {'SOLD' if status=='FILLED' else 'QUEUED'} "
+                f"@ {exit_price} (R={r_real}) | Remaining {full_qty} → {keep_qty}")
+    send_telegram_alert("✅ 2R PARTIAL — HALF BANKED/QUEUED",
+                        {"Symbol": symbol, "Sold_Qty": sell_qty,
+                         "Exit_Price": exit_price, "Realized_R_half": r_real,
+                         "Remaining_Qty": keep_qty,
+                         "Fill": "FILLED" if status == "FILLED" else "RESTS→OPEN"})
 
-    # 3) Reconcile the −8% safety down to the kept quantity.
-    ok_rec, new_safety_level = reconcile_safety_qty(
-        trade, pos, safety_order, keep_qty, entry)
-
+    ok_rec, new_safety_level = reconcile_safety_qty(trade, pos, safety_order, keep_qty, entry)
     return True, keep_qty, (new_safety_level if ok_rec else None)
 
 
-# ==============================================================
-# TRAIL  (6b — three-phase, close-based, ratchet-up-only, clamped)
-# ==============================================================
+# ==========================
+# TRAIL  (three-phase, close-based, ratchet-up, clamped)
+# ==========================
 def compute_trail_updates(trade, pos, close_price, atr, atr_source, r_basis):
-    """
-    Pure trail/phase computation (no I/O). Returns a dict of sheet field
-    updates (subset of: Structural_SL, Highest_Close, Trail_Phase,
-    Previous_SL_Price), or a dict with only Highest_Close / {} when nothing
-    else changes.
-
-    Phases (§4):
-      P1 fixed     — close < +1R: Structural_SL unchanged.
-      P2 breakeven — first close ≥ +1R: raise Structural_SL to entry.
-      P3 trail     — subsequent new-high closes:
-            gap        = 2.5×ATR  (or 0.05×highest_close if atr is None)
-            trail_stop = highest_close − gap
-            trail_stop = min(trail_stop, latest_close − one_tick)  # CLAMP
-            Structural_SL = max(current_Structural_SL, trail_stop)
-
-    Always records Previous_SL_Price = the pre-update Structural_SL when a
-    change is made (audit of how the stop climbed).
-    """
     symbol = pos["symbol"]
     entry = _f(trade.get("Entry_Price"))
     cur_sl = _f(trade.get("Structural_SL"))
     cur_phase = int(_f(trade.get("Trail_Phase"), 1) or 1)
-
     prev_high = _f(trade.get("Highest_Close"))
     highest_close = max(prev_high, close_price) if prev_high else close_price
-
     one_r_price = r_basis["one_r_price"]
 
     updates = {}
@@ -1259,143 +969,35 @@ def compute_trail_updates(trade, pos, close_price, atr, atr_source, r_basis):
         updates["Highest_Close"] = round(highest_close, 4)
 
     reached_1r = close_price >= one_r_price
-
     if not reached_1r:
-        # ----- Phase 1: fixed, no trailing -----
         new_phase = 1
     else:
-        # ----- Phase 2: raise to breakeven (entry), once -----
         breakeven = _round_down(entry, symbol)
         if cur_sl < breakeven:
             new_sl = breakeven
             new_phase = max(cur_phase, 2)
-
-        # ----- Phase 3: ATR (or 5% fallback) trail off highest close -----
-        if atr is not None and atr > 0:
-            gap = ATR_TRAIL_MULT * atr
-        else:
-            gap = FALLBACK_TRAIL_PCT * highest_close
-
+        gap = ATR_TRAIL_MULT * atr if (atr is not None and atr > 0) else FALLBACK_TRAIL_PCT * highest_close
         raw_trail = highest_close - gap
-
-        # CLAMP: never sit at/above the latest close (else it's a disguised
-        # "exit now" the moment it lands). Cap one tick below the close.
         tick = _tick_for(symbol)
         clamp_ceiling = close_price - tick
-        trail_stop = min(raw_trail, clamp_ceiling)
-        trail_stop = _round_down(trail_stop, symbol)
-
-        # Ratchet UP only.
+        trail_stop = _round_down(min(raw_trail, clamp_ceiling), symbol)
         if trail_stop > new_sl:
             new_sl = trail_stop
             new_phase = 3
-
-        logger.info(f"   trail({atr_source}) {symbol}: "
-                    f"highest_close={round(highest_close,4)} gap={round(gap,4)} "
-                    f"raw={round(raw_trail,4)} clamp≤{round(clamp_ceiling,4)} "
-                    f"→ cand={trail_stop} | cur_SL={cur_sl} new_SL={new_sl} "
-                    f"phase={new_phase}")
+        logger.info(f"   trail({atr_source}) {symbol}: highest={round(highest_close,4)} "
+                    f"gap={round(gap,4)} raw={round(raw_trail,4)} clamp≤{round(clamp_ceiling,4)} "
+                    f"→ cand={trail_stop} | cur_SL={cur_sl} new_SL={new_sl} phase={new_phase}")
 
     if new_sl != cur_sl:
         updates["Previous_SL_Price"] = cur_sl
         updates["Structural_SL"] = round(new_sl, 4)
     if new_phase != cur_phase:
         updates["Trail_Phase"] = new_phase
-
     return updates
 
 
-# ==============================================================
-# 6b ORCHESTRATOR — called from run() in place of the plain refresh
-# ==============================================================
-def manage_trail_and_target(trade, pos, close_price, safety_order):
-    """
-    Full 6b management for ONE non-exiting position on a real daily close.
-
-    Order within a run (confirmed §phase ordering):
-      0. R-basis guard (Target_Price). No basis → skip 6b, routine refresh.
-      1. 2R partial (gated). Writes immediately (Remaining_Qty/PARTIAL/log).
-      2. Phase/breakeven/trail on the (possibly reduced) remainder.
-
-    Returns a dict of routine field updates to BATCH at end of run()
-    (Current_Price/PnL/PnL_Percent plus any trail fields), carrying
-    'trade_id'. The partial's own writes happen immediately inside
-    execute_partial_target (rare, must be durable at once).
-    """
-    symbol = pos["symbol"]
-    trade_id = trade.get("ID")
-    status = str(trade.get("Status", "")).upper()
-    partial_fired = False
-
-    # 0) R basis or bust.
-    r_basis = compute_r_basis(trade)
-    if r_basis is None:
-        logger.warning(f"   ↪ {symbol} no valid Target_Price-derived R basis — "
-                       f"skipping trail/partial, routine refresh only")
-        qty_full = int(_f(trade.get("Remaining_Qty"), pos["qty"]) or pos["qty"])
-        pnl, pnl_pct = calculate_pnl(_f(trade.get("Entry_Price")), close_price, qty_full)
-        return {
-            "trade_id": trade_id,
-            "Current_Price": close_price,
-            "PnL": pnl,
-            "PnL_Percent": pnl_pct,
-            "Status": db.STATUS_OPEN if status == db.STATUS_PENDING else status,
-        }
-
-    qty_before = int(_f(trade.get("Remaining_Qty"), pos["qty"]) or pos["qty"])
-    full_qty = int(_f(trade.get("Qty"), qty_before) or qty_before)
-    remaining_qty = qty_before
-
-    # 1) 2R partial — gate exactly per the confirmed idempotency rule.
-    partial_allowed = (
-            status not in (db.STATUS_PARTIAL, db.STATUS_EXIT_PENDING, db.STATUS_CLOSED)
-            and qty_before == full_qty
-            and close_price >= r_basis["two_r_price"]
-    )
-    if partial_allowed:
-        did_partial, remaining_qty, _new_safety = execute_partial_target(
-            trade, pos, close_price, safety_order, r_basis)
-        if did_partial:
-            partial_fired = True
-            # Re-read so the trail math sees the just-written PARTIAL state
-            # (Remaining_Qty, status). One extra read on the rare partial run.
-            refreshed = db.get_trade(trade_id=trade_id)
-            if refreshed:
-                trade = refreshed
-                status = str(trade.get("Status", "")).upper()
-
-    # 2) ATR for the trail (Dhan → yfinance → None→5% fallback gap).
-    atr, atr_source = get_atr(pos["securityId"], symbol)
-
-    # 3) Phase/breakeven/trail on the remainder.
-    trail_updates = compute_trail_updates(
-        trade, pos, close_price, atr, atr_source, r_basis)
-
-    # 4) Build the batched routine update. price/PnL on the REMAINING qty +
-    #    any trail fields. The partial already wrote Remaining_Qty/status/exit
-    #    cols immediately; do NOT overwrite those here.
-    pnl, pnl_pct = calculate_pnl(
-        _f(trade.get("Entry_Price")), close_price, int(remaining_qty))
-
-    out = {
-        "trade_id": trade_id,
-        "Current_Price": close_price,
-        "PnL": pnl,
-        "PnL_Percent": pnl_pct,
-        "_partial": partial_fired,
-    }
-    out.update(trail_updates)
-
-    # Only manage Status here for non-partial rows. If a partial fired this
-    # run, status is already PARTIAL on disk; don't touch it.
-    if status != db.STATUS_PARTIAL:
-        out["Status"] = db.STATUS_OPEN if status == db.STATUS_PENDING else status
-
-    return out
-
-
 # ==========================
-# PnL  (for routine row refresh on non-exiting positions)   [6a — UNCHANGED]
+# PnL
 # ==========================
 def calculate_pnl(entry_price, current_price, qty):
     if not current_price or not entry_price:
@@ -1406,16 +1008,63 @@ def calculate_pnl(entry_price, current_price, qty):
 
 
 # ==========================
-# MAIN ENGINE  (step 6b)
+# 6b ORCHESTRATOR
+# ==========================
+def manage_trail_and_target(trade, pos, close_price, safety_order):
+    symbol = pos["symbol"]
+    trade_id = trade.get("ID")
+    status = _normalize_status(trade.get("Status"))
+    partial_fired = False
+
+    r_basis = compute_r_basis(trade)
+    if r_basis is None:
+        logger.warning(f"   ↪ {symbol} no valid Target-derived R basis — "
+                       f"routine refresh only")
+        qty_full = int(_f(trade.get("Remaining_Qty"), pos["qty"]) or pos["qty"])
+        pnl, pnl_pct = calculate_pnl(_f(trade.get("Entry_Price")), close_price, qty_full)
+        return {"trade_id": trade_id, "Current_Price": close_price,
+                "PnL": pnl, "PnL_Percent": pnl_pct,
+                "Status": db.STATUS_OPEN if status == db.STATUS_PENDING else status}
+
+    qty_before = int(_f(trade.get("Remaining_Qty"), pos["qty"]) or pos["qty"])
+    full_qty = int(_f(trade.get("Qty"), qty_before) or qty_before)
+    remaining_qty = qty_before
+
+    partial_allowed = (
+            status not in (db.STATUS_PARTIAL, db.STATUS_EXIT_PENDING, db.STATUS_CLOSED)
+            and qty_before == full_qty
+            and close_price >= r_basis["two_r_price"]
+    )
+    if partial_allowed:
+        did_partial, remaining_qty, _ns = execute_partial_target(
+            trade, pos, close_price, safety_order, r_basis)
+        if did_partial:
+            partial_fired = True
+            refreshed = db.get_trade(trade_id=trade_id)
+            if refreshed:
+                trade = refreshed
+                status = _normalize_status(trade.get("Status"))
+
+    atr, atr_source = get_atr(pos["securityId"], symbol)
+    trail_updates = compute_trail_updates(trade, pos, close_price, atr, atr_source, r_basis)
+
+    pnl, pnl_pct = calculate_pnl(_f(trade.get("Entry_Price")), close_price, int(remaining_qty))
+    out = {"trade_id": trade_id, "Current_Price": close_price,
+           "PnL": pnl, "PnL_Percent": pnl_pct, "_partial": partial_fired}
+    out.update(trail_updates)
+    if status != db.STATUS_PARTIAL:
+        out["Status"] = db.STATUS_OPEN if status == db.STATUS_PENDING else status
+    return out
+
+
+# ==========================
+# MAIN
 # ==========================
 def run():
     logger.info("=" * 80)
-    logger.info("🚀 SL ENGINE V18 (step 6b) — two-tier + close-exit + Path B "
-                "+ three-phase trail + hybrid 2R partial")
+    logger.info("🚀 SL ENGINE V19 — forever-order exits (after-hours safe)")
     logger.info("=" * 80)
-
     validate_env()
-
     db.init_sheets()
     db.ensure_schema()
 
@@ -1427,8 +1076,7 @@ def run():
     forever = get_forever_orders()
 
     safety_map = {
-        str(o["securityId"]): o
-        for o in forever
+        str(o["securityId"]): o for o in forever
         if o.get("transactionType") == "SELL"
            and str(o.get("orderStatus", "")).upper() in ("PENDING", "CONFIRM")
     }
@@ -1440,7 +1088,7 @@ def run():
     logger.info(f"📊 Positions/holdings: {len(all_pos)} | Safety orders: {len(safety_map)}")
 
     routine_updates = []
-    exited = safety_placed = skipped_close = trailed = partials = 0
+    exited = safety_placed = skipped_close = trailed = partials = skipped_invalid = 0
 
     for sec_id, pos in all_pos.items():
         symbol = pos["symbol"]
@@ -1451,7 +1099,7 @@ def run():
             logger.info(f"   ↪ no matching sheet row for {symbol}; skipping")
             continue
 
-        status = str(trade.get("Status", "")).upper()
+        status = _normalize_status(trade.get("Status"))
         if status in (db.STATUS_CLOSED, db.STATUS_EXIT_PENDING):
             logger.info(f"   ↪ {symbol} status={status}; skipping")
             continue
@@ -1460,43 +1108,47 @@ def run():
         structural_sl = _f(trade.get("Structural_SL"))
         safety_order = safety_map.get(sec_id)
 
-        # ----- Two-tier: ensure the −8% backstop EXISTS (place once) -----
-        # NOTE (6b): brand-new positions have no partial yet, so sizing off
-        # pos["qty"] is correct here. Post-partial re-sizing is handled inside
-        # the 6b partial/reconcile path off Remaining_Qty.
+        # ----- INVALID-ROW GUARD: SL must be below entry -----
+        if not has_valid_risk(trade):
+            logger.warning(f"   ⚠️ {symbol} invalid risk (SL {structural_sl} ≥ "
+                           f"entry {entry_price}) — placing/keeping −8% only, "
+                           f"NO trail/partial/structural-exit")
+            if not safety_order:
+                ok, new_id, lvl = place_safety_sl(sec_id, int(pos["qty"]), entry_price, symbol)
+                if ok:
+                    safety_placed += 1
+                    routine_updates.append({
+                        "trade_id": trade.get("ID"), "Safety_SL": lvl,
+                        "Status": db.STATUS_OPEN if status == db.STATUS_PENDING else status})
+            skipped_invalid += 1
+            continue
+
+        # ----- Ensure the −8% backstop exists -----
         if not safety_order:
-            ok, new_id, safety_level = place_safety_sl(
-                sec_id, int(pos["qty"]), entry_price, symbol)
+            ok, new_id, lvl = place_safety_sl(sec_id, int(pos["qty"]), entry_price, symbol)
             if ok:
                 safety_placed += 1
                 routine_updates.append({
-                    "trade_id": trade.get("ID"),
-                    "Safety_SL": safety_level,
-                    "Status": db.STATUS_OPEN if status == db.STATUS_PENDING else status,
-                })
+                    "trade_id": trade.get("ID"), "Safety_SL": lvl,
+                    "Status": db.STATUS_OPEN if status == db.STATUS_PENDING else status})
 
-        # ----- Close-based structural exit decision (6a) -----
+        # ----- Close-based structural exit decision -----
         close_price, source = get_daily_close(sec_id, symbol)
         if close_price is None:
             skipped_close += 1
-            logger.warning(f"   ↪ {symbol} no daily close; skipping exit + trail "
-                           f"this run")
+            logger.warning(f"   ↪ {symbol} no daily close; skipping exit+trail this run")
             continue
 
-        logger.info(f"   Close({source}): {close_price} | "
-                    f"Structural_SL: {structural_sl} | Entry: {entry_price}")
+        logger.info(f"   Close({source}): {close_price} | SL: {structural_sl} | "
+                    f"Entry: {entry_price}")
 
         if structural_sl > 0 and close_price < structural_sl:
             outcome = execute_structural_exit(trade, pos, close_price, safety_order)
-            if outcome in ("CLOSED", "EXIT_PENDING", "REPROTECTED"):
+            if outcome in ("CLOSED", "EXIT_PENDING"):
                 exited += 1
-            # execute_structural_exit already wrote the row.
             continue
 
-        # ----- No structural exit → 6b trail + hybrid target -----
-        # (Replaces 6a's plain PnL refresh.) manage_trail_and_target returns
-        # the routine update dict plus a private "_partial" flag we pop here
-        # for the summary (not a sheet column, so it must not be batched).
+        # ----- No exit → trail + hybrid target -----
         upd = manage_trail_and_target(trade, pos, close_price, safety_order)
         if upd:
             if upd.pop("_partial", False):
@@ -1517,23 +1169,16 @@ def run():
         logger.info(f"📝 Routine batch update: {result}")
 
     logger.info(f"\n{'='*80}")
-    logger.info(f"✅ COMPLETED | Exits: {exited} | Partials: {partials} "
-                f"| Trailed: {trailed} | Safety placed: {safety_placed} "
-                f"| Close-skipped: {skipped_close}")
+    logger.info(f"✅ COMPLETED | Exits: {exited} | Partials: {partials} | "
+                f"Trailed: {trailed} | Safety: {safety_placed} | "
+                f"Close-skipped: {skipped_close} | Invalid-skipped: {skipped_invalid}")
     logger.info(f"{'='*80}")
 
-    send_telegram_alert("🚀 SL ENGINE V18 (6b) COMPLETED", {
-        "Exits": exited,
-        "Partials": partials,
-        "Trailed": trailed,
-        "Safety_placed": safety_placed,
-        "Close_skipped": skipped_close,
-        "Positions": len(all_pos),
-    })
+    send_telegram_alert("🚀 SL ENGINE V19 COMPLETED",
+                        {"Exits": exited, "Partials": partials, "Trailed": trailed,
+                         "Safety_placed": safety_placed, "Close_skipped": skipped_close,
+                         "Invalid_skipped": skipped_invalid, "Positions": len(all_pos)})
 
 
-# ==========================
-# ENTRY
-# ==========================
 if __name__ == "__main__":
     run()
