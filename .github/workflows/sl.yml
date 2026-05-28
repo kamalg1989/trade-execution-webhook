@@ -2,7 +2,7 @@ name: SL Engine
 
 on:
   schedule:
-    - cron: '15 10 * * 1-5'
+    - cron: '30 14 * * 1-5'   # 8:00 PM IST (Mon–Fri)
 
   workflow_dispatch:
 
