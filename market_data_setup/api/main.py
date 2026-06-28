@@ -422,24 +422,24 @@ def create_svg_chart(
             f'stroke="{grid_color}" stroke-width="0.5"/>'
         )
 
-    # Draw volume bars (optional, semi-transparent background)
+    # Draw volume bars (small area at bottom, 5% of chart height)
     if 'volume' in df.columns:
         max_volume = float(df['volume'].max())
         candle_width = chart_width / max(len(df), 1) * 0.6
-        volume_height = chart_height * 0.15  # 15% of chart height for volumes
-        volume_y_start = height - bottom_margin - legend_height - 5
+        volume_height = chart_height * 0.05  # Only 5% of chart height for volumes (small)
+        volume_y_start = height - bottom_margin - legend_height - 10  # Just above date labels
 
         for i, (_, row) in enumerate(df.iterrows()):
             if max_volume > 0:
                 x = x_coord(i)
                 vol_ratio = float(row['volume']) / max_volume
                 bar_height = vol_ratio * volume_height
-                vol_color = '#00ff0033' if row['close'] > row['open'] else '#ff000033'  # Transparent
+                vol_color = '#cccccc' if row['close'] > row['open'] else '#aaaaaa'  # Light gray, visible
 
                 svg_lines.append(
                     f'<rect x="{x - candle_width/2}" y="{volume_y_start - bar_height}" '
                     f'width="{candle_width}" height="{bar_height}" '
-                    f'fill="{vol_color}" stroke="none"/>'
+                    f'fill="{vol_color}" stroke="none" opacity="0.4"/>'
                 )
 
     # Draw candlesticks with improved styling
@@ -475,10 +475,12 @@ def create_svg_chart(
         'ema_200': {'color': '#ff0000', 'width': 2, 'label': 'EMA-200'}
     }
 
-    legend_x = left_margin + 20
-    legend_y = height - bottom_margin - legend_height + 20
-
+    # Draw EMA indicators with legend in top-right (avoid date overlap)
     if indicators:
+        legend_x = width - right_margin - 150  # Top right corner
+        legend_y = top_margin + 30
+        legend_item_height = 18
+
         for col, style in ema_styles.items():
             if col in df.columns:
                 points = []
@@ -493,10 +495,10 @@ def create_svg_chart(
                         f'stroke="{style["color"]}" stroke-width="{style["width"]}" opacity="0.8"/>'
                     )
 
-                    # Legend entry
-                    svg_lines.append(f'<line x1="{legend_x}" y1="{legend_y}" x2="{legend_x+20}" y2="{legend_y}" stroke="{style["color"]}" stroke-width="2"/>')
-                    svg_lines.append(f'<text x="{legend_x+30}" y="{legend_y+4}" font-size="12" fill="{text_color}" font-family="Arial">{style["label"]}</text>')
-                    legend_x += 130
+                    # Legend entry (vertical stacking in top-right)
+                    svg_lines.append(f'<line x1="{legend_x}" y1="{legend_y}" x2="{legend_x+15}" y2="{legend_y}" stroke="{style["color"]}" stroke-width="2"/>')
+                    svg_lines.append(f'<text x="{legend_x+20}" y="{legend_y+4}" font-size="11" fill="{text_color}" font-family="Arial">{style["label"]}</text>')
+                    legend_y += legend_item_height
 
     # Close SVG
     svg_lines.append('</svg>')
