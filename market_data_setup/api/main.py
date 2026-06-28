@@ -325,13 +325,15 @@ def create_svg_chart(
     width: int = 1400,
     height: int = 700,
     title_suffix: str = "Daily",
-    theme: str = "light"
+    theme: str = "light",
+    stock_name: str = None
 ) -> str:
     """
     Generate SVG candlestick chart with axes, price labels, and legend
 
     Args:
         theme: "light" or "dark" (default: light)
+        stock_name: Full name of the stock (optional)
     """
     # Theme colors
     if theme == "light":
@@ -373,25 +375,30 @@ def create_svg_chart(
             return height - bottom_margin - legend_height - chart_height / 2
         return height - bottom_margin - legend_height - ((price - min_price) / price_range) * chart_height
 
-    # SVG header
+    # SVG header with stock name
+    title = f"{symbol}"
+    if stock_name:
+        title += f" ({stock_name})"
+    title += f" - {title_suffix}"
+
     svg_lines = [
         f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">',
         f'<rect width="100%" height="100%" fill="{bg_color}"/>',
-        f'<text x="20" y="30" font-size="18" font-weight="bold" fill="{text_color}" font-family="Arial">{symbol} - {title_suffix}</text>',
+        f'<text x="20" y="30" font-size="18" font-weight="bold" fill="{text_color}" font-family="Arial">{title}</text>',
     ]
 
     # Y-axis (prices on left)
     svg_lines.append(f'<line x1="{left_margin}" y1="{top_margin}" x2="{left_margin}" y2="{height-bottom_margin-legend_height}" stroke="{axis_color}" stroke-width="2"/>')
 
-    # Y-axis labels and grid
+    # Y-axis labels and grid (larger font for better visibility)
     for i in range(11):
         price = min_price + (i / 10) * price_range
         y = y_coord(price)
         svg_lines.append(
-            f'<line x1="{left_margin-5}" y1="{y}" x2="{left_margin}" y2="{y}" stroke="{axis_color}" stroke-width="1"/>'
+            f'<line x1="{left_margin-5}" y1="{y}" x2="{left_margin}" y2="{y}" stroke="{axis_color}" stroke-width="1.5"/>'
         )
         svg_lines.append(
-            f'<text x="10" y="{y+5}" font-size="11" fill="{text_color}" font-family="Arial" text-anchor="end">${price:.0f}</text>'
+            f'<text x="10" y="{y+5}" font-size="13" font-weight="500" fill="{text_color}" font-family="Arial" text-anchor="end">${price:.2f}</text>'
         )
         # Grid lines
         svg_lines.append(
@@ -422,24 +429,25 @@ def create_svg_chart(
             f'stroke="{grid_color}" stroke-width="0.5"/>'
         )
 
-    # Draw volume bars (small area at bottom, 5% of chart height)
+    # Draw volume bars (prominent - 20% of chart height)
     if 'volume' in df.columns:
         max_volume = float(df['volume'].max())
         candle_width = chart_width / max(len(df), 1) * 0.6
-        volume_height = chart_height * 0.05  # Only 5% of chart height for volumes (small)
-        volume_y_start = height - bottom_margin - legend_height - 10  # Just above date labels
+        volume_height = chart_height * 0.20  # 20% of chart height for volumes (prominent)
+        volume_y_start = height - bottom_margin - legend_height - 25  # Above date labels
 
         for i, (_, row) in enumerate(df.iterrows()):
             if max_volume > 0:
                 x = x_coord(i)
                 vol_ratio = float(row['volume']) / max_volume
                 bar_height = vol_ratio * volume_height
-                vol_color = '#cccccc' if row['close'] > row['open'] else '#aaaaaa'  # Light gray, visible
+                # Solid colors for good visibility: green for bullish, red for bearish
+                vol_color = '#2d9d2d' if row['close'] > row['open'] else '#d9534f'  # Solid green/red
 
                 svg_lines.append(
                     f'<rect x="{x - candle_width/2}" y="{volume_y_start - bar_height}" '
                     f'width="{candle_width}" height="{bar_height}" '
-                    f'fill="{vol_color}" stroke="none" opacity="0.4"/>'
+                    f'fill="{vol_color}" stroke="none" opacity="0.7"/>'
                 )
 
     # Draw candlesticks with improved styling
@@ -525,6 +533,13 @@ async def get_daily_chart(
 
     try:
         async with pool.acquire() as conn:
+            # Fetch stock name
+            stock_info = await conn.fetchrow(
+                "SELECT security_name FROM symbols_meta WHERE symbol = $1",
+                symbol
+            )
+            stock_name = stock_info['security_name'] if stock_info else None
+
             rows = await conn.fetch("""
                 SELECT
                     (time AT TIME ZONE 'Asia/Kolkata')::date as trading_date,
@@ -571,7 +586,7 @@ async def get_daily_chart(
         # Return format
         if format == "svg":
             calc_indicators = {col: df[col] for col in df.columns if col.startswith('ema_')}
-            svg = create_svg_chart(symbol, df, calc_indicators, title_suffix="Daily", theme=theme)
+            svg = create_svg_chart(symbol, df, calc_indicators, title_suffix="Daily", theme=theme, stock_name=stock_name)
             return StreamingResponse(
                 iter([svg]),
                 media_type="image/svg+xml",
@@ -698,6 +713,13 @@ async def get_combined_charts(
 
     try:
         async with pool.acquire() as conn:
+            # Fetch stock name
+            stock_info = await conn.fetchrow(
+                "SELECT security_name FROM symbols_meta WHERE symbol = $1",
+                symbol
+            )
+            stock_name = stock_info['security_name'] if stock_info else None
+
             rows = await conn.fetch("""
                 SELECT
                     (time AT TIME ZONE 'Asia/Kolkata')::date as trading_date,
@@ -769,8 +791,8 @@ async def get_combined_charts(
             grid_color = "#333333"
 
         # Generate SVGs (full width for vertical stacking)
-        svg_daily = create_svg_chart(symbol, df_daily, calc_indicators_daily, width=1400, height=550, title_suffix="Daily", theme=theme)
-        svg_weekly = create_svg_chart(symbol, weekly, calc_indicators_weekly, width=1400, height=550, title_suffix="Weekly", theme=theme)
+        svg_daily = create_svg_chart(symbol, df_daily, calc_indicators_daily, width=1400, height=550, title_suffix="Daily", theme=theme, stock_name=stock_name)
+        svg_weekly = create_svg_chart(symbol, weekly, calc_indicators_weekly, width=1400, height=550, title_suffix="Weekly", theme=theme, stock_name=stock_name)
 
         # Combine into single SVG (daily on top, weekly on bottom)
         def extract_svg_content(svg_str):
