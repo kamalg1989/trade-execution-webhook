@@ -10,7 +10,11 @@ import json
 from datetime import datetime, timedelta
 from typing import Optional
 from mcp.server import Server
-from mcp.types import Tool, TextContent, ToolResult
+from mcp.types import Tool, TextContent
+try:
+    from mcp.types import ToolResult
+except ImportError:
+    from mcp.types import CallToolResult as ToolResult
 
 # Configuration
 API_BASE_URL = "http://165.232.187.97/api/v1"
