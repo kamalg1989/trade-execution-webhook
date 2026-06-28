@@ -358,7 +358,7 @@ def create_svg_chart(
     price_range = max_price - min_price or 1
 
     # Canvas setup (with margins for axes and legend)
-    left_margin = 80
+    left_margin = 120  # Increased for price label visibility
     right_margin = 30
     top_margin = 50
     bottom_margin = 80
@@ -395,10 +395,10 @@ def create_svg_chart(
         price = min_price + (i / 10) * price_range
         y = y_coord(price)
         svg_lines.append(
-            f'<line x1="{left_margin-5}" y1="{y}" x2="{left_margin}" y2="{y}" stroke="{axis_color}" stroke-width="1.5"/>'
+            f'<line x1="{left_margin-10}" y1="{y}" x2="{left_margin}" y2="{y}" stroke="{axis_color}" stroke-width="1.5"/>'
         )
         svg_lines.append(
-            f'<text x="10" y="{y+5}" font-size="13" font-weight="500" fill="{text_color}" font-family="Arial" text-anchor="end">${price:.2f}</text>'
+            f'<text x="{left_margin-15}" y="{y+5}" font-size="13" font-weight="500" fill="{text_color}" font-family="Arial" text-anchor="end">${price:.2f}</text>'
         )
         # Grid lines
         svg_lines.append(
