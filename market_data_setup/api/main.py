@@ -324,11 +324,28 @@ def create_svg_chart(
     indicators: dict = None,
     width: int = 1400,
     height: int = 700,
-    title_suffix: str = "Daily"
+    title_suffix: str = "Daily",
+    theme: str = "light"
 ) -> str:
     """
     Generate SVG candlestick chart with axes, price labels, and legend
+
+    Args:
+        theme: "light" or "dark" (default: light)
     """
+    # Theme colors
+    if theme == "light":
+        bg_color = "#ffffff"
+        text_color = "#000000"
+        grid_color = "#e0e0e0"
+        axis_color = "#333333"
+        wick_opacity = "0.5"
+    else:
+        bg_color = "#1a1a1a"
+        text_color = "#ffffff"
+        grid_color = "#333333"
+        axis_color = "#666666"
+        wick_opacity = "0.7"
     if len(df) == 0:
         return "<svg></svg>"
 
@@ -359,30 +376,30 @@ def create_svg_chart(
     # SVG header
     svg_lines = [
         f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">',
-        '<rect width="100%" height="100%" fill="#1a1a1a"/>',
-        f'<text x="20" y="30" font-size="18" font-weight="bold" fill="#fff" font-family="Arial">{symbol} - {title_suffix}</text>',
+        f'<rect width="100%" height="100%" fill="{bg_color}"/>',
+        f'<text x="20" y="30" font-size="18" font-weight="bold" fill="{text_color}" font-family="Arial">{symbol} - {title_suffix}</text>',
     ]
 
     # Y-axis (prices on left)
-    svg_lines.append(f'<line x1="{left_margin}" y1="{top_margin}" x2="{left_margin}" y2="{height-bottom_margin-legend_height}" stroke="#666" stroke-width="2"/>')
+    svg_lines.append(f'<line x1="{left_margin}" y1="{top_margin}" x2="{left_margin}" y2="{height-bottom_margin-legend_height}" stroke="{axis_color}" stroke-width="2"/>')
 
     # Y-axis labels and grid
     for i in range(11):
         price = min_price + (i / 10) * price_range
         y = y_coord(price)
         svg_lines.append(
-            f'<line x1="{left_margin-5}" y1="{y}" x2="{left_margin}" y2="{y}" stroke="#666" stroke-width="1"/>'
+            f'<line x1="{left_margin-5}" y1="{y}" x2="{left_margin}" y2="{y}" stroke="{axis_color}" stroke-width="1"/>'
         )
         svg_lines.append(
-            f'<text x="10" y="{y+5}" font-size="11" fill="#aaa" font-family="Arial" text-anchor="end">${price:.0f}</text>'
+            f'<text x="10" y="{y+5}" font-size="11" fill="{text_color}" font-family="Arial" text-anchor="end">${price:.0f}</text>'
         )
         # Grid lines
         svg_lines.append(
-            f'<line x1="{left_margin}" y1="{y}" x2="{width-right_margin}" y2="{y}" stroke="#333" stroke-width="0.5" opacity="0.5"/>'
+            f'<line x1="{left_margin}" y1="{y}" x2="{width-right_margin}" y2="{y}" stroke="{grid_color}" stroke-width="0.5" opacity="0.5"/>'
         )
 
     # X-axis (dates at bottom)
-    svg_lines.append(f'<line x1="{left_margin}" y1="{height-bottom_margin-legend_height}" x2="{width-right_margin}" y2="{height-bottom_margin-legend_height}" stroke="#666" stroke-width="2"/>')
+    svg_lines.append(f'<line x1="{left_margin}" y1="{height-bottom_margin-legend_height}" x2="{width-right_margin}" y2="{height-bottom_margin-legend_height}" stroke="{axis_color}" stroke-width="2"/>')
 
     # X-axis labels (show every Nth date)
     step = max(1, len(df) // 8)  # Show ~8 dates
@@ -391,7 +408,7 @@ def create_svg_chart(
             x = x_coord(i)
             date_str = df.index[i].strftime("%m/%d")
             svg_lines.append(
-                f'<text x="{x}" y="{height-bottom_margin-legend_height+20}" font-size="11" fill="#aaa" font-family="Arial" text-anchor="middle">{date_str}</text>'
+                f'<text x="{x}" y="{height-bottom_margin-legend_height+20}" font-size="11" fill="{text_color}" font-family="Arial" text-anchor="middle">{date_str}</text>'
             )
 
     # Draw grid
@@ -399,7 +416,7 @@ def create_svg_chart(
         y = top_margin + (i / 10) * chart_height
         svg_lines.append(
             f'<line x1="{left_margin}" y1="{y}" x2="{width-right_margin}" y2="{y}" '
-            f'stroke="#333" stroke-width="0.5"/>'
+            f'stroke="{grid_color}" stroke-width="0.5"/>'
         )
 
     # Draw candlesticks
@@ -454,7 +471,7 @@ def create_svg_chart(
 
                     # Legend entry
                     svg_lines.append(f'<line x1="{legend_x}" y1="{legend_y}" x2="{legend_x+20}" y2="{legend_y}" stroke="{style["color"]}" stroke-width="2"/>')
-                    svg_lines.append(f'<text x="{legend_x+30}" y="{legend_y+4}" font-size="12" fill="#fff" font-family="Arial">{style["label"]}</text>')
+                    svg_lines.append(f'<text x="{legend_x+30}" y="{legend_y+4}" font-size="12" fill="{text_color}" font-family="Arial">{style["label"]}</text>')
                     legend_x += 130
 
     # Close SVG
@@ -464,11 +481,12 @@ def create_svg_chart(
 
 @app.get("/api/v1/charts/daily")
 async def get_daily_chart(
-    symbol: str = Query(..., description="NSE symbol"),
-    from_date: date = Query(..., description="Start date"),
-    to_date: date = Query(..., description="End date"),
-    indicators: str = Query("ema", regex="^(ema|rsi|atr|macd|all|none)$", description="Indicators to display"),
-    format: str = Query("svg", regex="^(svg|json)$", description="Output format")
+    symbol: str = Query(..., description="NSE symbol (e.g., INFY, TCS)"),
+    from_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
+    to_date: date = Query(..., description="End date (YYYY-MM-DD)"),
+    indicators: str = Query("ema", regex="^(ema|rsi|atr|macd|all|none)$", description="Indicators: ema, rsi, atr, macd, all, none"),
+    format: str = Query("svg", regex="^(svg|json)$", description="Output format: svg or json"),
+    theme: str = Query("light", regex="^(light|dark)$", description="Chart theme: light (default) or dark")
 ):
     """
     Generate daily candlestick chart with technical indicators
@@ -520,7 +538,7 @@ async def get_daily_chart(
         # Return format
         if format == "svg":
             calc_indicators = {col: df[col] for col in df.columns if col.startswith('ema_')}
-            svg = create_svg_chart(symbol, df, calc_indicators, title_suffix="Daily")
+            svg = create_svg_chart(symbol, df, calc_indicators, title_suffix="Daily", theme=theme)
             return StreamingResponse(
                 iter([svg]),
                 media_type="image/svg+xml",
@@ -546,10 +564,11 @@ async def get_daily_chart(
 
 @app.get("/api/v1/charts/weekly")
 async def get_weekly_chart(
-    symbol: str = Query(..., description="NSE symbol"),
-    from_date: date = Query(..., description="Start date"),
-    to_date: date = Query(..., description="End date"),
-    indicators: str = Query("ema", regex="^(ema|rsi|atr|macd|all|none)$", description="Indicators to display")
+    symbol: str = Query(..., description="NSE symbol (e.g., INFY, TCS)"),
+    from_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
+    to_date: date = Query(..., description="End date (YYYY-MM-DD)"),
+    indicators: str = Query("ema", regex="^(ema|rsi|atr|macd|all|none)$", description="Indicators: ema, rsi, atr, macd, all, none"),
+    theme: str = Query("light", regex="^(light|dark)$", description="Chart theme: light (default) or dark")
 ):
     """
     Generate weekly candlestick chart (aggregated from daily)
@@ -615,7 +634,7 @@ async def get_weekly_chart(
 
         # Generate SVG
         calc_indicators = {col: weekly[col] for col in weekly.columns if col.startswith('ema_')}
-        svg = create_svg_chart(symbol, weekly, calc_indicators, title_suffix="Weekly")
+        svg = create_svg_chart(symbol, weekly, calc_indicators, title_suffix="Weekly", theme=theme)
 
         return StreamingResponse(
             iter([svg]),
@@ -631,10 +650,11 @@ async def get_weekly_chart(
 
 @app.get("/api/v1/charts/combined")
 async def get_combined_charts(
-    symbol: str = Query(..., description="NSE symbol"),
-    from_date: date = Query(..., description="Start date"),
-    to_date: date = Query(..., description="End date"),
-    indicators: str = Query("ema", regex="^(ema|rsi|atr|macd|all|none)$", description="Indicators to display")
+    symbol: str = Query(..., description="NSE symbol (e.g., INFY)"),
+    from_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
+    to_date: date = Query(..., description="End date (YYYY-MM-DD)"),
+    indicators: str = Query("ema", regex="^(ema|rsi|atr|macd|all|none)$", description="Indicators: ema, rsi, atr, macd, all, none"),
+    theme: str = Query("light", regex="^(light|dark)$", description="Chart theme: light (default) or dark")
 ):
     """
     Generate both daily and weekly charts in one request (side-by-side SVG)
@@ -696,15 +716,26 @@ async def get_combined_charts(
             weekly = tech_weekly.df
             calc_indicators_weekly = {col: weekly[col] for col in weekly.columns if col.startswith('ema_')}
 
-        # Generate SVGs (smaller width for side-by-side)
-        svg_daily = create_svg_chart(symbol, df_daily, calc_indicators_daily, width=700, height=500, title_suffix="Daily")
-        svg_weekly = create_svg_chart(symbol, weekly, calc_indicators_weekly, width=700, height=500, title_suffix="Weekly")
+        # Theme colors for labels
+        if theme == "light":
+            bg_color = "#ffffff"
+            text_color = "#000000"
+        else:
+            bg_color = "#1a1a1a"
+            text_color = "#ffffff"
 
-        # Combine into one SVG (horizontal layout)
-        combined = f'''<svg width="1400" height="500" xmlns="http://www.w3.org/2000/svg">
-            <rect width="100%" height="100%" fill="#1a1a1a"/>
-            <g>{svg_daily.replace('<svg', '<svg').replace('</svg>', '')}</g>
-            <g transform="translate(700,0)">{svg_weekly.replace('<svg', '<svg').replace('</svg>', '')}</g>
+        # Generate SVGs (full width for vertical stacking)
+        svg_daily = create_svg_chart(symbol, df_daily, calc_indicators_daily, width=1400, height=550, title_suffix="Daily", theme=theme)
+        svg_weekly = create_svg_chart(symbol, weekly, calc_indicators_weekly, width=1400, height=550, title_suffix="Weekly", theme=theme)
+
+        # Combine into one SVG (vertical layout - Daily on top, Weekly on bottom)
+        combined = f'''<svg width="1400" height="1150" xmlns="http://www.w3.org/2000/svg">
+            <rect width="100%" height="100%" fill="{bg_color}"/>
+            <text x="20" y="25" font-size="20" font-weight="bold" fill="{text_color}" font-family="Arial">Daily Chart</text>
+            <g transform="translate(0,0)">{svg_daily.replace('<svg width="1400" height="550"', '<svg width="1400" height="550"').replace('</svg>', '')}</g>
+            <line x1="0" y1="580" x2="1400" y2="580" stroke="#cccccc" stroke-width="1"/>
+            <text x="20" y="610" font-size="20" font-weight="bold" fill="{text_color}" font-family="Arial">Weekly Chart</text>
+            <g transform="translate(0,600)">{svg_weekly.replace('<svg width="1400" height="550"', '<svg width="1400" height="550"').replace('</svg>', '')}</g>
         </svg>'''
 
         return StreamingResponse(
