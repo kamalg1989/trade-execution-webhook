@@ -683,12 +683,12 @@ async def get_combined_charts(
         for col in ['open', 'high', 'low', 'close']:
             if col in df_daily.columns:
                 df_daily[col] = df_daily[col].astype(float)
-        # Set index to trading_date for proper date labels in chart
+        # Convert and set index to trading_date for proper date labels in chart
         df_daily['trading_date'] = pd.to_datetime(df_daily['trading_date'])
         df_daily.set_index('trading_date', inplace=True)
 
-        # Weekly aggregation
-        df_weekly = df_daily.copy()
+        # Weekly aggregation (reset index to have trading_date as column)
+        df_weekly = df_daily.reset_index()
         df_weekly['trading_date'] = pd.to_datetime(df_weekly['trading_date'])
         df_weekly.set_index('trading_date', inplace=True)
 
