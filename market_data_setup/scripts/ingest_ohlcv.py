@@ -281,10 +281,18 @@ async def ingest_all_historical():
 
             logger.info(f"[{idx+1}/{total_symbols}] {symbol}... fetching")
 
-            # Fetch year by year
-            for year in range(2010, 2025):
-                from_date = f"{year}-01-01"
-                to_date = f"{year}-12-31"
+            # Fetch year by year (last 15 years through today)
+            today = datetime.now()
+            start_year = today.year - 15
+
+            for year in range(start_year, today.year + 1):
+                # For current year, fetch only through today
+                if year == today.year:
+                    from_date = f"{year}-01-01"
+                    to_date = today.strftime("%Y-%m-%d")
+                else:
+                    from_date = f"{year}-01-01"
+                    to_date = f"{year}-12-31"
 
                 try:
                     candles = await fetch_historical_ohlcv(token, dhan_id, from_date, to_date)
