@@ -59,7 +59,99 @@ if not DB_PASSWORD:
 # ============================================================
 app = FastAPI(
     title="Market Data API",
-    description="OHLCV queries + Technical charting for NSE stocks",
+    description="""
+    # Market Data API - NSE Stock Data & Technical Charting
+
+    ## Overview
+    Complete OHLCV data retrieval and SVG chart generation for 2,953 NSE equity stocks with 15 years of historical data (2011-2026).
+
+    ## Data Coverage
+    - **Period**: 2011-2026 (15 years)
+    - **Stocks**: 2,953 NSE equity stocks (ES type only)
+    - **Frequency**: Daily OHLCV candles
+    - **Updates**: Automatic daily at 18:00 IST
+    - **Indicators**: EMA, RSI, ATR, MACD (on-demand calculation)
+
+    ## Core Features
+    - ✅ Async database queries with connection pooling
+    - ✅ SVG charts with light/dark themes
+    - ✅ Technical indicators (EMA 9/21, RSI 14, ATR 14, MACD)
+    - ✅ Volume visualization
+    - ✅ Multi-symbol batch queries
+
+    ## MCP Integration (Model Context Protocol)
+
+    ### Global MCP Server
+    **URL**: `http://165.232.187.97:8002/`
+
+    **Endpoints**:
+    - `GET /tools` - List all 7 available tools
+    - `POST /call?tool_name=<name>` - Execute a tool with parameters
+    - `GET /health` - Health check
+
+    **Available Tools** (7):
+    1. **get_ohlcv** - Fetch single symbol OHLCV data
+    2. **get_multi_ohlcv** - Fetch multiple symbols OHLCV data
+    3. **get_symbols** - Get NSE symbol list with metadata
+    4. **get_daily_chart** - Generate daily candlestick chart (SVG)
+    5. **get_weekly_chart** - Generate weekly candlestick chart (SVG)
+    6. **get_combined_chart** - Combined daily + weekly chart (SVG)
+    7. **get_health** - API health status
+
+    ### Usage Examples
+
+    **Curl - Get Daily Chart**:
+    ```bash
+    curl -X POST "http://165.232.187.97:8002/call?tool_name=get_daily_chart" \\
+      -H "Content-Type: application/json" \\
+      -d '{
+        "symbol": "TCS",
+        "from_date": "2024-06-01",
+        "to_date": "2024-12-31",
+        "indicators": "ema",
+        "theme": "light"
+      }'
+    ```
+
+    **Python - Get OHLCV Data**:
+    ```python
+    import httpx
+    client = httpx.Client()
+    response = client.post(
+        "http://165.232.187.97:8002/call?tool_name=get_ohlcv",
+        json={
+            "symbol": "INFY",
+            "from_date": "2024-01-01",
+            "to_date": "2024-12-31"
+        }
+    )
+    print(response.json())
+    ```
+
+    **Node.js - Fetch Multiple Symbols**:
+    ```javascript
+    const response = await fetch("http://165.232.187.97:8002/call?tool_name=get_multi_ohlcv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            symbols: "TCS,INFY,RELIANCE",
+            from_date: "2024-01-01",
+            to_date: "2024-12-31"
+        })
+    });
+    ```
+
+    ## API Endpoints (Direct)
+
+    All endpoints are available at:
+    - **Base**: `http://165.232.187.97/api/v1/`
+    - **Docs**: `http://165.232.187.97/api/v1/docs`
+
+    ## Support
+    - **GitHub**: https://github.com/kamalg1989/trade-execution-webhook
+    - **VPS**: 165.232.187.97 (Bangalore)
+    - **Status**: ✅ Production-ready
+    """,
     version="1.0.0",
     docs_url="/api/v1/docs",
     openapi_url="/api/v1/openapi.json"
