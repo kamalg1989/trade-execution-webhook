@@ -165,6 +165,12 @@ async def fetch_historical_ohlcv(token: str, security_id: str, from_date: str, t
 
         if response.status_code == 200:
             data = response.json()
+
+            # Check for API error response
+            if data.get("status") == "error" or data.get("message"):
+                logger.debug(f"  API: {data.get('message', 'Unknown error')}")
+                return []
+
             # v2 API returns arrays for OHLCV
             if data.get("open"):  # If open array exists, we have data
                 # Convert to candle format
@@ -181,13 +187,16 @@ async def fetch_historical_ohlcv(token: str, security_id: str, from_date: str, t
                     candles.append(candle)
                 return candles
 
-        return []
+            return []
+        else:
+            logger.debug(f"  HTTP {response.status_code}: {response.text[:100]}")
+            return []
 
     except requests.exceptions.Timeout:
-        logger.warning(f"  ⚠️ Timeout for {security_id} ({from_date} to {to_date})")
+        logger.warning(f"  ⚠️ Timeout for {security_id}")
         return []
     except Exception as e:
-        logger.warning(f"  ⚠️ API error for {security_id}: {e}")
+        logger.warning(f"  ⚠️ API error for {security_id}: {str(e)[:80]}")
         return []
 
 async def get_nse_symbols(token: str):
