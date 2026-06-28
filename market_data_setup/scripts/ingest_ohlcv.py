@@ -283,7 +283,7 @@ async def ingest_all_historical():
                     # Transform to DB format
                     for candle in candles:
                         try:
-                            candle_date = datetime.strptime(candle['date'], '%Y-%m-%d')
+                            candle_date = datetime.strptime(candle['timestamp'], '%Y-%m-%d')
                             all_candles.append((
                                 symbol,
                                 candle_date,
