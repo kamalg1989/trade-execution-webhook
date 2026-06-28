@@ -322,57 +322,83 @@ def create_svg_chart(
     symbol: str,
     df: pd.DataFrame,
     indicators: dict = None,
-    width: int = 1200,
-    height: int = 600
+    width: int = 1400,
+    height: int = 700,
+    title_suffix: str = "Daily"
 ) -> str:
     """
-    Generate lightweight SVG candlestick chart
-    Ultra-minimal overhead - pure SVG text generation
-
-    Args:
-        symbol: Stock symbol
-        df: DataFrame with OHLCV data
-        indicators: Dict of indicator columns to plot
-        width: Chart width in pixels
-        height: Chart height in pixels
-
-    Returns:
-        SVG string
+    Generate SVG candlestick chart with axes, price labels, and legend
     """
     if len(df) == 0:
         return "<svg></svg>"
 
     # Get price range
     prices = pd.concat([df['open'], df['high'], df['low'], df['close']])
-    min_price = prices.min()
-    max_price = prices.max()
+    min_price = float(prices.min())
+    max_price = float(prices.max())
     price_range = max_price - min_price or 1
 
-    # Canvas setup
-    padding = 50
-    chart_width = width - 2 * padding
-    chart_height = height - 2 * padding
+    # Canvas setup (with margins for axes and legend)
+    left_margin = 80
+    right_margin = 30
+    top_margin = 50
+    bottom_margin = 80
+    legend_height = 60
+
+    chart_width = width - left_margin - right_margin
+    chart_height = height - top_margin - bottom_margin - legend_height
 
     def x_coord(i):
-        return padding + (i / max(len(df) - 1, 1)) * chart_width
+        return left_margin + (i / max(len(df) - 1, 1)) * chart_width
 
     def y_coord(price):
         if price_range == 0:
-            return height - padding - chart_height / 2
-        return height - padding - ((price - min_price) / price_range) * chart_height
+            return height - bottom_margin - legend_height - chart_height / 2
+        return height - bottom_margin - legend_height - ((price - min_price) / price_range) * chart_height
 
     # SVG header
     svg_lines = [
         f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">',
         '<rect width="100%" height="100%" fill="#1a1a1a"/>',
-        f'<text x="10" y="25" font-size="16" fill="#fff" font-family="Arial">{symbol} - Daily</text>',
+        f'<text x="20" y="30" font-size="18" font-weight="bold" fill="#fff" font-family="Arial">{symbol} - {title_suffix}</text>',
     ]
+
+    # Y-axis (prices on left)
+    svg_lines.append(f'<line x1="{left_margin}" y1="{top_margin}" x2="{left_margin}" y2="{height-bottom_margin-legend_height}" stroke="#666" stroke-width="2"/>')
+
+    # Y-axis labels and grid
+    for i in range(11):
+        price = min_price + (i / 10) * price_range
+        y = y_coord(price)
+        svg_lines.append(
+            f'<line x1="{left_margin-5}" y1="{y}" x2="{left_margin}" y2="{y}" stroke="#666" stroke-width="1"/>'
+        )
+        svg_lines.append(
+            f'<text x="10" y="{y+5}" font-size="11" fill="#aaa" font-family="Arial" text-anchor="end">${price:.0f}</text>'
+        )
+        # Grid lines
+        svg_lines.append(
+            f'<line x1="{left_margin}" y1="{y}" x2="{width-right_margin}" y2="{y}" stroke="#333" stroke-width="0.5" opacity="0.5"/>'
+        )
+
+    # X-axis (dates at bottom)
+    svg_lines.append(f'<line x1="{left_margin}" y1="{height-bottom_margin-legend_height}" x2="{width-right_margin}" y2="{height-bottom_margin-legend_height}" stroke="#666" stroke-width="2"/>')
+
+    # X-axis labels (show every Nth date)
+    step = max(1, len(df) // 8)  # Show ~8 dates
+    if hasattr(df, 'index') and hasattr(df.index[0], 'strftime'):
+        for i in range(0, len(df), step):
+            x = x_coord(i)
+            date_str = df.index[i].strftime("%m/%d")
+            svg_lines.append(
+                f'<text x="{x}" y="{height-bottom_margin-legend_height+20}" font-size="11" fill="#aaa" font-family="Arial" text-anchor="middle">{date_str}</text>'
+            )
 
     # Draw grid
     for i in range(10):
-        y = padding + (i / 10) * chart_height
+        y = top_margin + (i / 10) * chart_height
         svg_lines.append(
-            f'<line x1="{padding}" y1="{y}" x2="{width-padding}" y2="{y}" '
+            f'<line x1="{left_margin}" y1="{y}" x2="{width-right_margin}" y2="{y}" '
             f'stroke="#333" stroke-width="0.5"/>'
         )
 
@@ -386,13 +412,13 @@ def create_svg_chart(
         y_low = y_coord(row['low'])
         color = '#00ff00' if row['close'] > row['open'] else '#ff0000'
 
-        # Wick (thin line from high to low)
+        # Wick
         svg_lines.append(
             f'<line x1="{x}" y1="{y_high}" x2="{x}" y2="{y_low}" '
             f'stroke="{color}" stroke-width="1" opacity="0.7"/>'
         )
 
-        # Body (rectangle)
+        # Body
         body_height = abs(y_open - y_close) or 1
         svg_lines.append(
             f'<rect x="{x - candle_width/2}" y="{min(y_open, y_close)}" '
@@ -401,14 +427,17 @@ def create_svg_chart(
         )
 
     # Draw EMAs (if present)
-    if indicators:
-        ema_styles = {
-            'ema_10': {'color': '#0066ff', 'width': 2},
-            'ema_21': {'color': '#00ff00', 'width': 2},
-            'ema_50': {'color': '#ffaa00', 'width': 2},
-            'ema_200': {'color': '#ff0000', 'width': 2}
-        }
+    ema_styles = {
+        'ema_10': {'color': '#0066ff', 'width': 2, 'label': 'EMA-10'},
+        'ema_21': {'color': '#00ff00', 'width': 2, 'label': 'EMA-21'},
+        'ema_50': {'color': '#ffaa00', 'width': 2, 'label': 'EMA-50'},
+        'ema_200': {'color': '#ff0000', 'width': 2, 'label': 'EMA-200'}
+    }
 
+    legend_x = left_margin + 20
+    legend_y = height - bottom_margin - legend_height + 20
+
+    if indicators:
         for col, style in ema_styles.items():
             if col in df.columns:
                 points = []
@@ -422,6 +451,11 @@ def create_svg_chart(
                         f'<polyline points="{points_str}" fill="none" '
                         f'stroke="{style["color"]}" stroke-width="{style["width"]}" opacity="0.8"/>'
                     )
+
+                    # Legend entry
+                    svg_lines.append(f'<line x1="{legend_x}" y1="{legend_y}" x2="{legend_x+20}" y2="{legend_y}" stroke="{style["color"]}" stroke-width="2"/>')
+                    svg_lines.append(f'<text x="{legend_x+30}" y="{legend_y+4}" font-size="12" fill="#fff" font-family="Arial">{style["label"]}</text>')
+                    legend_x += 130
 
     # Close SVG
     svg_lines.append('</svg>')
@@ -486,7 +520,7 @@ async def get_daily_chart(
         # Return format
         if format == "svg":
             calc_indicators = {col: df[col] for col in df.columns if col.startswith('ema_')}
-            svg = create_svg_chart(symbol, df, calc_indicators)
+            svg = create_svg_chart(symbol, df, calc_indicators, title_suffix="Daily")
             return StreamingResponse(
                 iter([svg]),
                 media_type="image/svg+xml",
@@ -581,7 +615,7 @@ async def get_weekly_chart(
 
         # Generate SVG
         calc_indicators = {col: weekly[col] for col in weekly.columns if col.startswith('ema_')}
-        svg = create_svg_chart(symbol, weekly, calc_indicators)
+        svg = create_svg_chart(symbol, weekly, calc_indicators, title_suffix="Weekly")
 
         return StreamingResponse(
             iter([svg]),
@@ -593,6 +627,96 @@ async def get_weekly_chart(
         raise
     except Exception as e:
         logger.error(f"Weekly chart failed for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail="Chart generation failed")
+
+@app.get("/api/v1/charts/combined")
+async def get_combined_charts(
+    symbol: str = Query(..., description="NSE symbol"),
+    from_date: date = Query(..., description="Start date"),
+    to_date: date = Query(..., description="End date"),
+    indicators: str = Query("ema", regex="^(ema|rsi|atr|macd|all|none)$", description="Indicators to display")
+):
+    """
+    Generate both daily and weekly charts in one request (side-by-side SVG)
+
+    Returns: Combined SVG with daily chart on left, weekly on right
+    """
+    symbol = symbol.upper()
+
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT
+                    (time AT TIME ZONE 'Asia/Kolkata')::date as trading_date,
+                    open, high, low, close, volume
+                FROM ohlcv_data
+                WHERE symbol = $1
+                  AND time AT TIME ZONE 'Asia/Kolkata' BETWEEN $2::date AND ($3::date + INTERVAL '1 day')
+                ORDER BY time
+            """, symbol, from_date, to_date)
+
+        if not rows:
+            raise HTTPException(status_code=404, detail="No data found")
+
+        # Daily DataFrame
+        df_daily = pd.DataFrame([dict(r) for r in rows])
+        for col in ['open', 'high', 'low', 'close']:
+            if col in df_daily.columns:
+                df_daily[col] = df_daily[col].astype(float)
+
+        # Weekly aggregation
+        df_weekly = df_daily.copy()
+        df_weekly['trading_date'] = pd.to_datetime(df_weekly['trading_date'])
+        df_weekly.set_index('trading_date', inplace=True)
+
+        weekly = df_weekly.resample('W-FRI').agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum'
+        }).dropna()
+
+        # Calculate indicators
+        calc_indicators_daily = {}
+        calc_indicators_weekly = {}
+
+        if indicators != "none":
+            # Daily
+            tech_daily = TechnicalIndicators(df_daily)
+            if "ema" in indicators or indicators == "all":
+                tech_daily.calculate_ema([10, 21, 50, 200])
+            df_daily = tech_daily.df
+            calc_indicators_daily = {col: df_daily[col] for col in df_daily.columns if col.startswith('ema_')}
+
+            # Weekly
+            tech_weekly = TechnicalIndicators(weekly)
+            if "ema" in indicators or indicators == "all":
+                tech_weekly.calculate_ema([10, 21, 50, 200])
+            weekly = tech_weekly.df
+            calc_indicators_weekly = {col: weekly[col] for col in weekly.columns if col.startswith('ema_')}
+
+        # Generate SVGs (smaller width for side-by-side)
+        svg_daily = create_svg_chart(symbol, df_daily, calc_indicators_daily, width=700, height=500, title_suffix="Daily")
+        svg_weekly = create_svg_chart(symbol, weekly, calc_indicators_weekly, width=700, height=500, title_suffix="Weekly")
+
+        # Combine into one SVG (horizontal layout)
+        combined = f'''<svg width="1400" height="500" xmlns="http://www.w3.org/2000/svg">
+            <rect width="100%" height="100%" fill="#1a1a1a"/>
+            <g>{svg_daily.replace('<svg', '<svg').replace('</svg>', '')}</g>
+            <g transform="translate(700,0)">{svg_weekly.replace('<svg', '<svg').replace('</svg>', '')}</g>
+        </svg>'''
+
+        return StreamingResponse(
+            iter([combined]),
+            media_type="image/svg+xml",
+            headers={"Cache-Control": "public, max-age=3600"}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Combined chart failed for {symbol}: {e}")
         raise HTTPException(status_code=500, detail="Chart generation failed")
 
 # ============================================================
