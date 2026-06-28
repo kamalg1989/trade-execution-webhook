@@ -183,45 +183,50 @@ async def fetch_historical_ohlcv(token: str, security_id: str, from_date: str, t
 
 async def get_nse_symbols(token: str):
     """
-    Fetch all NSE symbols from Dhan instrument CSV
-    Returns: List of dicts with {'symbol': 'INFY', 'dhan_security_id': '1234'}
+    Fetch all 2,953 NSE equity stocks from Dhan instrument CSV
+    Filters: NSE exchange, E segment, ES instrument type (stocks only)
+    Returns: List of dicts with {'symbol': 'INFY', 'dhan_security_id': '1234', 'name': 'Company Name'}
     """
     import requests
     import pandas as pd
 
     try:
-        logger.info("📊 Fetching NSE symbol list...")
+        logger.info("📊 Fetching NSE equity symbols...")
 
         url = "https://images.dhan.co/api-data/api-scrip-master.csv"
         df = pd.read_csv(url, low_memory=False)
 
-        # Filter: NSE Exchange, Equity segment, active
+        # Filter: NSE Exchange, E segment, ES instrument type (equity stocks only)
+        # This gives us 2,953 real stocks (excludes options, futures, debt, MFs, etc.)
         df = df[
             (df['SEM_EXM_EXCH_ID'] == 'NSE') &
-            (df['SEM_SEGMENT'] == 'E')
+            (df['SEM_SEGMENT'] == 'E') &
+            (df['SEM_EXCH_INSTRUMENT_TYPE'] == 'ES')  # Equity Stocks only
         ]
+
+        logger.info(f"📋 Found {len(df)} NSE equity stocks")
 
         symbols = df[[
             'SEM_TRADING_SYMBOL',
-            'SEM_SEC_ID',
-            'SEM_CMPNY_NAME'
+            'SEM_SMST_SECURITY_ID',  # Correct column name
+            'SM_SYMBOL_NAME'  # Correct column name
         ]].rename(columns={
             'SEM_TRADING_SYMBOL': 'symbol',
-            'SEM_SEC_ID': 'dhan_security_id',
-            'SEM_CMPNY_NAME': 'name'
+            'SEM_SMST_SECURITY_ID': 'dhan_security_id',
+            'SM_SYMBOL_NAME': 'name'
         }).to_dict('records')
 
-        logger.info(f"✅ Loaded {len(symbols)} NSE symbols")
+        logger.info(f"✅ Loaded {len(symbols)} NSE equity symbols (ES type)")
         return symbols
 
     except Exception as e:
         logger.error(f"❌ Failed to fetch symbols: {e}")
-        logger.info("⚠️ Using fallback symbol list (limited)")
-        # Fallback: Common symbols
+        logger.info("⚠️ Using fallback symbol list (limited to 3 symbols)")
+        # Fallback: Common symbols only
         return [
-            {'symbol': 'INFY', 'dhan_security_id': '1594', 'name': 'Infosys'},
-            {'symbol': 'TCS', 'dhan_security_id': '1234', 'name': 'TCS'},
-            {'symbol': 'RELIANCE', 'dhan_security_id': '2885', 'name': 'Reliance'},
+            {'symbol': 'INFY', 'dhan_security_id': '10099', 'name': 'Infosys'},
+            {'symbol': 'TCS', 'dhan_security_id': '11536', 'name': 'Tata Consultancy Services'},
+            {'symbol': 'RELIANCE', 'dhan_security_id': '10999', 'name': 'Reliance Industries'},
         ]
 
 # ============================================================
