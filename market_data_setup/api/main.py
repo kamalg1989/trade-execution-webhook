@@ -463,6 +463,11 @@ async def get_daily_chart(
         # Convert to DataFrame
         df = pd.DataFrame([dict(r) for r in rows])
 
+        # Convert Decimal columns to float (from database NUMERIC type)
+        for col in ['open', 'high', 'low', 'close']:
+            if col in df.columns:
+                df[col] = df[col].astype(float)
+
         # Calculate indicators (on-demand)
         if indicators != "none":
             tech = TechnicalIndicators(df)
@@ -538,6 +543,12 @@ async def get_weekly_chart(
 
         # Convert to DataFrame
         df = pd.DataFrame([dict(r) for r in rows])
+
+        # Convert Decimal columns to float (from database NUMERIC type)
+        for col in ['open', 'high', 'low', 'close']:
+            if col in df.columns:
+                df[col] = df[col].astype(float)
+
         df['trading_date'] = pd.to_datetime(df['trading_date'])
         df.set_index('trading_date', inplace=True)
 
