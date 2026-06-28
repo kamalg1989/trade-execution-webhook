@@ -422,7 +422,27 @@ def create_svg_chart(
             f'stroke="{grid_color}" stroke-width="0.5"/>'
         )
 
-    # Draw candlesticks
+    # Draw volume bars (optional, semi-transparent background)
+    if 'volume' in df.columns:
+        max_volume = float(df['volume'].max())
+        candle_width = chart_width / max(len(df), 1) * 0.6
+        volume_height = chart_height * 0.15  # 15% of chart height for volumes
+        volume_y_start = height - bottom_margin - legend_height - 5
+
+        for i, (_, row) in enumerate(df.iterrows()):
+            if max_volume > 0:
+                x = x_coord(i)
+                vol_ratio = float(row['volume']) / max_volume
+                bar_height = vol_ratio * volume_height
+                vol_color = '#00ff0033' if row['close'] > row['open'] else '#ff000033'  # Transparent
+
+                svg_lines.append(
+                    f'<rect x="{x - candle_width/2}" y="{volume_y_start - bar_height}" '
+                    f'width="{candle_width}" height="{bar_height}" '
+                    f'fill="{vol_color}" stroke="none"/>'
+                )
+
+    # Draw candlesticks with improved styling
     candle_width = chart_width / max(len(df), 1) * 0.6
     for i, (_, row) in enumerate(df.iterrows()):
         x = x_coord(i)
@@ -431,19 +451,20 @@ def create_svg_chart(
         y_high = y_coord(row['high'])
         y_low = y_coord(row['low'])
         color = '#00ff00' if row['close'] > row['open'] else '#ff0000'
+        border_color = '#006600' if row['close'] > row['open'] else '#990000'  # Darker border
 
-        # Wick
+        # Wick (thicker for better visibility)
         svg_lines.append(
             f'<line x1="{x}" y1="{y_high}" x2="{x}" y2="{y_low}" '
-            f'stroke="{color}" stroke-width="1" opacity="0.7"/>'
+            f'stroke="{border_color}" stroke-width="1.5" opacity="0.8"/>'
         )
 
-        # Body
+        # Body with border for clarity
         body_height = abs(y_open - y_close) or 1
         svg_lines.append(
             f'<rect x="{x - candle_width/2}" y="{min(y_open, y_close)}" '
             f'width="{candle_width}" height="{body_height}" '
-            f'fill="{color}" stroke="{color}" stroke-width="0.5"/>'
+            f'fill="{color}" stroke="{border_color}" stroke-width="1"/>'
         )
 
     # Draw EMAs (if present)
@@ -749,8 +770,7 @@ async def get_combined_charts(
         svg_daily = create_svg_chart(symbol, df_daily, calc_indicators_daily, width=1400, height=550, title_suffix="Daily", theme=theme)
         svg_weekly = create_svg_chart(symbol, weekly, calc_indicators_weekly, width=1400, height=550, title_suffix="Weekly", theme=theme)
 
-        # Combine into one SVG (vertical layout with proper nested SVG viewBox)
-        # Use nested SVG elements with viewBox to preserve coordinate system
+        # Combine into single SVG (daily on top, weekly on bottom)
         def extract_svg_content(svg_str):
             """Extract content between SVG opening and closing tags"""
             start = svg_str.find('>')
@@ -760,15 +780,16 @@ async def get_combined_charts(
         daily_content = extract_svg_content(svg_daily)
         weekly_content = extract_svg_content(svg_weekly)
 
-        combined = f'''<svg width="1400" height="1150" xmlns="http://www.w3.org/2000/svg">
+        # Generate combined SVG with properly sized containers
+        combined = f'''<svg width="1400" height="1250" xmlns="http://www.w3.org/2000/svg">
     <rect width="100%" height="100%" fill="{bg_color}"/>
     <text x="20" y="25" font-size="20" font-weight="bold" fill="{text_color}" font-family="Arial">Daily Chart</text>
-    <svg x="0" y="35" width="1400" height="545" viewBox="0 0 1400 550" preserveAspectRatio="none">
+    <svg x="0" y="30" width="1400" height="580" viewBox="0 0 1400 550">
         {daily_content}
     </svg>
-    <line x1="0" y1="580" x2="1400" y2="580" stroke="{grid_color}" stroke-width="1"/>
-    <text x="20" y="610" font-size="20" font-weight="bold" fill="{text_color}" font-family="Arial">Weekly Chart</text>
-    <svg x="0" y="615" width="1400" height="545" viewBox="0 0 1400 550" preserveAspectRatio="none">
+    <line x1="0" y1="610" x2="1400" y2="610" stroke="{grid_color}" stroke-width="2"/>
+    <text x="20" y="635" font-size="20" font-weight="bold" fill="{text_color}" font-family="Arial">Weekly Chart</text>
+    <svg x="0" y="640" width="1400" height="580" viewBox="0 0 1400 550">
         {weekly_content}
     </svg>
 </svg>'''
