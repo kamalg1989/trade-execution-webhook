@@ -248,7 +248,7 @@ async def ingest_all_historical():
             dhan_id = str(sym_info['dhan_security_id'])
             all_candles = []
 
-            logger.info(f"\n[{idx+1}/{total_symbols}] {symbol}... ", end='', flush=True)
+            logger.info(f"[{idx+1}/{total_symbols}] {symbol}... fetching")
 
             # Fetch year by year
             for year in range(2010, 2025):
