@@ -720,9 +720,11 @@ async def get_combined_charts(
         if theme == "light":
             bg_color = "#ffffff"
             text_color = "#000000"
+            grid_color = "#e0e0e0"
         else:
             bg_color = "#1a1a1a"
             text_color = "#ffffff"
+            grid_color = "#333333"
 
         # Generate SVGs (full width for vertical stacking)
         svg_daily = create_svg_chart(symbol, df_daily, calc_indicators_daily, width=1400, height=550, title_suffix="Daily", theme=theme)
