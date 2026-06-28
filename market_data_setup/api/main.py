@@ -398,7 +398,7 @@ def create_svg_chart(
             f'<line x1="{left_margin-10}" y1="{y}" x2="{left_margin}" y2="{y}" stroke="{axis_color}" stroke-width="1.5"/>'
         )
         svg_lines.append(
-            f'<text x="{left_margin-15}" y="{y+5}" font-size="13" font-weight="500" fill="{text_color}" font-family="Arial" text-anchor="end">${price:.2f}</text>'
+            f'<text x="{left_margin-15}" y="{y+5}" font-size="13" font-weight="500" fill="{text_color}" font-family="Arial" text-anchor="end">{price:.2f}</text>'
         )
         # Grid lines
         svg_lines.append(
