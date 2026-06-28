@@ -728,21 +728,39 @@ async def get_combined_charts(
         svg_daily = create_svg_chart(symbol, df_daily, calc_indicators_daily, width=1400, height=550, title_suffix="Daily", theme=theme)
         svg_weekly = create_svg_chart(symbol, weekly, calc_indicators_weekly, width=1400, height=550, title_suffix="Weekly", theme=theme)
 
-        # Combine into one SVG (vertical layout - Daily on top, Weekly on bottom)
-        # Extract content between SVG tags
-        daily_content = svg_daily[svg_daily.find('>')+1:svg_daily.rfind('</svg>')]
-        weekly_content = svg_weekly[svg_weekly.find('>')+1:svg_weekly.rfind('</svg>')]
+        # Combine into one SVG (vertical layout)
+        # Parse SVG content properly - extract just the drawing elements, not the wrapper
+        def extract_svg_elements(svg_str):
+            """Extract SVG drawing elements, skipping the outer <svg> tag"""
+            start = svg_str.find('<svg')
+            if start == -1:
+                return svg_str
+            # Find end of opening svg tag
+            tag_end = svg_str.find('>', start)
+            if tag_end == -1:
+                return svg_str
+            # Get content between opening and closing svg tags
+            content_start = tag_end + 1
+            content_end = svg_str.rfind('</svg>')
+            if content_end == -1:
+                return svg_str[content_start:]
+            return svg_str[content_start:content_end]
+
+        daily_elements = extract_svg_elements(svg_daily)
+        weekly_elements = extract_svg_elements(svg_weekly)
 
         combined = f'''<svg width="1400" height="1150" xmlns="http://www.w3.org/2000/svg">
-            <rect width="100%" height="100%" fill="{bg_color}"/>
-            <text x="20" y="25" font-size="20" font-weight="bold" fill="{text_color}" font-family="Arial">Daily Chart</text>
-            {daily_content}
-            <line x1="0" y1="580" x2="1400" y2="580" stroke="#cccccc" stroke-width="1"/>
-            <text x="20" y="610" font-size="20" font-weight="bold" fill="{text_color}" font-family="Arial">Weekly Chart</text>
-            <g transform="translate(0,600)">
-                {weekly_content}
-            </g>
-        </svg>'''
+    <rect width="100%" height="100%" fill="{bg_color}"/>
+    <text x="20" y="25" font-size="20" font-weight="bold" fill="{text_color}" font-family="Arial">Daily Chart</text>
+    <g transform="translate(0,0)">
+        {daily_elements}
+    </g>
+    <line x1="0" y1="580" x2="1400" y2="580" stroke="{grid_color}" stroke-width="1"/>
+    <text x="20" y="610" font-size="20" font-weight="bold" fill="{text_color}" font-family="Arial">Weekly Chart</text>
+    <g transform="translate(0,600)">
+        {weekly_elements}
+    </g>
+</svg>'''
 
         return StreamingResponse(
             iter([combined]),
