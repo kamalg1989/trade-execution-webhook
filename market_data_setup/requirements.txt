@@ -1,0 +1,40 @@
+# Market Data API Requirements
+# Install with: pip install -r requirements.txt
+
+# Web Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+uvloop==0.19.0
+
+# Database
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+
+# Data Processing
+pandas==2.1.3
+numpy==1.26.2
+
+# Technical Analysis
+pandas-ta==0.3.14b
+
+# Authentication
+pyotp==2.9.0
+
+# HTTP Client
+requests==2.31.0
+
+# Configuration
+python-dotenv==1.0.0
+
+# Utilities
+python-multipart==0.0.6
+
+# Logging
+python-json-logger==2.0.7
+
+# Optional: Enhanced performance
+orjson==3.9.10  # Faster JSON serialization
+
+# Development (comment out in production)
+# pytest==7.4.3
+# pytest-asyncio==0.21.1

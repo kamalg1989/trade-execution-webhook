@@ -1,0 +1,50 @@
+# Systemd service for Market Data API
+# Install: sudo cp market-data-api.service /etc/systemd/system/
+# Enable: sudo systemctl enable market-data-api
+# Start: sudo systemctl start market-data-api
+# Status: sudo systemctl status market-data-api
+# Logs: sudo journalctl -u market-data-api -f
+
+[Unit]
+Description=Market Data API - OHLCV Queries + Charting
+Documentation=https://github.com/yourusername/trade-execution-webhook
+After=postgresql.service network-online.target
+Wants=postgresql.service
+
+[Service]
+Type=notify
+User=root
+WorkingDirectory=/root/trade-execution-webhook
+EnvironmentFile=/root/trade-execution-webhook/.env
+Environment="PATH=/root/trade-execution-webhook/venv/bin"
+
+# Start the API using Uvicorn
+ExecStart=/root/trade-execution-webhook/venv/bin/uvicorn \
+    market_data_setup.api.main:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --workers 2 \
+    --loop uvloop \
+    --log-level info
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitInterval=60
+StartLimitBurst=3
+
+# Process management
+KillMode=process
+KillSignal=SIGTERM
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=market-data-api
+
+# Resource limits (conservative for 1 GB RAM)
+MemoryLimit=512M
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
