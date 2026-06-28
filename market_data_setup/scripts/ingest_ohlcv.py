@@ -326,14 +326,6 @@ async def ingest_all_historical():
                         await conn.executemany(
                             """INSERT INTO ohlcv_data (symbol, time, open, high, low, close, volume, oi)
                                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                               ON CONFLICT (symbol, time) DO UPDATE SET
-                               open=EXCLUDED.open,
-                               high=EXCLUDED.high,
-                               low=EXCLUDED.low,
-                               close=EXCLUDED.close,
-                               volume=EXCLUDED.volume,
-                               oi=EXCLUDED.oi,
-                               updated_at=NOW()
                             """,
                             all_candles
                         )
@@ -341,8 +333,6 @@ async def ingest_all_historical():
                     total_records += len(all_candles)
                     logger.info(f"✅ {len(all_candles)} candles")
 
-                except asyncpg.exceptions.UniqueViolationError:
-                    logger.warning(f"⚠️ Duplicate records skipped for {symbol}")
                 except Exception as e:
                     logger.error(f"❌ Insert failed: {e}")
             else:
