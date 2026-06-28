@@ -62,7 +62,8 @@ app = FastAPI(
     description="OHLCV queries + Technical charting for NSE stocks",
     version="1.0.0",
     docs_url="/api/v1/docs",
-    openapi_url="/api/v1/openapi.json"
+    openapi_url="/api/v1/openapi.json",
+    root_path="/api/v1"  # For Nginx reverse proxy
 )
 
 # Global database connection pool
