@@ -12,7 +12,7 @@ After=postgresql.service network-online.target
 Wants=postgresql.service
 
 [Service]
-Type=notify
+Type=simple
 User=root
 WorkingDirectory=/root/trade-execution-webhook
 EnvironmentFile=/root/trade-execution-webhook/.env
@@ -21,10 +21,9 @@ Environment="PATH=/root/trade-execution-webhook/venv/bin"
 # Start the API using Uvicorn
 ExecStart=/root/trade-execution-webhook/venv/bin/uvicorn \
     market_data_setup.api.main:app \
-    --host 127.0.0.1 \
+    --host 0.0.0.0 \
     --port 8000 \
-    --workers 2 \
-    --loop uvloop \
+    --workers 1 \
     --log-level info
 
 # Restart policy
