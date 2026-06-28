@@ -283,7 +283,17 @@ async def ingest_all_historical():
                     # Transform to DB format
                     for candle in candles:
                         try:
-                            candle_date = datetime.strptime(candle['timestamp'], '%Y-%m-%d')
+                            # Handle both string dates and Unix timestamps
+                            ts = candle['timestamp']
+                            if isinstance(ts, (int, float)):
+                                # Unix timestamp (seconds or milliseconds)
+                                if ts > 1e10:  # Likely milliseconds
+                                    ts = ts / 1000
+                                candle_date = datetime.fromtimestamp(ts)
+                            else:
+                                # String format YYYY-MM-DD
+                                candle_date = datetime.strptime(str(ts), '%Y-%m-%d')
+
                             all_candles.append((
                                 symbol,
                                 candle_date,
@@ -294,7 +304,7 @@ async def ingest_all_historical():
                                 int(candle['volume']),
                                 int(candle.get('oi', 0)) if candle.get('oi') else None
                             ))
-                        except (KeyError, ValueError) as e:
+                        except (KeyError, ValueError, TypeError) as e:
                             logger.debug(f"  Skipping malformed candle: {e}")
 
                 except Exception as e:
