@@ -81,9 +81,9 @@ def get_dhan_token():
 
         logger.info("📡 Authenticating with Dhan API v2...")
 
-        # Dhan API v2 endpoint
+        # Try Dhan API v2 login endpoint
         response = requests.post(
-            "https://api.dhan.co/v2/user/login",
+            "https://api.dhan.co/v2/login",
             json={
                 "userId": DHAN_CLIENT_ID,
                 "password": DHAN_PIN,
