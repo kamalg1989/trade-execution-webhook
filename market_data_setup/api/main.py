@@ -403,13 +403,16 @@ def create_svg_chart(
 
     # X-axis labels (show every Nth date)
     step = max(1, len(df) // 8)  # Show ~8 dates
-    if hasattr(df, 'index') and hasattr(df.index[0], 'strftime'):
-        for i in range(0, len(df), step):
-            x = x_coord(i)
-            date_str = df.index[i].strftime("%m/%d")
-            svg_lines.append(
-                f'<text x="{x}" y="{height-bottom_margin-legend_height+20}" font-size="11" fill="{text_color}" font-family="Arial" text-anchor="middle">{date_str}</text>'
-            )
+    try:
+        if len(df) > 0:
+            for i in range(0, len(df), step):
+                x = x_coord(i)
+                date_str = df.index[i].strftime("%m/%d")
+                svg_lines.append(
+                    f'<text x="{x}" y="{height-bottom_margin-legend_height+20}" font-size="11" fill="{text_color}" font-family="Arial" text-anchor="middle">{date_str}</text>'
+                )
+    except (AttributeError, TypeError):
+        pass  # Index doesn't have dates
 
     # Draw grid
     for i in range(10):
