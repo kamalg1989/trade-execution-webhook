@@ -8,7 +8,7 @@ import asyncio
 import httpx
 import json
 from typing import Optional
-from fastapi import FastAPI
+from fastapi import FastAPI, Body
 from fastapi.responses import JSONResponse
 import uvicorn
 
@@ -264,8 +264,19 @@ async def list_tools():
     return {"tools": TOOLS}
 
 @app.post("/call")
-async def call_tool(tool_name: str, **kwargs):
-    """Call a tool by name with arguments"""
+async def call_tool(tool_name: str, body: Optional[dict] = Body(None)):
+    """Call a tool by name with arguments
+
+    Example:
+    POST /call?tool_name=get_daily_chart
+    {
+        "symbol": "TCS",
+        "from_date": "2024-06-01",
+        "to_date": "2024-12-31",
+        "indicators": "ema",
+        "theme": "light"
+    }
+    """
     handlers = {
         "get_ohlcv": handle_get_ohlcv,
         "get_multi_ohlcv": handle_get_multi_ohlcv,
@@ -280,8 +291,12 @@ async def call_tool(tool_name: str, **kwargs):
         return {"success": False, "error": f"Unknown tool: {tool_name}"}
 
     try:
+        kwargs = body or {}
         result = await handlers[tool_name](**kwargs)
         return result
+    except TypeError as e:
+        # Handle missing required parameters
+        return {"success": False, "error": f"Missing required parameters: {str(e)}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
