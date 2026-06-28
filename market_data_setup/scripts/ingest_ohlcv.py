@@ -69,7 +69,7 @@ if not all([DHAN_CLIENT_ID, DHAN_PIN, DHAN_TOTP_SECRET, DB_PASSWORD]):
 
 def get_dhan_token():
     """
-    Authenticate with Dhan API v2 and get JWT token
+    Authenticate with Dhan API using generateAccessToken endpoint
     Uses TOTP for 2FA
     """
     import requests
@@ -79,15 +79,15 @@ def get_dhan_token():
         totp = pyotp.TOTP(DHAN_TOTP_SECRET)
         otp = totp.now()
 
-        logger.info("📡 Authenticating with Dhan API v2...")
+        logger.info("📡 Authenticating with Dhan API...")
 
-        # Try Dhan API v2 login endpoint
+        # Correct Dhan authentication endpoint
         response = requests.post(
-            "https://api.dhan.co/v2/login",
-            json={
-                "userId": DHAN_CLIENT_ID,
-                "password": DHAN_PIN,
-                "twoFactorSecret": otp
+            "https://auth.dhan.co/app/generateAccessToken",
+            params={
+                "dhanClientId": DHAN_CLIENT_ID,
+                "pin": DHAN_PIN,
+                "totp": otp
             },
             timeout=30
         )
@@ -97,7 +97,7 @@ def get_dhan_token():
             sys.exit(1)
 
         data = response.json()
-        token = data.get("authToken") or data.get("token")
+        token = data.get("accessToken")
 
         if not token:
             logger.error(f"❌ No token in response: {data}")
