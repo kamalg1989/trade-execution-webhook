@@ -528,6 +528,7 @@ async def get_daily_chart(
         df.set_index('trading_date', inplace=True)
 
         # Calculate indicators (on-demand)
+        trading_dates = df.index  # Save dates before TechnicalIndicators resets index
         if indicators != "none":
             tech = TechnicalIndicators(df)
 
@@ -541,6 +542,8 @@ async def get_daily_chart(
                 tech.calculate_macd()
 
             df = tech.df
+            # Restore dates as index (TechnicalIndicators resets it)
+            df.index = trading_dates
 
         # Return format
         if format == "svg":
@@ -711,12 +714,17 @@ async def get_combined_charts(
         calc_indicators_daily = {}
         calc_indicators_weekly = {}
 
+        # Save date indices before TechnicalIndicators resets them
+        daily_dates = df_daily.index
+        weekly_dates = weekly.index
+
         if indicators != "none":
             # Daily
             tech_daily = TechnicalIndicators(df_daily)
             if "ema" in indicators or indicators == "all":
                 tech_daily.calculate_ema([10, 21, 50, 200])
             df_daily = tech_daily.df
+            df_daily.index = daily_dates  # Restore dates
             calc_indicators_daily = {col: df_daily[col] for col in df_daily.columns if col.startswith('ema_')}
 
             # Weekly
@@ -724,6 +732,7 @@ async def get_combined_charts(
             if "ema" in indicators or indicators == "all":
                 tech_weekly.calculate_ema([10, 21, 50, 200])
             weekly = tech_weekly.df
+            weekly.index = weekly_dates  # Restore dates
             calc_indicators_weekly = {col: weekly[col] for col in weekly.columns if col.startswith('ema_')}
 
         # Theme colors for labels
