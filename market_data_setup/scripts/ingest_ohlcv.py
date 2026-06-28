@@ -69,7 +69,7 @@ if not all([DHAN_CLIENT_ID, DHAN_PIN, DHAN_TOTP_SECRET, DB_PASSWORD]):
 
 def get_dhan_token():
     """
-    Authenticate with Dhan and get JWT token
+    Authenticate with Dhan API v2 and get JWT token
     Uses TOTP for 2FA
     """
     import requests
@@ -79,23 +79,30 @@ def get_dhan_token():
         totp = pyotp.TOTP(DHAN_TOTP_SECRET)
         otp = totp.now()
 
-        logger.info("📡 Authenticating with Dhan API...")
+        logger.info("📡 Authenticating with Dhan API v2...")
 
+        # Dhan API v2 endpoint
         response = requests.post(
-            "https://api-gw.shoonya.com/auth/login",
+            "https://api.dhan.co/v2/user/login",
             json={
                 "userId": DHAN_CLIENT_ID,
                 "password": DHAN_PIN,
-                "twoFA": otp
+                "twoFactorSecret": otp
             },
             timeout=30
         )
 
         if response.status_code != 200:
-            logger.error(f"❌ Dhan auth failed: {response.text}")
+            logger.error(f"❌ Dhan auth failed: {response.status_code} - {response.text}")
             sys.exit(1)
 
-        token = response.json().get("authToken")
+        data = response.json()
+        token = data.get("authToken") or data.get("token")
+
+        if not token:
+            logger.error(f"❌ No token in response: {data}")
+            sys.exit(1)
+
         logger.info("✅ Dhan authentication successful")
         return token
 
@@ -105,33 +112,48 @@ def get_dhan_token():
 
 async def fetch_historical_ohlcv(token: str, security_id: str, from_date: str, to_date: str):
     """
-    Fetch historical OHLCV from Dhan API
+    Fetch historical OHLCV from Dhan API v2
     Returns: List of candles or empty list on error
     """
     import requests
-    import time
 
     try:
-        response = requests.get(
-            "https://api-gw.shoonya.com/historical",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "exchangeTokens": security_id,
-                "from": from_date,
-                "to": to_date,
-                "resolution": "1d"
+        # Dhan API v2 uses POST with JSON body
+        response = requests.post(
+            "https://api.dhan.co/v2/charts/historical",
+            headers={"access-token": token},  # v2 uses access-token header
+            json={
+                "securityId": security_id,
+                "exchangeSegment": "NSE_EQ",  # NSE Equity segment
+                "instrument": "EQUITY",
+                "expiryCode": 0,
+                "oi": False,
+                "fromDate": from_date,
+                "toDate": to_date
             },
             timeout=30
         )
 
         # Rate limiting - respect API limits
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.5)
 
         if response.status_code == 200:
             data = response.json()
-            if data.get("status") == "success":
-                candles = data.get("data", [])
-                return candles if candles else []
+            # v2 API returns arrays for OHLCV
+            if data.get("open"):  # If open array exists, we have data
+                # Convert to candle format
+                candles = []
+                for i in range(len(data.get("timestamp", []))):
+                    candle = {
+                        "timestamp": data["timestamp"][i],
+                        "open": data["open"][i],
+                        "high": data["high"][i],
+                        "low": data["low"][i],
+                        "close": data["close"][i],
+                        "volume": data["volume"][i]
+                    }
+                    candles.append(candle)
+                return candles
 
         return []
 
