@@ -520,6 +520,10 @@ async def get_daily_chart(
             if col in df.columns:
                 df[col] = df[col].astype(float)
 
+        # Set index to trading_date for proper date labels in chart
+        df['trading_date'] = pd.to_datetime(df['trading_date'])
+        df.set_index('trading_date', inplace=True)
+
         # Calculate indicators (on-demand)
         if indicators != "none":
             tech = TechnicalIndicators(df)
