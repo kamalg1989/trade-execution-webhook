@@ -67,19 +67,32 @@ if not all([DHAN_CLIENT_ID, DHAN_PIN, DHAN_TOTP_SECRET, DB_PASSWORD]):
 # DHAN API HELPERS
 # ============================================================
 
-def get_dhan_token():
+# Global token cache to avoid regenerating every call
+_cached_token = None
+_token_generated_time = None
+
+def get_dhan_token(force_refresh=False):
     """
     Authenticate with Dhan API using generateAccessToken endpoint
-    Uses TOTP for 2FA
+    Caches token to avoid 2-minute rate limit
     """
     import requests
     import pyotp
+    import time
+
+    global _cached_token, _token_generated_time
+
+    # Return cached token if available and not forced to refresh
+    if _cached_token and not force_refresh:
+        # Check if token is less than 55 minutes old (tokens valid for ~1 hour)
+        if _token_generated_time and (time.time() - _token_generated_time) < 3300:
+            return _cached_token
 
     try:
         totp = pyotp.TOTP(DHAN_TOTP_SECRET)
         otp = totp.now()
 
-        logger.info("📡 Authenticating with Dhan API...")
+        logger.info("📡 Generating new Dhan access token...")
 
         # Correct Dhan authentication endpoint
         response = requests.post(
@@ -103,7 +116,11 @@ def get_dhan_token():
             logger.error(f"❌ No token in response: {data}")
             sys.exit(1)
 
-        logger.info("✅ Dhan authentication successful")
+        # Cache the token
+        _cached_token = token
+        _token_generated_time = time.time()
+
+        logger.info("✅ Dhan access token obtained (cached for 55 min)")
         return token
 
     except Exception as e:
