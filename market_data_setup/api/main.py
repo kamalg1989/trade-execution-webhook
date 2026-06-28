@@ -147,9 +147,204 @@ app = FastAPI(
     - **Base**: `http://165.232.187.97/api/v1/`
     - **Docs**: `http://165.232.187.97/api/v1/docs`
 
-    ## Support
+    ## 🔌 MCP INTEGRATION - DETAILED REFERENCE
+
+    ### 📍 Global MCP Server
+    **URL**: `http://165.232.187.97:8002/` | **Status**: ✅ Running 24/7
+
+    ### 📚 Available Endpoints
+    - `GET /` - Server info and available endpoints
+    - `GET /tools` - List all 7 available tools with JSON schema
+    - `POST /call?tool_name=<name>` - Execute a tool with JSON parameters
+    - `GET /health` - Check API and database health
+
+    ---
+
+    ## 🛠️ TOOL REFERENCE (7 Tools - Complete Details)
+
+    ### **Tool 1: get_health** - API Status Check
+    **Purpose**: Verify API and database connectivity
+
+    **Parameters**: None
+
+    **Response**: JSON status object with timestamp and database connection
+
+    **Example**:
+    ```bash
+    curl -X POST "http://165.232.187.97:8002/call?tool_name=get_health" \\
+      -H "Content-Type: application/json" -d '{}'
+    ```
+
+    ---
+
+    ### **Tool 2: get_symbols** - List All NSE Stocks
+    **Purpose**: Get 2,953 NSE equity stocks with metadata
+
+    **Parameters**:
+    - `sector` (optional): Filter by sector - "IT", "FINANCE", "PHARMA", "AUTO", "ENERGY", "METALS", "BANKS", etc.
+
+    **Example**:
+    ```bash
+    curl -X POST "http://165.232.187.97:8002/call?tool_name=get_symbols" \\
+      -H "Content-Type: application/json" -d '{"sector": "IT"}'
+    ```
+
+    ---
+
+    ### **Tool 3: get_ohlcv** - Single Stock OHLCV Data
+    **Purpose**: Fetch historical daily OHLCV candles
+
+    **Parameters** (required):
+    - `symbol`: NSE symbol like "TCS", "INFY", "RELIANCE"
+    - `from_date`: YYYY-MM-DD
+    - `to_date`: YYYY-MM-DD
+
+    **Example**:
+    ```bash
+    curl -X POST "http://165.232.187.97:8002/call?tool_name=get_ohlcv" \\
+      -H "Content-Type: application/json" \\
+      -d '{"symbol":"TCS","from_date":"2024-01-01","to_date":"2024-12-31"}'
+    ```
+
+    ---
+
+    ### **Tool 4: get_multi_ohlcv** - Multiple Stocks OHLCV (Batch)
+    **Purpose**: Get OHLCV for multiple stocks in one request
+
+    **Parameters** (required):
+    - `symbols`: Comma-separated "TCS,INFY,RELIANCE"
+    - `from_date`: YYYY-MM-DD
+    - `to_date`: YYYY-MM-DD
+
+    **Example**:
+    ```bash
+    curl -X POST "http://165.232.187.97:8002/call?tool_name=get_multi_ohlcv" \\
+      -H "Content-Type: application/json" \\
+      -d '{"symbols":"TCS,INFY,RELIANCE","from_date":"2024-06-01","to_date":"2024-12-31"}'
+    ```
+
+    ---
+
+    ### **Tool 5: get_daily_chart** - Daily Candlestick SVG Chart
+    **Purpose**: Generate interactive daily chart with technical indicators
+
+    **Parameters** (required):
+    - `symbol`: Stock symbol
+    - `from_date`: YYYY-MM-DD
+    - `to_date`: YYYY-MM-DD
+
+    **Parameters** (optional):
+    - `indicators`: "ema" (default) | "rsi" | "atr" | "macd" | "all" | "none"
+    - `theme`: "light" (default) | "dark"
+
+    **Features**: Candlesticks + volume bars + technical indicators overlay + date/price labels
+
+    **Example**:
+    ```bash
+    curl -X POST "http://165.232.187.97:8002/call?tool_name=get_daily_chart" \\
+      -H "Content-Type: application/json" \\
+      -d '{"symbol":"TCS","from_date":"2024-06-01","to_date":"2024-12-31","indicators":"ema","theme":"light"}' \\
+      > tcs_daily.svg
+    ```
+
+    ---
+
+    ### **Tool 6: get_weekly_chart** - Weekly Candlestick SVG Chart
+    **Purpose**: Generate weekly chart with indicators
+
+    **Parameters**: Same as daily chart
+
+    **Example**:
+    ```bash
+    curl -X POST "http://165.232.187.97:8002/call?tool_name=get_weekly_chart" \\
+      -H "Content-Type: application/json" \\
+      -d '{"symbol":"INFY","from_date":"2023-01-01","to_date":"2024-12-31","indicators":"macd","theme":"dark"}'
+    ```
+
+    ---
+
+    ### **Tool 7: get_combined_chart** - Daily + Weekly Combined SVG
+    **Purpose**: Both daily (top) and weekly (bottom) charts in one SVG
+
+    **Parameters**: Same as daily/weekly charts
+
+    **Example**:
+    ```bash
+    curl -X POST "http://165.232.187.97:8002/call?tool_name=get_combined_chart" \\
+      -H "Content-Type: application/json" \\
+      -d '{"symbol":"RELIANCE","from_date":"2024-01-01","to_date":"2024-12-31","indicators":"ema","theme":"light"}'
+    ```
+
+    ---
+
+    ## 🎯 CLAUDE MCP SETUP (3 Methods)
+
+    ### **Method 1: Direct API Calls (Simplest)**
+    Ask Claude: "Get me TCS daily chart from June-Dec 2024. Call http://165.232.187.97:8002/call?tool_name=get_daily_chart with symbol=TCS, from_date=2024-06-01, to_date=2024-12-31"
+
+    ### **Method 2: Claude Settings → MCP Connector**
+    1. Open Claude → Settings → Connectors
+    2. Add New MCP Connector
+    3. Enter: `http://165.232.187.97:8002/`
+    4. Start using: `get_daily_chart(symbol="TCS", from_date="2024-06-01", ...)`
+
+    ### **Method 3: Integration Script**
+    ```python
+    import httpx
+    MCP = "http://165.232.187.97:8002/call"
+
+    def call_mcp(tool, **params):
+        r = httpx.post(f"{MCP}?tool_name={tool}", json=params)
+        return r.json()
+
+    # Usage
+    chart = call_mcp("get_daily_chart", symbol="TCS", from_date="2024-06-01", to_date="2024-12-31")
+    ```
+
+    ---
+
+    ## 💬 EXAMPLE CLAUDE PROMPTS (Copy-Paste Ready)
+
+    **Prompt 1**: "Show me the daily and weekly candlestick charts for TCS from June 2024 to December 2024 with EMA indicators. Analyze the trend."
+
+    **Prompt 2**: "Get OHLCV data for IT stocks (TCS, INFY, WIPRO) from Jan-Dec 2024. Which had the best 6-month performance?"
+
+    **Prompt 3**: "Generate a combined daily+weekly chart for RELIANCE with all technical indicators (EMA, RSI, MACD, ATR). What's the outlook?"
+
+    **Prompt 4**: "List all FINANCE sector stocks. Get 6-month charts for the top 5 in light theme. Which are in uptrends?"
+
+    **Prompt 5**: "Backtest data: Get 5 years OHLCV for INFY (2019-2024) for moving average crossover strategy testing."
+
+    **Prompt 6**: "Portfolio check: Show dark-themed daily charts for TCS, INFY, RELIANCE, HDFC, ICICI for last 3 months."
+
+    ---
+
+    ## 📊 TECHNICAL INDICATORS DETAILS
+
+    | Indicator | Default | Purpose | Use Case |
+    |-----------|---------|---------|----------|
+    | **EMA** | 9/21 | Exponential Moving Average | Trend identification |
+    | **RSI** | 14 | Relative Strength Index | Overbought/oversold signals |
+    | **ATR** | 14 | Average True Range | Volatility and stop-loss sizing |
+    | **MACD** | 12/26/9 | Moving Avg Convergence/Divergence | Momentum and crossover signals |
+
+    ---
+
+    ## 📈 DATA SPECIFICATIONS
+
+    - **Period**: 2011-2026 (15+ years)
+    - **Stocks**: 2,953 NSE equity (ES type only)
+    - **Frequency**: Daily candles
+    - **Total Points**: ~10.8 million OHLCV records
+    - **Updates**: Daily at 18:00 IST
+    - **Source**: Dhan API v2
+
+    ---
+
+    ## Support & Resources
     - **GitHub**: https://github.com/kamalg1989/trade-execution-webhook
-    - **VPS**: 165.232.187.97 (Bangalore)
+    - **Full Guide**: MCP_INTEGRATION_GUIDE.md (in repository)
+    - **VPS**: 165.232.187.97 (Bangalore, 24/7)
     - **Status**: ✅ Production-ready
     """,
     version="1.0.0",
