@@ -89,21 +89,30 @@ def get_dhan_token(force_refresh=False):
             return _cached_token
 
     try:
-        totp = pyotp.TOTP(DHAN_TOTP_SECRET)
-        otp = totp.now()
-
         logger.info("📡 Generating new Dhan access token...")
 
-        # Correct Dhan authentication endpoint
-        response = requests.post(
-            "https://auth.dhan.co/app/generateAccessToken",
-            params={
-                "dhanClientId": DHAN_CLIENT_ID,
-                "pin": DHAN_PIN,
-                "totp": otp
-            },
-            timeout=30
-        )
+        # Retry up to 3 times with fresh TOTP
+        for attempt in range(3):
+            totp = pyotp.TOTP(DHAN_TOTP_SECRET)
+            otp = totp.now()
+
+            # Correct Dhan authentication endpoint with longer timeout
+            response = requests.post(
+                "https://auth.dhan.co/app/generateAccessToken",
+                params={
+                    "dhanClientId": DHAN_CLIENT_ID,
+                    "pin": DHAN_PIN,
+                    "totp": otp
+                },
+                timeout=45
+            )
+
+            if response.status_code == 200:
+                break  # Success!
+
+            if attempt < 2:
+                logger.warning(f"  Attempt {attempt+1} failed, retrying...")
+                time.sleep(2)
 
         if response.status_code != 200:
             logger.error(f"❌ Dhan auth failed: {response.status_code} - {response.text}")
