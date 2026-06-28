@@ -729,13 +729,19 @@ async def get_combined_charts(
         svg_weekly = create_svg_chart(symbol, weekly, calc_indicators_weekly, width=1400, height=550, title_suffix="Weekly", theme=theme)
 
         # Combine into one SVG (vertical layout - Daily on top, Weekly on bottom)
+        # Extract content between SVG tags
+        daily_content = svg_daily[svg_daily.find('>')+1:svg_daily.rfind('</svg>')]
+        weekly_content = svg_weekly[svg_weekly.find('>')+1:svg_weekly.rfind('</svg>')]
+
         combined = f'''<svg width="1400" height="1150" xmlns="http://www.w3.org/2000/svg">
             <rect width="100%" height="100%" fill="{bg_color}"/>
             <text x="20" y="25" font-size="20" font-weight="bold" fill="{text_color}" font-family="Arial">Daily Chart</text>
-            <g transform="translate(0,0)">{svg_daily.replace('<svg width="1400" height="550"', '<svg width="1400" height="550"').replace('</svg>', '')}</g>
+            {daily_content}
             <line x1="0" y1="580" x2="1400" y2="580" stroke="#cccccc" stroke-width="1"/>
             <text x="20" y="610" font-size="20" font-weight="bold" fill="{text_color}" font-family="Arial">Weekly Chart</text>
-            <g transform="translate(0,600)">{svg_weekly.replace('<svg width="1400" height="550"', '<svg width="1400" height="550"').replace('</svg>', '')}</g>
+            <g transform="translate(0,600)">
+                {weekly_content}
+            </g>
         </svg>'''
 
         return StreamingResponse(
