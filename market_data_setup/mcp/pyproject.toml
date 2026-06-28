@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "market-data-api-mcp"
+version = "1.0.0"
+description = "Market Data API - MCP Server for Claude Integration"
+authors = [{name = "Kamal"}]
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=0.1.0",
+    "httpx>=0.24.0",
+]
+
+[project.scripts]
+market-data-api-mcp = "market_data_setup.mcp.server:main"
