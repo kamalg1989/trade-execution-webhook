@@ -9,10 +9,12 @@ description = "Market Data API - MCP Server for Claude Integration"
 authors = [{name = "Kamal"}]
 requires-python = ">=3.10"
 dependencies = [
+    "mcp>=0.7.0",
     "httpx>=0.24.0",
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
 ]
 
 [project.scripts]
-market-data-api-mcp = "market_data_setup.mcp.server:main"
+market-data-api-mcp-http = "market_data_setup.mcp.server:main"
+market-data-api-mcp = "market_data_setup.mcp.mcp_server:main"
