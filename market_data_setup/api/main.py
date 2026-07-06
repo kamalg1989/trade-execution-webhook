@@ -82,15 +82,16 @@ app = FastAPI(
     |------|-----|
     | **API base** | `https://ohmstockvault.duckdns.org/api/v1/` |
     | **Interactive docs (this page)** | `https://ohmstockvault.duckdns.org/api/v1/docs` |
-    | **MCP endpoint (for Claude)** | `https://ohmstockvault.duckdns.org/mcp` |
 
     Try it now — a daily chart in your browser:
     `https://ohmstockvault.duckdns.org/api/v1/charts/daily?symbol=TCS&from_date=2026-01-01&to_date=2026-07-03&theme=dark`
 
-    ## 🛠️ TOOL / ENDPOINT REFERENCE
+    ---
 
-    Each tool below is exposed both as an **MCP tool** (when connected in Claude) and as a
-    **direct REST endpoint** under `https://ohmstockvault.duckdns.org/api/v1/`.
+    ## 🛠️ API ENDPOINTS (7 Tools)
+
+    All endpoints are served at `https://ohmstockvault.duckdns.org/api/v1/`. Use them
+    directly over HTTP in your app, script, or browser.
 
     ### `get_health` — API status
     Check the API + database are up. No parameters.
@@ -138,13 +139,38 @@ app = FastAPI(
 
     ---
 
-    ## 🎯 CONNECT TO CLAUDE (MCP)
+    ## 📈 Data specifications
 
-    **MCP endpoint:** `https://ohmstockvault.duckdns.org/mcp`  (Streamable HTTP)
+    - **History**: 2011 → present (15+ years of daily candles)
+    - **Coverage**: ~2,710 NSE equity symbols (full NIFTY-500 universe included)
+    - **Records**: ~5.8 million daily OHLCV rows
+    - **Updates**: automatically every day at 18:00 IST (Dhan API v2)
+    - **Indicators**: EMA 10/21/50/200, RSI 14, ATR 14, MACD 12/26/9 (computed on demand)
+
+    ---
+
+    ## 📊 TECHNICAL INDICATORS DETAILS
+
+    | Indicator | Default | Purpose | Use Case |
+    |-----------|---------|---------|----------|
+    | **EMA** | 9/21 | Exponential Moving Average | Trend identification |
+    | **RSI** | 14 | Relative Strength Index | Overbought/oversold signals |
+    | **ATR** | 14 | Average True Range | Volatility and stop-loss sizing |
+    | **MACD** | 12/26/9 | Moving Avg Convergence/Divergence | Momentum and crossover signals |
+
+    ---
+
+    ## 🔌 MCP INTEGRATION (Model Context Protocol)
+
+    **MCP endpoint:** `https://ohmstockvault.duckdns.org/mcp`
+
+    The same 7 API endpoints are also available as **MCP tools** for use in Claude Desktop and Claude.ai.
+    Tools include: `get_health`, `get_symbols`, `get_ohlcv`, `get_multi_ohlcv`, `get_daily_chart`,
+    `get_weekly_chart`, `get_combined_chart`.
 
     ### Claude Desktop
     1. **Settings → Developer → Edit Config** (opens `claude_desktop_config.json`).
-    2. Add the server and save:
+    2. Add and save:
     ```json
     {
       "mcpServers": {
@@ -162,48 +188,14 @@ app = FastAPI(
     1. **Settings → Connectors → Add custom connector**.
     2. Name: `NSE Market Data`, URL: `https://ohmstockvault.duckdns.org/mcp`, then Save.
     3. Enable it in a chat from the 🔌 menu.
-    > The endpoint is served over **HTTPS** with a valid Let's Encrypt certificate, so both
-    > Claude.ai (web) and Claude Desktop connect to it directly.
+    > The endpoint is served over **HTTPS** with a valid Let's Encrypt certificate.
 
-    ### No MCP? Use the REST API
-    Open in a browser: `https://ohmstockvault.duckdns.org/api/v1/charts/daily?symbol=TCS&from_date=2026-01-01&to_date=2026-07-03&theme=dark`
-
-    ---
-
-    ## 💬 EXAMPLE CLAUDE PROMPTS (Copy-Paste Ready)
-
-    **Prompt 1**: "Show me the daily and weekly candlestick charts for TCS from June 2024 to December 2024 with EMA indicators. Analyze the trend."
-
-    **Prompt 2**: "Get OHLCV data for IT stocks (TCS, INFY, WIPRO) from Jan-Dec 2024. Which had the best 6-month performance?"
-
-    **Prompt 3**: "Generate a combined daily+weekly chart for RELIANCE with all technical indicators (EMA, RSI, MACD, ATR). What's the outlook?"
-
-    **Prompt 4**: "List all FINANCE sector stocks. Get 6-month charts for the top 5 in light theme. Which are in uptrends?"
-
-    **Prompt 5**: "Backtest data: Get 5 years OHLCV for INFY (2019-2024) for moving average crossover strategy testing."
-
-    **Prompt 6**: "Portfolio check: Show dark-themed daily charts for TCS, INFY, RELIANCE, HDFC, ICICI for last 3 months."
-
-    ---
-
-    ## 📊 TECHNICAL INDICATORS DETAILS
-
-    | Indicator | Default | Purpose | Use Case |
-    |-----------|---------|---------|----------|
-    | **EMA** | 9/21 | Exponential Moving Average | Trend identification |
-    | **RSI** | 14 | Relative Strength Index | Overbought/oversold signals |
-    | **ATR** | 14 | Average True Range | Volatility and stop-loss sizing |
-    | **MACD** | 12/26/9 | Moving Avg Convergence/Divergence | Momentum and crossover signals |
-
-    ---
-
-    ## 📈 Data specifications
-
-    - **History**: 2011 → present (15+ years of daily candles)
-    - **Coverage**: ~2,710 NSE equity symbols (full NIFTY-500 universe included)
-    - **Records**: ~5.8 million daily OHLCV rows
-    - **Updates**: automatically every day at 18:00 IST (Dhan API v2)
-    - **Indicators**: EMA 10/21/50/200, RSI 14, ATR 14, MACD 12/26/9 (computed on demand)
+    ### Example Claude prompts
+    - "Show me the daily and weekly candlestick charts for TCS from June 2024 to December 2024 with EMA indicators. Analyze the trend."
+    - "Get OHLCV data for IT stocks (TCS, INFY, WIPRO) from Jan-Dec 2024. Which had the best 6-month performance?"
+    - "Generate a combined daily+weekly chart for RELIANCE with all technical indicators (EMA, RSI, MACD, ATR). What's the outlook?"
+    - "List all FINANCE sector stocks. Get 6-month charts for the top 5 in light theme. Which are in uptrends?"
+    - "Backtest data: Get 5 years OHLCV for INFY (2019-2024) for moving average crossover strategy testing."
 
     ---
 
