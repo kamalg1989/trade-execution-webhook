@@ -6,9 +6,9 @@ web app with charts, and lets you place real orders and manage stop losses on yo
 own Dhan account — all backed by a 15-year local market-data warehouse that also
 doubles as an MCP tool for Claude.
 
-**Live:** http://ohmstockvault.duckdns.org/
-**API docs:** http://ohmstockvault.duckdns.org/api/v1/docs
-**MCP endpoint (Claude):** http://ohmstockvault.duckdns.org/mcp
+**Live:** https://ohmstockvault.duckdns.org/
+**API docs:** https://ohmstockvault.duckdns.org/api/v1/docs
+**MCP endpoint (Claude):** https://ohmstockvault.duckdns.org/mcp
 
 ---
 
@@ -145,7 +145,7 @@ change, 52-week high/low) and **52-week reference lines**, in a clean dark/light
 **Data:** ~2,710 NSE symbols, 15 years of daily candles (~5.8M rows), refreshed daily
 at 18:00 IST from Dhan. New NIFTY-500 entrants are auto-ingested.
 
-Full interactive reference: **http://ohmstockvault.duckdns.org/api/v1/docs**
+Full interactive reference: **https://ohmstockvault.duckdns.org/api/v1/docs**
 
 ---
 
@@ -154,7 +154,7 @@ Full interactive reference: **http://ohmstockvault.duckdns.org/api/v1/docs**
 The Market Data API is also a **Model Context Protocol** server (Streamable HTTP) at:
 
 ```
-http://ohmstockvault.duckdns.org/mcp
+https://ohmstockvault.duckdns.org/mcp
 ```
 
 Tools exposed: `get_health`, `get_symbols`, `get_ohlcv`, `get_multi_ohlcv`,
@@ -168,7 +168,7 @@ Tools exposed: `get_health`, `get_symbols`, `get_ohlcv`, `get_multi_ohlcv`,
      "mcpServers": {
        "nse-market-data": {
          "command": "npx",
-         "args": ["-y", "mcp-remote", "http://ohmstockvault.duckdns.org/mcp"]
+         "args": ["-y", "mcp-remote", "https://ohmstockvault.duckdns.org/mcp"]
        }
      }
    }
@@ -178,12 +178,12 @@ Tools exposed: `get_health`, `get_symbols`, `get_ohlcv`, `get_multi_ohlcv`,
 
 ### Claude.ai (Web)
 1. **Settings → Connectors → Add custom connector**.
-2. Name `NSE Market Data`, URL `http://ohmstockvault.duckdns.org/mcp`, Save.
+2. Name `NSE Market Data`, URL `https://ohmstockvault.duckdns.org/mcp`, Save.
 3. Enable it in a chat from the 🔌 menu.
 
-> **Note:** Claude.ai expects an **HTTPS** connector URL. The server is HTTP today, so the
-> web connector may reject it until an SSL certificate (Let's Encrypt) is added to the
-> Duck DNS domain. Claude **Desktop** works over HTTP via the `mcp-remote` bridge.
+> The endpoint is served over **HTTPS** with a valid Let's Encrypt certificate
+> (auto-renewing), so both Claude.ai (web) and Claude Desktop connect directly. HTTP
+> requests are redirected to HTTPS.
 
 ### Example prompts
 - "Show me the daily and weekly charts for TCS over the last 6 months and analyse the trend."

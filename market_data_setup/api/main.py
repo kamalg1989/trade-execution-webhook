@@ -80,40 +80,40 @@ app = FastAPI(
 
     | What | URL |
     |------|-----|
-    | **API base** | `http://ohmstockvault.duckdns.org/api/v1/` |
-    | **Interactive docs (this page)** | `http://ohmstockvault.duckdns.org/api/v1/docs` |
-    | **MCP endpoint (for Claude)** | `http://ohmstockvault.duckdns.org/mcp` |
+    | **API base** | `https://ohmstockvault.duckdns.org/api/v1/` |
+    | **Interactive docs (this page)** | `https://ohmstockvault.duckdns.org/api/v1/docs` |
+    | **MCP endpoint (for Claude)** | `https://ohmstockvault.duckdns.org/mcp` |
 
     Try it now — a daily chart in your browser:
-    `http://ohmstockvault.duckdns.org/api/v1/charts/daily?symbol=TCS&from_date=2026-01-01&to_date=2026-07-03&theme=dark`
+    `https://ohmstockvault.duckdns.org/api/v1/charts/daily?symbol=TCS&from_date=2026-01-01&to_date=2026-07-03&theme=dark`
 
     ## 🛠️ TOOL / ENDPOINT REFERENCE
 
     Each tool below is exposed both as an **MCP tool** (when connected in Claude) and as a
-    **direct REST endpoint** under `http://ohmstockvault.duckdns.org/api/v1/`.
+    **direct REST endpoint** under `https://ohmstockvault.duckdns.org/api/v1/`.
 
     ### `get_health` — API status
     Check the API + database are up. No parameters.
     ```bash
-    curl "http://ohmstockvault.duckdns.org/api/v1/health"
+    curl "https://ohmstockvault.duckdns.org/api/v1/health"
     ```
 
     ### `get_symbols` — list NSE stocks
     Optional `sector` filter (IT, FINANCE, PHARMA, AUTO, ENERGY, METALS, BANKS, …).
     ```bash
-    curl "http://ohmstockvault.duckdns.org/api/v1/symbols?sector=IT"
+    curl "https://ohmstockvault.duckdns.org/api/v1/symbols?sector=IT"
     ```
 
     ### `get_ohlcv` — one stock's candles
     Required: `symbol`, `from_date`, `to_date` (YYYY-MM-DD).
     ```bash
-    curl "http://ohmstockvault.duckdns.org/api/v1/ohlcv?symbol=TCS&from_date=2026-01-01&to_date=2026-07-03"
+    curl "https://ohmstockvault.duckdns.org/api/v1/ohlcv?symbol=TCS&from_date=2026-01-01&to_date=2026-07-03"
     ```
 
     ### `get_multi_ohlcv` — several stocks at once
     Required: `symbols` (comma-separated), `from_date`, `to_date`.
     ```bash
-    curl "http://ohmstockvault.duckdns.org/api/v1/ohlcv/multi?symbols=TCS,INFY,RELIANCE&from_date=2026-01-01&to_date=2026-07-03"
+    curl "https://ohmstockvault.duckdns.org/api/v1/ohlcv/multi?symbols=TCS,INFY,RELIANCE&from_date=2026-01-01&to_date=2026-07-03"
     ```
 
     ### `get_daily_chart` — daily candlestick SVG
@@ -121,26 +121,26 @@ app = FastAPI(
     (`ema` default / `rsi` / `atr` / `macd` / `all` / `none`), `theme` (`dark` / `light`).
     Includes candles, EMA overlays, volume, a stats header (LTP, 1Y %, 52W H/L) and 52-week lines.
     ```bash
-    curl "http://ohmstockvault.duckdns.org/api/v1/charts/daily?symbol=TCS&from_date=2026-01-01&to_date=2026-07-03&theme=dark" > tcs_daily.svg
+    curl "https://ohmstockvault.duckdns.org/api/v1/charts/daily?symbol=TCS&from_date=2026-01-01&to_date=2026-07-03&theme=dark" > tcs_daily.svg
     ```
 
     ### `get_weekly_chart` — weekly candlestick SVG
     Same parameters as the daily chart.
     ```bash
-    curl "http://ohmstockvault.duckdns.org/api/v1/charts/weekly?symbol=INFY&from_date=2024-01-01&to_date=2026-07-03&theme=dark"
+    curl "https://ohmstockvault.duckdns.org/api/v1/charts/weekly?symbol=INFY&from_date=2024-01-01&to_date=2026-07-03&theme=dark"
     ```
 
     ### `get_combined_chart` — daily + weekly in one image
     Same parameters as above.
     ```bash
-    curl "http://ohmstockvault.duckdns.org/api/v1/charts/combined?symbol=RELIANCE&from_date=2026-01-01&to_date=2026-07-03&theme=dark"
+    curl "https://ohmstockvault.duckdns.org/api/v1/charts/combined?symbol=RELIANCE&from_date=2026-01-01&to_date=2026-07-03&theme=dark"
     ```
 
     ---
 
     ## 🎯 CONNECT TO CLAUDE (MCP)
 
-    **MCP endpoint:** `http://ohmstockvault.duckdns.org/mcp`  (Streamable HTTP)
+    **MCP endpoint:** `https://ohmstockvault.duckdns.org/mcp`  (Streamable HTTP)
 
     ### Claude Desktop
     1. **Settings → Developer → Edit Config** (opens `claude_desktop_config.json`).
@@ -150,7 +150,7 @@ app = FastAPI(
       "mcpServers": {
         "nse-market-data": {
           "command": "npx",
-          "args": ["-y", "mcp-remote", "http://ohmstockvault.duckdns.org/mcp"]
+          "args": ["-y", "mcp-remote", "https://ohmstockvault.duckdns.org/mcp"]
         }
       }
     }
@@ -160,13 +160,13 @@ app = FastAPI(
 
     ### Claude.ai (Web)
     1. **Settings → Connectors → Add custom connector**.
-    2. Name: `NSE Market Data`, URL: `http://ohmstockvault.duckdns.org/mcp`, then Save.
+    2. Name: `NSE Market Data`, URL: `https://ohmstockvault.duckdns.org/mcp`, then Save.
     3. Enable it in a chat from the 🔌 menu.
-    > Note: Claude.ai expects an **HTTPS** connector URL. This server is HTTP today, so the
-    > web connector may reject it until SSL (Let's Encrypt) is added. Desktop works over HTTP.
+    > The endpoint is served over **HTTPS** with a valid Let's Encrypt certificate, so both
+    > Claude.ai (web) and Claude Desktop connect to it directly.
 
     ### No MCP? Use the REST API
-    Open in a browser: `http://ohmstockvault.duckdns.org/api/v1/charts/daily?symbol=TCS&from_date=2026-01-01&to_date=2026-07-03&theme=dark`
+    Open in a browser: `https://ohmstockvault.duckdns.org/api/v1/charts/daily?symbol=TCS&from_date=2026-01-01&to_date=2026-07-03&theme=dark`
 
     ---
 
@@ -208,9 +208,9 @@ app = FastAPI(
     ---
 
     ## Links
-    - **Web app**: http://ohmstockvault.duckdns.org/
-    - **API docs**: http://ohmstockvault.duckdns.org/api/v1/docs
-    - **MCP endpoint**: http://ohmstockvault.duckdns.org/mcp
+    - **Web app**: https://ohmstockvault.duckdns.org/
+    - **API docs**: https://ohmstockvault.duckdns.org/api/v1/docs
+    - **MCP endpoint**: https://ohmstockvault.duckdns.org/mcp
     - **GitHub**: https://github.com/kamalg1989/trade-execution-webhook
     """,
     version="1.0.0",
