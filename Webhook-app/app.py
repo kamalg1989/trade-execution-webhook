@@ -31,15 +31,62 @@ import google_sheets_db as gsdb
 PROCESSED_CALLBACKS = set()
 LOCK = threading.Lock()
 
-# Token caching
+# Token caching (with persistence)
 CURRENT_TOKEN = None
 TOKEN_EXPIRY = None
+TOKEN_CACHE_FILE = "/tmp/dhan_token_cache.json"
 
 # Tick size cache
 TICK_SIZE_CACHE = {}
 
 # Reusable session
 session = requests.Session()
+
+
+# ==========================
+# TOKEN PERSISTENCE (Survive App Restarts)
+# ==========================
+def load_token_from_cache():
+    """Load cached token from disk if it exists and is still valid."""
+    global CURRENT_TOKEN, TOKEN_EXPIRY
+    try:
+        if os.path.exists(TOKEN_CACHE_FILE):
+            with open(TOKEN_CACHE_FILE, 'r') as f:
+                cache = json.load(f)
+                token = cache.get("token")
+                expiry_str = cache.get("expiry")
+
+                if token and expiry_str:
+                    expiry = datetime.fromisoformat(expiry_str)
+                    if datetime.now(timezone.utc) < expiry:
+                        CURRENT_TOKEN = token
+                        TOKEN_EXPIRY = expiry
+                        log(f"✅ Loaded valid token from cache (expires {expiry_str})")
+                        return True
+
+        log("⚠️ No valid cached token on disk")
+        return False
+    except Exception as e:
+        log(f"⚠️ Failed to load token cache: {e}")
+        return False
+
+
+def save_token_to_cache(token, expiry):
+    """Save token to disk for persistence across restarts."""
+    try:
+        cache = {
+            "token": token,
+            "expiry": expiry.isoformat()
+        }
+        with open(TOKEN_CACHE_FILE, 'w') as f:
+            json.dump(cache, f)
+        log(f"✅ Saved token to cache (expires {expiry.isoformat()})")
+    except Exception as e:
+        log(f"⚠️ Failed to save token cache: {e}")
+
+
+# Load token on startup (after log function is defined)
+# Will be called after the log() function is defined
 
 
 # ==========================
@@ -193,6 +240,9 @@ def generate_token():
 
         CURRENT_TOKEN = token
         TOKEN_EXPIRY = datetime.now(timezone.utc) + timedelta(hours=23)
+
+        # Save to disk for persistence across restarts
+        save_token_to_cache(token, TOKEN_EXPIRY)
 
         log(f"✅ Token generated & cached: {token[:30]}...")
         return token
@@ -494,6 +544,9 @@ def execute_entry_engine_subprocess(payload, token):
 # FLASK APP
 # ==========================
 app = Flask(__name__)
+
+# Load token from cache on startup (after log() is defined)
+load_token_from_cache()
 
 
 # ==========================

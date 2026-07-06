@@ -63,243 +63,110 @@ app = FastAPI(
     # Market Data API - NSE Stock Data & Technical Charting
 
     ## Overview
-    Complete OHLCV data retrieval and SVG chart generation for 2,953 NSE equity stocks with 15 years of historical data (2011-2026).
+    OHLCV data + polished candlestick charts for ~2,710 NSE equities with 15 years of
+    daily history (2011–present), served as JSON or SVG. Use it directly over HTTP, or
+    plug it into Claude as an MCP tool.
 
-    ## Data Coverage
-    - **Period**: 2011-2026 (15 years)
-    - **Stocks**: 2,953 NSE equity stocks (ES type only)
-    - **Frequency**: Daily OHLCV candles
-    - **Updates**: Automatic daily at 18:00 IST
-    - **Indicators**: EMA, RSI, ATR, MACD (on-demand calculation)
+    ## What you get
+    - **~2,710 NSE stocks**, full NIFTY-500 universe, updated daily at 18:00 IST
+    - **Clean SVG charts** (dark/light) with candles, volume, EMA overlays, a stats header
+      (LTP, 1-year change, 52-week high/low) and 52-week reference lines
+    - **Daily, weekly and combined** chart endpoints
+    - **Indicators on demand**: EMA 10/21/50/200, RSI 14, ATR 14, MACD 12/26/9
+    - **Batch OHLCV** for multiple symbols in one call
+    - **MCP-ready** for Claude Desktop and Claude.ai
 
-    ## Core Features
-    - ✅ Async database queries with connection pooling
-    - ✅ SVG charts with light/dark themes
-    - ✅ Technical indicators (EMA 9/21, RSI 14, ATR 14, MACD)
-    - ✅ Volume visualization
-    - ✅ Multi-symbol batch queries
+    ## Quick Start
 
-    ## MCP Integration (Model Context Protocol)
+    | What | URL |
+    |------|-----|
+    | **API base** | `http://ohmstockvault.duckdns.org/api/v1/` |
+    | **Interactive docs (this page)** | `http://ohmstockvault.duckdns.org/api/v1/docs` |
+    | **MCP endpoint (for Claude)** | `http://ohmstockvault.duckdns.org/mcp` |
 
-    ### Global MCP Server
-    **URL**: `http://165.232.187.97:8002/`
+    Try it now — a daily chart in your browser:
+    `http://ohmstockvault.duckdns.org/api/v1/charts/daily?symbol=TCS&from_date=2026-01-01&to_date=2026-07-03&theme=dark`
 
-    **Endpoints**:
-    - `GET /tools` - List all 7 available tools
-    - `POST /call?tool_name=<name>` - Execute a tool with parameters
-    - `GET /health` - Health check
+    ## 🛠️ TOOL / ENDPOINT REFERENCE
 
-    **Available Tools** (7):
-    1. **get_ohlcv** - Fetch single symbol OHLCV data
-    2. **get_multi_ohlcv** - Fetch multiple symbols OHLCV data
-    3. **get_symbols** - Get NSE symbol list with metadata
-    4. **get_daily_chart** - Generate daily candlestick chart (SVG)
-    5. **get_weekly_chart** - Generate weekly candlestick chart (SVG)
-    6. **get_combined_chart** - Combined daily + weekly chart (SVG)
-    7. **get_health** - API health status
+    Each tool below is exposed both as an **MCP tool** (when connected in Claude) and as a
+    **direct REST endpoint** under `http://ohmstockvault.duckdns.org/api/v1/`.
 
-    ### Usage Examples
-
-    **Curl - Get Daily Chart**:
+    ### `get_health` — API status
+    Check the API + database are up. No parameters.
     ```bash
-    curl -X POST "http://165.232.187.97:8002/call?tool_name=get_daily_chart" \\
-      -H "Content-Type: application/json" \\
-      -d '{
-        "symbol": "TCS",
-        "from_date": "2024-06-01",
-        "to_date": "2024-12-31",
-        "indicators": "ema",
-        "theme": "light"
-      }'
+    curl "http://ohmstockvault.duckdns.org/api/v1/health"
     ```
 
-    **Python - Get OHLCV Data**:
-    ```python
-    import httpx
-    client = httpx.Client()
-    response = client.post(
-        "http://165.232.187.97:8002/call?tool_name=get_ohlcv",
-        json={
-            "symbol": "INFY",
-            "from_date": "2024-01-01",
-            "to_date": "2024-12-31"
+    ### `get_symbols` — list NSE stocks
+    Optional `sector` filter (IT, FINANCE, PHARMA, AUTO, ENERGY, METALS, BANKS, …).
+    ```bash
+    curl "http://ohmstockvault.duckdns.org/api/v1/symbols?sector=IT"
+    ```
+
+    ### `get_ohlcv` — one stock's candles
+    Required: `symbol`, `from_date`, `to_date` (YYYY-MM-DD).
+    ```bash
+    curl "http://ohmstockvault.duckdns.org/api/v1/ohlcv?symbol=TCS&from_date=2026-01-01&to_date=2026-07-03"
+    ```
+
+    ### `get_multi_ohlcv` — several stocks at once
+    Required: `symbols` (comma-separated), `from_date`, `to_date`.
+    ```bash
+    curl "http://ohmstockvault.duckdns.org/api/v1/ohlcv/multi?symbols=TCS,INFY,RELIANCE&from_date=2026-01-01&to_date=2026-07-03"
+    ```
+
+    ### `get_daily_chart` — daily candlestick SVG
+    Required: `symbol`, `from_date`, `to_date`. Optional: `indicators`
+    (`ema` default / `rsi` / `atr` / `macd` / `all` / `none`), `theme` (`dark` / `light`).
+    Includes candles, EMA overlays, volume, a stats header (LTP, 1Y %, 52W H/L) and 52-week lines.
+    ```bash
+    curl "http://ohmstockvault.duckdns.org/api/v1/charts/daily?symbol=TCS&from_date=2026-01-01&to_date=2026-07-03&theme=dark" > tcs_daily.svg
+    ```
+
+    ### `get_weekly_chart` — weekly candlestick SVG
+    Same parameters as the daily chart.
+    ```bash
+    curl "http://ohmstockvault.duckdns.org/api/v1/charts/weekly?symbol=INFY&from_date=2024-01-01&to_date=2026-07-03&theme=dark"
+    ```
+
+    ### `get_combined_chart` — daily + weekly in one image
+    Same parameters as above.
+    ```bash
+    curl "http://ohmstockvault.duckdns.org/api/v1/charts/combined?symbol=RELIANCE&from_date=2026-01-01&to_date=2026-07-03&theme=dark"
+    ```
+
+    ---
+
+    ## 🎯 CONNECT TO CLAUDE (MCP)
+
+    **MCP endpoint:** `http://ohmstockvault.duckdns.org/mcp`  (Streamable HTTP)
+
+    ### Claude Desktop
+    1. **Settings → Developer → Edit Config** (opens `claude_desktop_config.json`).
+    2. Add the server and save:
+    ```json
+    {
+      "mcpServers": {
+        "nse-market-data": {
+          "command": "npx",
+          "args": ["-y", "mcp-remote", "http://ohmstockvault.duckdns.org/mcp"]
         }
-    )
-    print(response.json())
+      }
+    }
     ```
+    3. Fully quit and reopen Claude Desktop → the 7 tools appear under the tools menu.
+    (`mcp-remote` bridges Desktop to the remote server; it needs Node.js, which ships with npx.)
 
-    **Node.js - Fetch Multiple Symbols**:
-    ```javascript
-    const response = await fetch("http://165.232.187.97:8002/call?tool_name=get_multi_ohlcv", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            symbols: "TCS,INFY,RELIANCE",
-            from_date: "2024-01-01",
-            to_date: "2024-12-31"
-        })
-    });
-    ```
+    ### Claude.ai (Web)
+    1. **Settings → Connectors → Add custom connector**.
+    2. Name: `NSE Market Data`, URL: `http://ohmstockvault.duckdns.org/mcp`, then Save.
+    3. Enable it in a chat from the 🔌 menu.
+    > Note: Claude.ai expects an **HTTPS** connector URL. This server is HTTP today, so the
+    > web connector may reject it until SSL (Let's Encrypt) is added. Desktop works over HTTP.
 
-    ## API Endpoints (Direct)
-
-    All endpoints are available at:
-    - **Base**: `http://165.232.187.97/api/v1/`
-    - **Docs**: `http://165.232.187.97/api/v1/docs`
-
-    ## 🔌 MCP INTEGRATION - DETAILED REFERENCE
-
-    ### 📍 Global MCP Server
-    **URL**: `http://165.232.187.97:8002/` | **Status**: ✅ Running 24/7
-
-    ### 📚 Available Endpoints
-    - `GET /` - Server info and available endpoints
-    - `GET /tools` - List all 7 available tools with JSON schema
-    - `POST /call?tool_name=<name>` - Execute a tool with JSON parameters
-    - `GET /health` - Check API and database health
-
-    ---
-
-    ## 🛠️ TOOL REFERENCE (7 Tools - Complete Details)
-
-    ### **Tool 1: get_health** - API Status Check
-    **Purpose**: Verify API and database connectivity
-
-    **Parameters**: None
-
-    **Response**: JSON status object with timestamp and database connection
-
-    **Example**:
-    ```bash
-    curl -X POST "http://165.232.187.97:8002/call?tool_name=get_health" \\
-      -H "Content-Type: application/json" -d '{}'
-    ```
-
-    ---
-
-    ### **Tool 2: get_symbols** - List All NSE Stocks
-    **Purpose**: Get 2,953 NSE equity stocks with metadata
-
-    **Parameters**:
-    - `sector` (optional): Filter by sector - "IT", "FINANCE", "PHARMA", "AUTO", "ENERGY", "METALS", "BANKS", etc.
-
-    **Example**:
-    ```bash
-    curl -X POST "http://165.232.187.97:8002/call?tool_name=get_symbols" \\
-      -H "Content-Type: application/json" -d '{"sector": "IT"}'
-    ```
-
-    ---
-
-    ### **Tool 3: get_ohlcv** - Single Stock OHLCV Data
-    **Purpose**: Fetch historical daily OHLCV candles
-
-    **Parameters** (required):
-    - `symbol`: NSE symbol like "TCS", "INFY", "RELIANCE"
-    - `from_date`: YYYY-MM-DD
-    - `to_date`: YYYY-MM-DD
-
-    **Example**:
-    ```bash
-    curl -X POST "http://165.232.187.97:8002/call?tool_name=get_ohlcv" \\
-      -H "Content-Type: application/json" \\
-      -d '{"symbol":"TCS","from_date":"2024-01-01","to_date":"2024-12-31"}'
-    ```
-
-    ---
-
-    ### **Tool 4: get_multi_ohlcv** - Multiple Stocks OHLCV (Batch)
-    **Purpose**: Get OHLCV for multiple stocks in one request
-
-    **Parameters** (required):
-    - `symbols`: Comma-separated "TCS,INFY,RELIANCE"
-    - `from_date`: YYYY-MM-DD
-    - `to_date`: YYYY-MM-DD
-
-    **Example**:
-    ```bash
-    curl -X POST "http://165.232.187.97:8002/call?tool_name=get_multi_ohlcv" \\
-      -H "Content-Type: application/json" \\
-      -d '{"symbols":"TCS,INFY,RELIANCE","from_date":"2024-06-01","to_date":"2024-12-31"}'
-    ```
-
-    ---
-
-    ### **Tool 5: get_daily_chart** - Daily Candlestick SVG Chart
-    **Purpose**: Generate interactive daily chart with technical indicators
-
-    **Parameters** (required):
-    - `symbol`: Stock symbol
-    - `from_date`: YYYY-MM-DD
-    - `to_date`: YYYY-MM-DD
-
-    **Parameters** (optional):
-    - `indicators`: "ema" (default) | "rsi" | "atr" | "macd" | "all" | "none"
-    - `theme`: "light" (default) | "dark"
-
-    **Features**: Candlesticks + volume bars + technical indicators overlay + date/price labels
-
-    **Example**:
-    ```bash
-    curl -X POST "http://165.232.187.97:8002/call?tool_name=get_daily_chart" \\
-      -H "Content-Type: application/json" \\
-      -d '{"symbol":"TCS","from_date":"2024-06-01","to_date":"2024-12-31","indicators":"ema","theme":"light"}' \\
-      > tcs_daily.svg
-    ```
-
-    ---
-
-    ### **Tool 6: get_weekly_chart** - Weekly Candlestick SVG Chart
-    **Purpose**: Generate weekly chart with indicators
-
-    **Parameters**: Same as daily chart
-
-    **Example**:
-    ```bash
-    curl -X POST "http://165.232.187.97:8002/call?tool_name=get_weekly_chart" \\
-      -H "Content-Type: application/json" \\
-      -d '{"symbol":"INFY","from_date":"2023-01-01","to_date":"2024-12-31","indicators":"macd","theme":"dark"}'
-    ```
-
-    ---
-
-    ### **Tool 7: get_combined_chart** - Daily + Weekly Combined SVG
-    **Purpose**: Both daily (top) and weekly (bottom) charts in one SVG
-
-    **Parameters**: Same as daily/weekly charts
-
-    **Example**:
-    ```bash
-    curl -X POST "http://165.232.187.97:8002/call?tool_name=get_combined_chart" \\
-      -H "Content-Type: application/json" \\
-      -d '{"symbol":"RELIANCE","from_date":"2024-01-01","to_date":"2024-12-31","indicators":"ema","theme":"light"}'
-    ```
-
-    ---
-
-    ## 🎯 CLAUDE MCP SETUP (3 Methods)
-
-    ### **Method 1: Direct API Calls (Simplest)**
-    Ask Claude: "Get me TCS daily chart from June-Dec 2024. Call http://165.232.187.97:8002/call?tool_name=get_daily_chart with symbol=TCS, from_date=2024-06-01, to_date=2024-12-31"
-
-    ### **Method 2: Claude Settings → MCP Connector**
-    1. Open Claude → Settings → Connectors
-    2. Add New MCP Connector
-    3. Enter: `http://165.232.187.97:8002/`
-    4. Start using: `get_daily_chart(symbol="TCS", from_date="2024-06-01", ...)`
-
-    ### **Method 3: Integration Script**
-    ```python
-    import httpx
-    MCP = "http://165.232.187.97:8002/call"
-
-    def call_mcp(tool, **params):
-        r = httpx.post(f"{MCP}?tool_name={tool}", json=params)
-        return r.json()
-
-    # Usage
-    chart = call_mcp("get_daily_chart", symbol="TCS", from_date="2024-06-01", to_date="2024-12-31")
-    ```
+    ### No MCP? Use the REST API
+    Open in a browser: `http://ohmstockvault.duckdns.org/api/v1/charts/daily?symbol=TCS&from_date=2026-01-01&to_date=2026-07-03&theme=dark`
 
     ---
 
@@ -330,22 +197,21 @@ app = FastAPI(
 
     ---
 
-    ## 📈 DATA SPECIFICATIONS
+    ## 📈 Data specifications
 
-    - **Period**: 2011-2026 (15+ years)
-    - **Stocks**: 2,953 NSE equity (ES type only)
-    - **Frequency**: Daily candles
-    - **Total Points**: ~10.8 million OHLCV records
-    - **Updates**: Daily at 18:00 IST
-    - **Source**: Dhan API v2
+    - **History**: 2011 → present (15+ years of daily candles)
+    - **Coverage**: ~2,710 NSE equity symbols (full NIFTY-500 universe included)
+    - **Records**: ~5.8 million daily OHLCV rows
+    - **Updates**: automatically every day at 18:00 IST (Dhan API v2)
+    - **Indicators**: EMA 10/21/50/200, RSI 14, ATR 14, MACD 12/26/9 (computed on demand)
 
     ---
 
-    ## Support & Resources
+    ## Links
+    - **Web app**: http://ohmstockvault.duckdns.org/
+    - **API docs**: http://ohmstockvault.duckdns.org/api/v1/docs
+    - **MCP endpoint**: http://ohmstockvault.duckdns.org/mcp
     - **GitHub**: https://github.com/kamalg1989/trade-execution-webhook
-    - **Full Guide**: MCP_INTEGRATION_GUIDE.md (in repository)
-    - **VPS**: 165.232.187.97 (Bangalore, 24/7)
-    - **Status**: ✅ Production-ready
     """,
     version="1.0.0",
     docs_url="/api/v1/docs",
@@ -610,195 +476,169 @@ def create_svg_chart(
     df: pd.DataFrame,
     indicators: dict = None,
     width: int = 1400,
-    height: int = 700,
+    height: int = 780,
     title_suffix: str = "Daily",
     theme: str = "light",
-    stock_name: str = None
+    stock_name: str = None,
+    stats: dict = None,
 ) -> str:
     """
-    Generate SVG candlestick chart with axes, price labels, and legend
+    Clean SVG candlestick chart: stats header, price/date axes, volume panel,
+    EMA overlays + legend, and 52-week high/low reference lines.
 
-    Args:
-        theme: "light" or "dark" (default: light)
-        stock_name: Full name of the stock (optional)
+    stats (optional): {ltp, chg1y, wk52_high, wk52_low} — rendered as a header row.
     """
-    # Theme colors
+    # ---- Theme (TradingView-ish) ----
     if theme == "light":
-        bg_color = "#ffffff"
-        text_color = "#000000"
-        grid_color = "#e0e0e0"
-        axis_color = "#333333"
-        wick_opacity = "0.5"
+        bg_color = "#ffffff"; text_color = "#131722"; sub_color = "#787b86"
+        grid_color = "#eceff1"; axis_color = "#cfd8dc"
     else:
-        bg_color = "#1a1a1a"
-        text_color = "#ffffff"
-        grid_color = "#333333"
-        axis_color = "#666666"
-        wick_opacity = "0.7"
+        bg_color = "#131722"; text_color = "#e6e6e6"; sub_color = "#9aa0a6"
+        grid_color = "#242832"; axis_color = "#363a45"
+    up_color = "#26a69a"; down_color = "#ef5350"
+
     if len(df) == 0:
         return "<svg></svg>"
 
-    # Get price range
     prices = pd.concat([df['open'], df['high'], df['low'], df['close']])
-    min_price = float(prices.min())
-    max_price = float(prices.max())
+    min_price = float(prices.min()); max_price = float(prices.max())
+    _pad = (max_price - min_price) * 0.06 or 1
+    min_price -= _pad; max_price += _pad
     price_range = max_price - min_price or 1
 
-    # Canvas setup (with margins for axes and legend)
-    left_margin = 120  # Increased for price label visibility
-    right_margin = 30
-    top_margin = 50
-    bottom_margin = 80
-    legend_height = 60
-
+    # ---- Layout ----
+    left_margin = 115; right_margin = 30
+    top_margin = 100 if stats else 64          # extra room for stats header
+    bottom_margin = 62; legend_height = 34
     chart_width = width - left_margin - right_margin
     chart_height = height - top_margin - bottom_margin - legend_height
+    plot_bottom = height - bottom_margin - legend_height
 
     def x_coord(i):
         return left_margin + (i / max(len(df) - 1, 1)) * chart_width
 
     def y_coord(price):
-        if price_range == 0:
-            return height - bottom_margin - legend_height - chart_height / 2
-        return height - bottom_margin - legend_height - ((price - min_price) / price_range) * chart_height
+        return plot_bottom - ((price - min_price) / price_range) * chart_height
 
-    # SVG header with stock name
-    title = f"{symbol}"
-    if stock_name:
-        title += f" ({stock_name})"
-    title += f" - {title_suffix}"
+    def esc(s):
+        return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    svg_lines = [
-        f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">',
+    svg = [
+        f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg" font-family="Arial, sans-serif">',
         f'<rect width="100%" height="100%" fill="{bg_color}"/>',
-        f'<text x="20" y="30" font-size="18" font-weight="bold" fill="{text_color}" font-family="Arial">{title}</text>',
+        f'<text x="20" y="34" font-size="24" font-weight="700" fill="{text_color}">{esc(symbol)}</text>',
+        f'<text x="20" y="54" font-size="12" fill="{sub_color}">{esc((stock_name + " · ") if stock_name else "")}{esc(symbol)}.NS · NSE · {esc(title_suffix)}</text>',
     ]
 
-    # Y-axis (prices on left)
-    svg_lines.append(f'<line x1="{left_margin}" y1="{top_margin}" x2="{left_margin}" y2="{height-bottom_margin-legend_height}" stroke="{axis_color}" stroke-width="2"/>')
+    # ---- Stats header row ----
+    if stats:
+        items = [
+            ("LTP", f"₹{stats['ltp']:.2f}", text_color),
+            ("1Y Chg", f"{stats['chg1y']:+.2f}%", up_color if stats['chg1y'] >= 0 else down_color),
+            ("52W High", f"₹{stats['wk52_high']:.2f}", text_color),
+            ("52W Low", f"₹{stats['wk52_low']:.2f}", text_color),
+        ]
+        sx = width - right_margin - len(items) * 155
+        for label, val, col in items:
+            svg.append(f'<text x="{sx}" y="30" font-size="11" fill="{sub_color}">{label}</text>')
+            svg.append(f'<text x="{sx}" y="50" font-size="16" font-weight="700" fill="{col}">{val}</text>')
+            sx += 155
 
-    # Y-axis labels and grid (larger font for better visibility)
-    for i in range(11):
-        price = min_price + (i / 10) * price_range
+    # ---- Horizontal grid + price labels ----
+    for i in range(6):
+        price = min_price + (i / 5) * price_range
         y = y_coord(price)
-        svg_lines.append(
-            f'<line x1="{left_margin-10}" y1="{y}" x2="{left_margin}" y2="{y}" stroke="{axis_color}" stroke-width="1.5"/>'
-        )
-        svg_lines.append(
-            f'<text x="{left_margin-15}" y="{y+5}" font-size="13" font-weight="500" fill="{text_color}" font-family="Arial" text-anchor="end">{price:.2f}</text>'
-        )
-        # Grid lines
-        svg_lines.append(
-            f'<line x1="{left_margin}" y1="{y}" x2="{width-right_margin}" y2="{y}" stroke="{grid_color}" stroke-width="0.5" opacity="0.5"/>'
-        )
+        svg.append(f'<line x1="{left_margin}" y1="{y:.1f}" x2="{width-right_margin}" y2="{y:.1f}" stroke="{grid_color}" stroke-width="1"/>')
+        svg.append(f'<text x="{left_margin-12}" y="{y+4:.1f}" font-size="12" fill="{sub_color}" text-anchor="end">{price:.2f}</text>')
 
-    # X-axis (dates at bottom)
-    svg_lines.append(f'<line x1="{left_margin}" y1="{height-bottom_margin-legend_height}" x2="{width-right_margin}" y2="{height-bottom_margin-legend_height}" stroke="{axis_color}" stroke-width="2"/>')
-
-    # X-axis labels (show every Nth date)
-    step = max(1, len(df) // 8)  # Show ~8 dates
+    # ---- X-axis date labels ----
+    step = max(1, len(df) // 8)
     try:
-        if len(df) > 0:
-            for i in range(0, len(df), step):
-                x = x_coord(i)
-                date_str = df.index[i].strftime("%m/%d")
-                svg_lines.append(
-                    f'<text x="{x}" y="{height-bottom_margin-legend_height+20}" font-size="11" fill="{text_color}" font-family="Arial" text-anchor="middle">{date_str}</text>'
-                )
+        for i in range(0, len(df), step):
+            x = x_coord(i)
+            date_str = df.index[i].strftime("%d %b %y")
+            svg.append(f'<text x="{x:.1f}" y="{plot_bottom+22:.1f}" font-size="11" fill="{sub_color}" text-anchor="middle">{date_str}</text>')
     except (AttributeError, TypeError):
-        pass  # Index doesn't have dates
+        pass
 
-    # Draw grid
-    for i in range(10):
-        y = top_margin + (i / 10) * chart_height
-        svg_lines.append(
-            f'<line x1="{left_margin}" y1="{y}" x2="{width-right_margin}" y2="{y}" '
-            f'stroke="{grid_color}" stroke-width="0.5"/>'
-        )
+    # ---- 52-week high/low reference lines (only if within visible range) ----
+    if stats:
+        for lvl, lbl, col in [(stats['wk52_high'], "52W High", up_color), (stats['wk52_low'], "52W Low", down_color)]:
+            if min_price <= lvl <= max_price:
+                y = y_coord(lvl)
+                svg.append(f'<line x1="{left_margin}" y1="{y:.1f}" x2="{width-right_margin}" y2="{y:.1f}" stroke="{col}" stroke-width="1" stroke-dasharray="6 4" opacity="0.55"/>')
+                svg.append(f'<text x="{width-right_margin-4}" y="{y-4:.1f}" font-size="10" fill="{col}" text-anchor="end" opacity="0.9">{lbl} {lvl:.2f}</text>')
 
-    # Draw volume bars (prominent - 20% of chart height)
+    # ---- Volume panel (bottom 16%, cleaner) ----
+    slot = chart_width / max(len(df), 1)
+    body_w = max(1.0, min(slot * 0.7, 14))
     if 'volume' in df.columns:
-        max_volume = float(df['volume'].max())
-        candle_width = chart_width / max(len(df), 1) * 0.6
-        volume_height = chart_height * 0.20  # 20% of chart height for volumes (prominent)
-        volume_y_start = height - bottom_margin - legend_height - 25  # Above date labels
-
+        max_vol = float(df['volume'].max()) or 1
+        vol_h = chart_height * 0.16
+        vol_base = plot_bottom
         for i, (_, row) in enumerate(df.iterrows()):
-            if max_volume > 0:
-                x = x_coord(i)
-                vol_ratio = float(row['volume']) / max_volume
-                bar_height = vol_ratio * volume_height
-                # Solid colors for good visibility: green for bullish, red for bearish
-                vol_color = '#2d9d2d' if row['close'] > row['open'] else '#d9534f'  # Solid green/red
+            x = x_coord(i)
+            bh = (float(row['volume']) / max_vol) * vol_h
+            vc = up_color if row['close'] >= row['open'] else down_color
+            svg.append(f'<rect x="{x-body_w/2:.1f}" y="{vol_base-bh:.1f}" width="{body_w:.1f}" height="{bh:.1f}" fill="{vc}" opacity="0.28"/>')
 
-                svg_lines.append(
-                    f'<rect x="{x - candle_width/2}" y="{volume_y_start - bar_height}" '
-                    f'width="{candle_width}" height="{bar_height}" '
-                    f'fill="{vol_color}" stroke="none" opacity="0.7"/>'
-                )
-
-    # Draw candlesticks with improved styling
-    candle_width = chart_width / max(len(df), 1) * 0.6
+    # ---- Candlesticks (clean: thin wick, flat body, no heavy border) ----
     for i, (_, row) in enumerate(df.iterrows()):
         x = x_coord(i)
-        y_open = y_coord(row['open'])
-        y_close = y_coord(row['close'])
-        y_high = y_coord(row['high'])
-        y_low = y_coord(row['low'])
-        color = '#00ff00' if row['close'] > row['open'] else '#ff0000'
-        border_color = '#006600' if row['close'] > row['open'] else '#990000'  # Darker border
+        yo = y_coord(row['open']); yc = y_coord(row['close'])
+        yh = y_coord(row['high']); yl = y_coord(row['low'])
+        up = row['close'] >= row['open']
+        col = up_color if up else down_color
+        svg.append(f'<line x1="{x:.1f}" y1="{yh:.1f}" x2="{x:.1f}" y2="{yl:.1f}" stroke="{col}" stroke-width="1.2"/>')
+        bh = abs(yo - yc) or 1
+        svg.append(f'<rect x="{x-body_w/2:.1f}" y="{min(yo,yc):.1f}" width="{body_w:.1f}" height="{bh:.1f}" fill="{col}" rx="0.5"/>')
 
-        # Wick (thicker for better visibility)
-        svg_lines.append(
-            f'<line x1="{x}" y1="{y_high}" x2="{x}" y2="{y_low}" '
-            f'stroke="{border_color}" stroke-width="1.5" opacity="0.8"/>'
-        )
-
-        # Body with border for clarity
-        body_height = abs(y_open - y_close) or 1
-        svg_lines.append(
-            f'<rect x="{x - candle_width/2}" y="{min(y_open, y_close)}" '
-            f'width="{candle_width}" height="{body_height}" '
-            f'fill="{color}" stroke="{border_color}" stroke-width="1"/>'
-        )
-
-    # Draw EMAs (if present)
+    # ---- EMA overlays + legend (top-right, horizontal) ----
     ema_styles = {
-        'ema_10': {'color': '#0066ff', 'width': 2, 'label': 'EMA-10'},
-        'ema_21': {'color': '#00ff00', 'width': 2, 'label': 'EMA-21'},
-        'ema_50': {'color': '#ffaa00', 'width': 2, 'label': 'EMA-50'},
-        'ema_200': {'color': '#ff0000', 'width': 2, 'label': 'EMA-200'}
+        'ema_10': {'color': '#2962ff', 'label': 'EMA 10'},
+        'ema_21': {'color': '#ff9800', 'label': 'EMA 21'},
+        'ema_50': {'color': '#ab47bc', 'label': 'EMA 50'},
+        'ema_200': {'color': '#787b86', 'label': 'EMA 200'},
     }
-
-    # Draw EMA indicators with legend in top-right (avoid date overlap)
     if indicators:
-        legend_x = width - right_margin - 150  # Top right corner
-        legend_y = top_margin + 30
-        legend_item_height = 18
-
+        lx = left_margin + 6
+        ly = top_margin + 16
         for col, style in ema_styles.items():
             if col in df.columns:
-                points = []
-                for i, val in enumerate(df[col]):
-                    if not pd.isna(val):
-                        points.append(f"{x_coord(i)},{y_coord(val)}")
+                pts = [f"{x_coord(i):.1f},{y_coord(v):.1f}" for i, v in enumerate(df[col]) if not pd.isna(v)]
+                if pts:
+                    svg.append(f'<polyline points="{" ".join(pts)}" fill="none" stroke="{style["color"]}" stroke-width="1.6" opacity="0.9"/>')
+                    svg.append(f'<line x1="{lx}" y1="{ly}" x2="{lx+18}" y2="{ly}" stroke="{style["color"]}" stroke-width="2.5"/>')
+                    svg.append(f'<text x="{lx+24}" y="{ly+4}" font-size="12" fill="{sub_color}">{style["label"]}</text>')
+                    lx += 92
 
-                if points:
-                    points_str = ' '.join(points)
-                    svg_lines.append(
-                        f'<polyline points="{points_str}" fill="none" '
-                        f'stroke="{style["color"]}" stroke-width="{style["width"]}" opacity="0.8"/>'
-                    )
+    svg.append('</svg>')
+    return '\n'.join(svg)
 
-                    # Legend entry (vertical stacking in top-right)
-                    svg_lines.append(f'<line x1="{legend_x}" y1="{legend_y}" x2="{legend_x+15}" y2="{legend_y}" stroke="{style["color"]}" stroke-width="2"/>')
-                    svg_lines.append(f'<text x="{legend_x+20}" y="{legend_y+4}" font-size="11" fill="{text_color}" font-family="Arial">{style["label"]}</text>')
-                    legend_y += legend_item_height
 
-    # Close SVG
-    svg_lines.append('</svg>')
-
-    return '\n'.join(svg_lines)
+async def compute_symbol_stats(conn, symbol: str):
+    """LTP, 1-year % change, 52-week high/low from the last ~52 weeks of data."""
+    try:
+        rows = await conn.fetch("""
+            SELECT high, low, close
+            FROM ohlcv_data
+            WHERE symbol = $1 AND time > NOW() - INTERVAL '400 days'
+            ORDER BY time
+        """, symbol)
+        if not rows:
+            return None
+        closes = [float(r['close']) for r in rows]
+        highs = [float(r['high']) for r in rows]
+        lows = [float(r['low']) for r in rows]
+        first = closes[0]
+        return {
+            "ltp": closes[-1],
+            "chg1y": ((closes[-1] - first) / first * 100) if first else 0.0,
+            "wk52_high": max(highs),
+            "wk52_low": min(lows),
+        }
+    except Exception:
+        return None
 
 @app.get("/api/v1/charts/daily")
 async def get_daily_chart(
@@ -837,6 +677,8 @@ async def get_daily_chart(
                 ORDER BY time
             """, symbol, from_date, to_date)
 
+            stats = await compute_symbol_stats(conn, symbol)
+
         if not rows:
             raise HTTPException(status_code=404, detail="No data found")
 
@@ -873,7 +715,7 @@ async def get_daily_chart(
         # Return format
         if format == "svg":
             calc_indicators = {col: df[col] for col in df.columns if col.startswith('ema_')}
-            svg = create_svg_chart(symbol, df, calc_indicators, title_suffix="Daily", theme=theme, stock_name=stock_name)
+            svg = create_svg_chart(symbol, df, calc_indicators, title_suffix="Daily", theme=theme, stock_name=stock_name, stats=stats)
             return StreamingResponse(
                 iter([svg]),
                 media_type="image/svg+xml",
@@ -926,6 +768,10 @@ async def get_weekly_chart(
                 ORDER BY time
             """, symbol, from_date, to_date)
 
+            stats = await compute_symbol_stats(conn, symbol)
+            stock_info = await conn.fetchrow("SELECT security_name FROM symbols_meta WHERE symbol = $1", symbol)
+            stock_name = stock_info['security_name'] if stock_info else None
+
         if not rows:
             raise HTTPException(status_code=404, detail="No data found")
 
@@ -968,8 +814,11 @@ async def get_weekly_chart(
             weekly = tech.df
 
         # Generate SVG
+        # Ensure a datetime index so the chart renders weekly date labels
+        if 'date' in weekly.columns:
+            weekly = weekly.set_index(pd.to_datetime(weekly['date']))
         calc_indicators = {col: weekly[col] for col in weekly.columns if col.startswith('ema_')}
-        svg = create_svg_chart(symbol, weekly, calc_indicators, title_suffix="Weekly", theme=theme)
+        svg = create_svg_chart(symbol, weekly, calc_indicators, title_suffix="Weekly", theme=theme, stock_name=stock_name, stats=stats)
 
         return StreamingResponse(
             iter([svg]),
@@ -1016,6 +865,8 @@ async def get_combined_charts(
                   AND time AT TIME ZONE 'Asia/Kolkata' BETWEEN $2::date AND ($3::date + INTERVAL '1 day')
                 ORDER BY time
             """, symbol, from_date, to_date)
+
+            stats = await compute_symbol_stats(conn, symbol)
 
         if not rows:
             raise HTTPException(status_code=404, detail="No data found")

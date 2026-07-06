@@ -11,16 +11,11 @@ import sys
 from typing import Any
 
 from mcp.server.models import InitializationOptions
-from mcp.types import (
-    Tool,
-    TextContent,
-    ToolResult,
-    CallToolRequest,
-)
+from mcp.types import Tool, TextContent
 from mcp.server import Server
 
 # Configuration
-API_BASE_URL = "http://localhost:8002"  # Local HTTP wrapper
+API_BASE_URL = "https://ohmstockvault.duckdns.org/api/v1"  # Direct API endpoint
 http_client = None
 
 # Initialize MCP Server
@@ -199,48 +194,76 @@ async def list_tools():
     return TOOLS
 
 @server.call_tool()
-async def call_tool(name: str, arguments: dict) -> ToolResult:
+async def call_tool(name: str, arguments: dict):
     """Handle tool calls by proxying to HTTP API"""
     try:
         client = await get_http_client()
 
-        # Build API call
-        response = await client.post(
-            f"{API_BASE_URL}/call",
-            params={"tool_name": name},
-            json=arguments,
-            timeout=60.0
-        )
+        # Map tool names to API endpoints
+        endpoint_map = {
+            "get_health": ("/health", "GET", {}),
+            "get_symbols": ("/symbols", "GET", {"sector": None}),
+            "get_ohlcv": ("/ohlcv", "GET", {"symbol", "from_date", "to_date"}),
+            "get_multi_ohlcv": ("/ohlcv/multi", "GET", {"symbols", "from_date", "to_date"}),
+            "get_daily_chart": ("/charts/daily", "GET", {"symbol", "from_date", "to_date", "indicators", "theme"}),
+            "get_weekly_chart": ("/charts/weekly", "GET", {"symbol", "from_date", "to_date", "indicators", "theme"}),
+            "get_combined_chart": ("/charts/combined", "GET", {"symbol", "from_date", "to_date", "indicators", "theme"}),
+        }
 
-        result = response.json()
+        if name not in endpoint_map:
+            return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
-        # Extract content from result
-        if isinstance(result, dict):
-            if result.get("success"):
-                content = json.dumps(result.get("data", result), indent=2)
-            else:
-                content = f"Error: {result.get('error', 'Unknown error')}"
+        endpoint, method, _ = endpoint_map[name]
+
+        # Build query params from arguments
+        params = {k: v for k, v in arguments.items() if v is not None}
+
+        # Make API call
+        if method == "GET":
+            response = await client.get(
+                f"{API_BASE_URL}{endpoint}",
+                params=params,
+                timeout=60.0
+            )
         else:
-            content = json.dumps(result, indent=2)
+            response = await client.post(
+                f"{API_BASE_URL}{endpoint}",
+                json=params,
+                timeout=60.0
+            )
 
-        return ToolResult(
-            content=[TextContent(type="text", text=content)],
-            isError=not result.get("success", True) if isinstance(result, dict) else False
-        )
+        # Handle response
+        if response.status_code == 200:
+            # Check if response is SVG (for charts) or JSON
+            content_type = response.headers.get("content-type", "")
+            if "svg" in content_type or response.text.strip().startswith("<svg"):
+                # Return SVG directly
+                content = response.text
+            else:
+                # Try to parse as JSON
+                try:
+                    result = response.json()
+                    content = json.dumps(result, indent=2)
+                except:
+                    content = response.text
+        else:
+            content = f"Error: API returned status {response.status_code}"
+
+        return [TextContent(type="text", text=content)]
 
     except Exception as e:
-        return ToolResult(
-            content=[TextContent(type="text", text=f"Error calling tool: {str(e)}")],
-            isError=True
-        )
+        return [TextContent(type="text", text=f"Error calling tool: {str(e)}")]
 
 async def main():
     """Run MCP server"""
-    async with server:
-        opts = InitializationOptions(server_name="market-data-api", server_version="1.0.0")
-        await server.initialize(opts)
-        print("Market Data API MCP Server running...", file=sys.stderr)
-        await server.wait_for_shutdown()
+    opts = InitializationOptions(
+        server_name="market-data-api",
+        server_version="1.0.0",
+        capabilities={}
+    )
+    await server.initialize(opts)
+    print("Market Data API MCP Server running...", file=sys.stderr)
+    await server.wait_for_shutdown()
 
 if __name__ == "__main__":
     asyncio.run(main())

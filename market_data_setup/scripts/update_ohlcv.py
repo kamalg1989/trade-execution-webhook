@@ -78,12 +78,27 @@ def get_dhan_token(force_refresh=False):
     import requests
     import pyotp
     import time
+    import json as _json
 
     global _cached_token, _token_generated_time
 
     if _cached_token and not force_refresh:
         if _token_generated_time and (time.time() - _token_generated_time) < 3300:
             return _cached_token
+
+    # Shared file cache (written by web_api / other jobs) — avoids Dhan token rate limits
+    _shared_cache = "/root/trade-execution-webhook/.dhan_token_cache.json"
+    if not force_refresh:
+        try:
+            with open(_shared_cache) as _f:
+                _c = _json.load(_f)
+            if time.time() - _c.get("generated_at", 0) < 23 * 3600 and _c.get("token"):
+                logger.info("✅ Reusing shared cached Dhan token")
+                _cached_token = _c["token"]
+                _token_generated_time = _c["generated_at"]
+                return _cached_token
+        except Exception:
+            pass
 
     try:
         logger.info("📡 Generating new Dhan access token...")
@@ -224,6 +239,37 @@ async def get_symbols_with_gaps(pool, from_date: datetime, to_date: datetime):
 
     return symbol_gaps
 
+def load_security_map():
+    """
+    Build {SYMBOL: dhan_security_id} from the Dhan instrument master CSV — the
+    same source the screener uses. Covers ALL NSE equity symbols (not just the
+    handful seeded in symbols_meta, which is why the old updater only touched 10).
+    """
+    import csv as _csv
+    paths = [
+        "/root/trade-execution-webhook/api-scrip-master.csv",
+        str(Path(__file__).parent.parent.parent / "api-scrip-master.csv"),
+    ]
+    src = next((p for p in paths if os.path.exists(p)), None)
+    mapping = {}
+    if not src:
+        logger.warning("⚠️ api-scrip-master.csv not found — falling back to symbols_meta")
+        return mapping
+    try:
+        with open(src, newline="") as f:
+            reader = _csv.DictReader(f)
+            for row in reader:
+                if row.get("SEM_EXM_EXCH_ID") == "NSE" and row.get("SEM_SEGMENT") == "E":
+                    sym = str(row.get("SEM_TRADING_SYMBOL", "")).strip().upper()
+                    sid = str(row.get("SEM_SMST_SECURITY_ID", "")).strip()
+                    if sym and sid:
+                        mapping[sym] = sid
+        logger.info(f"✅ Loaded {len(mapping)} NSE equity security IDs from scrip master")
+    except Exception as e:
+        logger.error(f"❌ Failed to read scrip master: {e}")
+    return mapping
+
+
 async def update_missing_data(token: str, pool, symbol: str, dhan_id: str, from_date: datetime, to_date: datetime):
     """Fetch and insert missing data for a symbol"""
     try:
@@ -331,13 +377,19 @@ async def main():
 
         logger.info(f"📋 Found gaps for {len(gaps)} symbols")
 
-        # Get symbol metadata
+        # Resolve symbol -> Dhan security ID from the instrument master CSV
+        # (covers all NSE equities). Fall back to symbols_meta for anything missing.
+        symbol_map = load_security_map()
         async with pool.acquire() as conn:
-            all_symbols = await conn.fetch(
-                "SELECT symbol, dhan_security_id FROM symbols_meta ORDER BY symbol"
+            meta_rows = await conn.fetch(
+                "SELECT symbol, dhan_security_id FROM symbols_meta WHERE dhan_security_id IS NOT NULL AND dhan_security_id != ''"
             )
+        for row in meta_rows:
+            symbol_map.setdefault(row['symbol'], str(row['dhan_security_id']))
 
-        symbol_map = {row['symbol']: str(row['dhan_security_id']) for row in all_symbols}
+        missing_ids = [s for s in gaps if s not in symbol_map]
+        if missing_ids:
+            logger.info(f"ℹ️ {len(missing_ids)} symbols have no security ID (likely delisted) — skipping")
 
         # Update missing data
         total_inserted = 0

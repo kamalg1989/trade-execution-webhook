@@ -1,0 +1,32 @@
+# Secrets & tokens
+.env
+*.env
+.dhan_token_cache.json
+service-account-key.json
+*service-account*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+mcp/venv/
+
+# Node / frontend build
+node_modules/
+web-platform/node_modules/
+web-platform/dist/
+dist/
+
+# Data & logs
+*.log
+latest_recommendations.json
+screener_settings.json
+api-scrip-master.csv
+run_*/
+
+# OS
+.DS_Store
+.idea/
+.vscode/

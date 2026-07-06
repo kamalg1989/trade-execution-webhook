@@ -200,6 +200,28 @@ async def root():
         ]
     }
 
+@app.get("/mcp/")
+@app.post("/mcp/")
+async def mcp_root():
+    """MCP root endpoint - Claude web service discovery"""
+    return {
+        "protocolVersion": "2024-11-05",
+        "capabilities": {
+            "tools": {}
+        },
+        "serverInfo": {
+            "name": "market-data-api",
+            "version": "1.0.0"
+        }
+    }
+
+@app.options("/mcp/initialize")
+@app.options("/mcp/tools/list")
+@app.options("/mcp/tools/call")
+async def mcp_options():
+    """Handle CORS preflight for MCP endpoints"""
+    return {}
+
 def main():
     print("🚀 Market Data API - MCP HTTP Server starting on port 8003...")
     uvicorn.run(app, host="0.0.0.0", port=8003, log_level="info")
