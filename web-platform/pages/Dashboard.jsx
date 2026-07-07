@@ -120,7 +120,7 @@ export default function Dashboard() {
     const entry = stock.entry || stock.currentPrice;
     const sl = stock.stopLoss;
     if (!window.confirm(
-      `Place a REAL Dhan BUY order?\n\n${stock.symbol}\nQty: ${qty}\nLimit price: ₹${entry}\nStop loss: ₹${sl}\n\n(If the market is closed it will be queued as an after-market order.)`
+      `Place a REAL Dhan BUY forever order?\n\n${stock.symbol}\nQty: ${qty}\nBuy above (trigger): ₹${entry}\n\nThis rests on Dhan and triggers when price crosses ₹${entry}.\nSet a stop loss from the SL tab once it fills.`
     )) return;
     try {
       const response = await fetch('/api/buy', {

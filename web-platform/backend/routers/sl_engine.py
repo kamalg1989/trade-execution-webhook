@@ -39,6 +39,36 @@ ACTIVE_STATUSES = ("PENDING", "CONFIRM", "TRANSIT")
 
 SAFETY_PCT = 0.92  # mirrors sl_engine.SAFETY_SL_PCT (−8%)
 RECS_FILE = '/root/trade-execution-webhook/latest_recommendations.json'
+MANUAL_SL_FILE = '/root/trade-execution-webhook/manual_structural_sl.json'
+
+
+def _manual_structural_map():
+    """{SYMBOL(no .NS): structuralSL} — user-entered structural levels for
+    holdings not present in the sheet/screener."""
+    try:
+        with open(MANUAL_SL_FILE) as f:
+            raw = json.load(f)
+        return {str(k).replace('.NS', '').strip().upper(): float(v)
+                for k, v in raw.items() if v}
+    except Exception:
+        return {}
+
+
+def _save_manual_structural(symbol, value):
+    sym = str(symbol).replace('.NS', '').strip().upper()
+    try:
+        data = {}
+        if os.path.exists(MANUAL_SL_FILE):
+            with open(MANUAL_SL_FILE) as f:
+                data = json.load(f)
+    except Exception:
+        data = {}
+    if value and float(value) > 0:
+        data[sym] = float(value)
+    else:
+        data.pop(sym, None)  # clearing
+    with open(MANUAL_SL_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
 
 
 def _sl_options(entry, ltp, structural_sl):
@@ -187,6 +217,7 @@ async def get_sl_alerts():
         sl_map = _forever_sl_map()                  # existing forever SLs
         struct = _structural_map()                  # structural SL from sheet
         screener_struct = _screener_structural_map()  # fallback from screener output
+        manual_struct = _manual_structural_map()      # user-entered fallback
     except Exception as e:
         logger.error(f"SL data fetch failed: {e}")
         raise HTTPException(status_code=502, detail=f"Dhan/sheet error: {str(e)[:140]}")
@@ -214,12 +245,23 @@ async def get_sl_alerts():
         has_sl = sl_price > 0
 
         s = struct.get(sec_id, {})
-        # Structural SL: sheet first, else screener output
-        structural_sl = s.get("structuralSL") or screener_struct.get(sym_key)
-        structural_src = "sheet" if s.get("structuralSL") else ("screener" if screener_struct.get(sym_key) else None)
+        # Structural SL: sheet first, then user-entered manual, then screener output
+        if s.get("structuralSL"):
+            structural_sl, structural_src = s.get("structuralSL"), "sheet"
+        elif manual_struct.get(sym_key):
+            structural_sl, structural_src = manual_struct.get(sym_key), "manual"
+        elif screener_struct.get(sym_key):
+            structural_sl, structural_src = screener_struct.get(sym_key), "screener"
+        else:
+            structural_sl, structural_src = None, None
         entry = s.get("entry") or avg   # prefer sheet entry, else avg cost
         safety_sl = round(entry * sl_engine.SAFETY_SL_PCT, 1) if entry else None
         last_close = close_map.get(sym_key)
+
+        # R-multiple of the current move: R = buy − stop (structural, else −8% safety)
+        r_stop = structural_sl if structural_sl else safety_sl
+        r_unit = (avg - r_stop) if (r_stop and avg > r_stop) else None
+        r_multiple = round((ltp - avg) / r_unit, 2) if r_unit else None
 
         sl_pct_from_entry = round(((sl_price - entry) / entry) * 100, 1) if (has_sl and entry) else None
         sl_options = _sl_options(entry, ltp, structural_sl)
@@ -269,9 +311,11 @@ async def get_sl_alerts():
             "distanceToSL": distance,
             "riskZone": zone,
             "structuralSL": round(structural_sl, 2) if structural_sl else None,
-            "structuralSrc": structural_src,       # 'sheet' | 'screener' | None
+            "structuralSrc": structural_src,       # 'sheet' | 'manual' | 'screener' | None
+            "structuralEditable": structural_src in (None, "manual"),  # user can set/override
             "safetySL": safety_sl,
             "hasStructural": structural_sl is not None,
+            "rMultiple": r_multiple,               # current move in R units (buy − stop basis)
             "belowStructuralLive": below_live,
             "belowStructuralClose": below_close,
             "danger": below_close,
@@ -291,6 +335,23 @@ async def get_sl_alerts():
         })
 
     return {"positions": positions, "alerts": alerts, "asOf": datetime.now().isoformat()}
+
+
+class SetStructuralReq(BaseModel):
+    symbol: str
+    structuralSL: float = 0     # 0 clears the manual value
+
+
+@router.post("/sl/set-structural")
+async def set_structural(req: SetStructuralReq):
+    """Save (or clear) a manual structural SL for a symbol not in the sheet/screener."""
+    try:
+        _save_manual_structural(req.symbol, req.structuralSL)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not save: {str(e)[:120]}")
+    return {"success": True,
+            "message": (f"Structural SL for {req.symbol} set to ₹{req.structuralSL}"
+                        if req.structuralSL else f"Structural SL cleared for {req.symbol}")}
 
 
 # ---------- ACTION MODELS ----------

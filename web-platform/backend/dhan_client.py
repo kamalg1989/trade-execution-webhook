@@ -193,6 +193,71 @@ def is_market_closed_error(result) -> bool:
     return "market is closed" in msg or "offline order" in msg or "amo" in msg
 
 
+def place_forever_buy(security_id, quantity, entry, symbol):
+    """
+    Place a BUY *forever order* (GTT-style, rests until triggered) — mirrors the
+    production entry_engine.place_order: LIMIT / CNC, trigger = entry (buy above),
+    limit a touch higher, both rounded to tick. Persists across sessions like SLs.
+    """
+    import sys
+    sys.path.insert(0, "/root/trade-execution-webhook")
+    try:
+        import tick_utils
+        tick = tick_utils.get_tick_size(symbol) or 0.05
+        trigger = tick_utils.round_to_tick(entry, tick, mode="down")
+        price = tick_utils.round_to_tick(entry * 1.002, tick, mode="up")
+        if price <= trigger:
+            price = tick_utils.round_to_tick(trigger + tick, tick, mode="up")
+    except Exception:
+        tick = 0.05
+        trigger = round(entry, 2)
+        price = round(entry * 1.002, 2)
+
+    payload = {
+        "dhanClientId": get_client_id(),
+        "correlationId": "WEBBUY" + str(int(time.time()))[-10:],
+        "orderFlag": "SINGLE",
+        "transactionType": "BUY",
+        "exchangeSegment": "NSE_EQ",
+        "productType": "CNC",
+        "orderType": "LIMIT",
+        "validity": "DAY",
+        "securityId": str(security_id),
+        "quantity": int(quantity),
+        "price": price,
+        "triggerPrice": trigger,
+    }
+    r = requests.post(f"{BASE}/forever/orders", headers=_headers(), json=payload, timeout=20)
+    body = r.json() if r.text else {}
+    if r.status_code not in (200, 201):
+        return {"success": False,
+                "error": body.get("errorMessage") or body.get("message") or r.text[:200],
+                "status": r.status_code}
+    return {"success": True, "orderId": body.get("orderId"),
+            "orderStatus": body.get("orderStatus"), "trigger": trigger, "price": price, "raw": body}
+
+
+def get_forever_orders():
+    """All forever orders (for duplicate-BUY detection)."""
+    try:
+        r = requests.get(f"{BASE}/forever/orders", headers=_headers(), timeout=15)
+        data = r.json() if r.status_code == 200 else []
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def has_open_forever_buy(symbol):
+    """True if an active BUY forever order already exists for this symbol."""
+    sym = symbol.replace(".NS", "").strip().upper()
+    for o in get_forever_orders():
+        if (str(o.get("tradingSymbol", "")).strip().upper() == sym
+                and str(o.get("transactionType", "")).upper() == "BUY"
+                and str(o.get("orderStatus", "")).upper() in ("PENDING", "CONFIRM", "TRIGGERED", "ACCEPTED")):
+            return True
+    return False
+
+
 def modify_order(order_id, quantity, order_type, trigger_price=0, price=0):
     payload = {
         "dhanClientId": get_client_id(),

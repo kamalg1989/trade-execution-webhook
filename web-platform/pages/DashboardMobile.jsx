@@ -71,7 +71,7 @@ export default function DashboardMobile() {
     const qty = stock.recommendedQty || stock.qty || 1;
     const entry = stock.entry || stock.currentPrice;
     const sl = stock.stopLoss;
-    if (!window.confirm(`Place a REAL Dhan BUY order?\n\n${stock.symbol}\nQty: ${qty}\nLimit: ₹${entry}\nSL: ₹${sl}\n\n(Queued as after-market order if market is closed.)`)) return;
+    if (!window.confirm(`Place a REAL Dhan BUY forever order?\n\n${stock.symbol}\nQty: ${qty}\nBuy above (trigger): ₹${entry}\n\nRests on Dhan, triggers when price crosses ₹${entry}. Set SL from SL tab after fill.`)) return;
     try {
       const response = await fetch('/api/buy', {
         method: 'POST',
