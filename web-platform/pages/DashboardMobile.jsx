@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { TrendingUp, TrendingDown, AlertCircle, ShoppingCart, BarChart3, RefreshCw, Loader } from 'lucide-react';
+import { TrendingUp, TrendingDown, AlertCircle, ShoppingCart, BarChart3, RefreshCw, Loader, Database } from 'lucide-react';
 import ChartModal from '../components/ChartModal';
 
 export default function DashboardMobile() {
@@ -9,10 +9,13 @@ export default function DashboardMobile() {
   const [chartOpen, setChartOpen] = useState(false);
   const [status, setStatus] = useState(null);
   const [scanning, setScanning] = useState(false);
+  const [updating, setUpdating] = useState(false);
+
+  const refreshStatus = () => fetch('/api/data-status').then(r => r.ok && r.json()).then(d => d && setStatus(d)).catch(() => {});
 
   useEffect(() => {
     fetchRecommendations();
-    fetch('/api/data-status').then(r => r.ok && r.json()).then(d => d && setStatus(d)).catch(() => {});
+    refreshStatus();
   }, []);
 
   const runScan = async () => {
@@ -24,6 +27,22 @@ export default function DashboardMobile() {
       alert(d.message || 'Scan started');
     } catch { alert('Failed to start scan'); }
     setScanning(false);
+  };
+
+  const updateData = async () => {
+    if (!window.confirm('Pull latest candles from Dhan into the DB? Takes ~1–2 min.')) return;
+    setUpdating(true);
+    try {
+      const r = await fetch('/api/data/update', { method: 'POST' });
+      const d = await r.json();
+      alert(d.message || 'Data update started');
+      const poll = setInterval(async () => {
+        try {
+          const s = await (await fetch('/api/data/update-status')).json();
+          if (!s.updating) { clearInterval(poll); setUpdating(false); refreshStatus(); }
+        } catch { clearInterval(poll); setUpdating(false); }
+      }, 5000);
+    } catch { alert('Failed to start data update'); setUpdating(false); }
   };
 
   const fetchRecommendations = async () => {
@@ -77,18 +96,24 @@ export default function DashboardMobile() {
 
   return (
     <div className="bg-gradient-to-br from-slate-900 to-slate-800 text-white min-h-screen">
-      {/* Status + scan */}
+      {/* Status + actions */}
       {status && (
-        <div className="px-4 pt-3 pb-2 border-b border-slate-800 flex items-center justify-between gap-2">
-          <div className="text-[11px] text-slate-400 leading-tight">
-            <div>📅 Signals: <b className="text-slate-200">{fmtD(status.signalBarDate)}</b> · 🗄️ DB: <b className="text-slate-200">{fmtD(status.dbLatestCandle)}</b></div>
-            {status.regime && <div>Regime: <b className="text-purple-300">{status.regime}</b></div>}
+        <div className="px-4 pt-3 pb-2 border-b border-slate-800">
+          <div className="text-[11px] text-slate-400 leading-tight mb-2">
+            <div>📅 Signals: <b className="text-slate-200">{fmtD(status.signalBarDate)}</b> · 🗄️ DB: <b className="text-slate-200">{fmtD(status.dbLatestCandle)}</b>{status.regime && <> · Regime: <b className="text-purple-300">{status.regime}</b></>}</div>
           </div>
-          <button onClick={runScan} disabled={scanning || status.scanRunning}
-            className="flex items-center gap-1.5 bg-blue-600 active:bg-blue-700 disabled:opacity-50 text-xs font-semibold px-3 py-2 rounded-lg flex-shrink-0">
-            {(scanning || status.scanRunning) ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-            {status.scanRunning ? 'Scanning' : 'Scan'}
-          </button>
+          <div className="flex gap-2">
+            <button onClick={updateData} disabled={updating}
+              className="flex-1 flex items-center justify-center gap-1.5 bg-emerald-600 active:bg-emerald-700 disabled:opacity-50 text-xs font-semibold px-3 py-2 rounded-lg">
+              {updating ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <Database className="w-3.5 h-3.5" />}
+              {updating ? 'Updating DB' : 'Update Data'}
+            </button>
+            <button onClick={runScan} disabled={scanning || status.scanRunning}
+              className="flex-1 flex items-center justify-center gap-1.5 bg-blue-600 active:bg-blue-700 disabled:opacity-50 text-xs font-semibold px-3 py-2 rounded-lg">
+              {(scanning || status.scanRunning) ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+              {status.scanRunning ? 'Scanning' : 'Run Screener'}
+            </button>
+          </div>
         </div>
       )}
 

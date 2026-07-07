@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 import subprocess
+import sys
 import json
 import logging
 import os
@@ -20,6 +21,8 @@ BASE_DIR = '/root/trade-execution-webhook'
 RECS_FILE = os.path.join(BASE_DIR, 'latest_recommendations.json')
 SCREENER = os.path.join(BASE_DIR, 'screen_gpt.py')
 SCAN_LOG = os.path.join(BASE_DIR, 'screener_scan.log')
+UPDATER = os.path.join(BASE_DIR, 'market_data_setup/scripts/update_ohlcv.py')
+UPDATE_LOG = os.path.join(BASE_DIR, 'market_data_setup/scripts/update.log')
 
 
 class RecommendationsListResponse(BaseModel):
@@ -129,6 +132,45 @@ async def scan_status():
         "lastCount": data.get('count') if data else None,
         "logTail": log_tail,
     }
+
+
+def _is_updater_running():
+    return subprocess.run(['pgrep', '-f', 'update_ohlcv.py'],
+                          capture_output=True).returncode == 0
+
+
+@router.post("/data/update")
+async def update_market_data():
+    """Pull the latest daily candles from Dhan into the local DB (background)."""
+    if not os.path.exists(UPDATER):
+        raise HTTPException(status_code=500, detail="update_ohlcv.py not found on server")
+    if _is_updater_running():
+        return {"success": True, "status": "already_running",
+                "message": "A data update is already in progress"}
+
+    # sys.executable is the web API's venv python (has asyncpg). --days 7 covers
+    # weekends/holiday gaps; the gap-after-latest logic fills right up to today.
+    with open(UPDATE_LOG, 'a') as logf:
+        logf.write(f"\n===== Data update triggered from web at {datetime.now().isoformat()} =====\n")
+        subprocess.Popen(
+            [sys.executable, UPDATER, '--days', '7'],
+            cwd=BASE_DIR, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True,
+        )
+    return {"success": True, "status": "started",
+            "message": "Data update started — new candles land in ~1-2 min. Check the DB date."}
+
+
+@router.get("/data/update-status")
+async def update_data_status():
+    """Whether a data update is running + last log lines."""
+    tail = ""
+    if os.path.exists(UPDATE_LOG):
+        try:
+            with open(UPDATE_LOG) as f:
+                tail = ''.join(f.readlines()[-12:])
+        except Exception:
+            pass
+    return {"updating": _is_updater_running(), "logTail": tail}
 
 
 @router.get("/data-status")

@@ -11,6 +11,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState(null);
   const [scanning, setScanning] = useState(false);
+  const [updating, setUpdating] = useState(false);
 
   useEffect(() => {
     fetchRecommendations();
@@ -22,6 +23,26 @@ export default function Dashboard() {
       const r = await fetch('/api/data-status');
       if (r.ok) setStatus(await r.json());
     } catch { /* ignore */ }
+  };
+
+  const updateData = async () => {
+    if (!window.confirm('Pull the latest daily candles from Dhan into the database?\n\nThis takes ~1–2 minutes. Do it before running the screener so it uses fresh data.')) return;
+    setUpdating(true);
+    try {
+      const r = await fetch('/api/data/update', { method: 'POST' });
+      const d = await r.json();
+      alert(d.message || 'Data update started');
+      // Poll until the updater finishes, then refresh the DB date
+      const poll = setInterval(async () => {
+        try {
+          const s = await (await fetch('/api/data/update-status')).json();
+          if (!s.updating) { clearInterval(poll); setUpdating(false); fetchStatus(); }
+        } catch { clearInterval(poll); setUpdating(false); }
+      }, 5000);
+    } catch {
+      alert('Failed to start data update');
+      setUpdating(false);
+    }
   };
 
   const runScan = async () => {
@@ -130,14 +151,25 @@ export default function Dashboard() {
             <h1 className="text-2xl lg:text-4xl font-bold mb-1">📊 Trading Dashboard</h1>
             <p className="text-xs lg:text-base text-slate-400">Daily stock recommendations powered by AI screening</p>
           </div>
-          <button
-            onClick={runScan}
-            disabled={scanning || status?.scanRunning}
-            className="self-start flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 font-semibold px-4 py-2 rounded-lg"
-          >
-            {(scanning || status?.scanRunning) ? <Loader className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-            {status?.scanRunning ? 'Scanning…' : 'Run Screener Now'}
-          </button>
+          <div className="flex flex-wrap items-center gap-2 self-start">
+            <button
+              onClick={updateData}
+              disabled={updating}
+              title="Fetch latest candles from Dhan into the DB"
+              className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 font-semibold px-4 py-2 rounded-lg"
+            >
+              {updating ? <Loader className="w-4 h-4 animate-spin" /> : <Database className="w-4 h-4" />}
+              {updating ? 'Updating DB…' : 'Update Data'}
+            </button>
+            <button
+              onClick={runScan}
+              disabled={scanning || status?.scanRunning}
+              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 font-semibold px-4 py-2 rounded-lg"
+            >
+              {(scanning || status?.scanRunning) ? <Loader className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+              {status?.scanRunning ? 'Scanning…' : 'Run Screener Now'}
+            </button>
+          </div>
         </div>
 
         {/* Data freshness bar */}
