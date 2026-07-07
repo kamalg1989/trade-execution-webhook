@@ -22,20 +22,8 @@ SCREENER = os.path.join(BASE_DIR, 'screen_gpt.py')
 SCAN_LOG = os.path.join(BASE_DIR, 'screener_scan.log')
 
 
-class RecommendationResponse(BaseModel):
-    symbol: str
-    company: str
-    currentPrice: float
-    change: float
-    target: float
-    stopLoss: float
-    confidence: int
-    reason: str
-    recommendedQty: int
-
-
 class RecommendationsListResponse(BaseModel):
-    stocks: List[RecommendationResponse]
+    stocks: List[dict]          # full pick objects (all screener fields passed through)
     generatedAt: str
     count: int
     stale: bool = False
@@ -77,20 +65,13 @@ async def get_recommendations():
     except Exception:
         stale = True
 
-    stocks = [
-        RecommendationResponse(
-            symbol=s.get('symbol', ''),
-            company=s.get('company', s.get('symbol', '')),
-            currentPrice=float(s.get('currentPrice', 0)),
-            change=float(s.get('change', 0)),
-            target=float(s.get('target', 0)),
-            stopLoss=float(s.get('stopLoss', 0)),
-            confidence=int(s.get('confidence', 70)),
-            reason=s.get('reason', ''),
-            recommendedQty=int(s.get('recommendedQty', 1)),
-        )
-        for s in data.get('stocks', [])
-    ]
+    # Pass the full pick objects through (all screener fields), with safe defaults
+    stocks = []
+    for s in data.get('stocks', []):
+        s = dict(s)
+        s.setdefault('company', s.get('symbol', ''))
+        s.setdefault('recommendedQty', 1)
+        stocks.append(s)
 
     return RecommendationsListResponse(
         stocks=stocks,
@@ -150,17 +131,37 @@ async def scan_status():
     }
 
 
-@router.get("/recommendations-mock", response_model=RecommendationsListResponse)
-async def get_recommendations_mock():
-    """Mock recommendations for UI testing"""
-    return RecommendationsListResponse(
-        stocks=[
-            RecommendationResponse(symbol="RELIANCE", company="Reliance Industries", currentPrice=2850.50, change=2.5, target=3100.0, stopLoss=2700.0, confidence=85, reason="Strong bullish divergence on daily RSI with breakout above 200-DMA", recommendedQty=5),
-            RecommendationResponse(symbol="TCS", company="Tata Consultancy Services", currentPrice=3920.0, change=-1.2, target=4200.0, stopLoss=3750.0, confidence=78, reason="Cup and handle formation with institutional accumulation", recommendedQty=3),
-            RecommendationResponse(symbol="INFY", company="Infosys", currentPrice=1820.75, change=1.8, target=2050.0, stopLoss=1750.0, confidence=72, reason="Golden cross on weekly chart with positive macro setup", recommendedQty=4),
-            RecommendationResponse(symbol="WIPRO", company="Wipro", currentPrice=385.50, change=-0.5, target=450.0, stopLoss=360.0, confidence=68, reason="Consolidation breakout with increasing volume", recommendedQty=10),
-            RecommendationResponse(symbol="HDFCBANK", company="HDFC Bank", currentPrice=1620.30, change=3.2, target=1850.0, stopLoss=1550.0, confidence=82, reason="Support bounce with sector rotation into financials", recommendedQty=6),
-        ],
-        generatedAt=datetime.utcnow().isoformat(),
-        count=5,
-    )
+@router.get("/data-status")
+async def data_status():
+    """DB freshness + last scan info for the dashboard header."""
+    db_latest = None
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=os.getenv("MD_DB_HOST", "localhost"),
+            port=int(os.getenv("MD_DB_PORT", "5432")),
+            dbname=os.getenv("MD_DB_NAME", "market_data"),
+            user=os.getenv("MD_DB_USER", "market_data_user"),
+            password=os.getenv("MD_DB_PASSWORD", os.getenv("DB_PASSWORD", "")),
+            connect_timeout=5,
+        )
+        cur = conn.cursor()
+        cur.execute("SELECT MAX(time)::date FROM ohlcv_data")
+        row = cur.fetchone()
+        db_latest = str(row[0]) if row and row[0] else None
+        conn.close()
+    except Exception as e:
+        logger.warning(f"data-status DB query failed: {e}")
+
+    data = _read_recs_file() or {}
+    stocks = data.get("stocks", [])
+    signal_bar = stocks[0].get("signalBarDate") if stocks else None
+
+    return {
+        "dbLatestCandle": db_latest,               # last day present in the OHLCV DB
+        "recsGeneratedAt": data.get("generatedAt"),
+        "signalBarDate": signal_bar,               # last candle the screener acted on
+        "regime": data.get("regime"),
+        "count": data.get("count"),
+        "scanRunning": _is_scan_running(),
+    }

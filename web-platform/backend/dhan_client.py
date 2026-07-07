@@ -159,8 +159,10 @@ def get_security_id(symbol):
 
 
 def place_order(security_id, quantity, transaction_type, order_type="MARKET",
-                price=0, trigger_price=0, product_type="CNC"):
-    """Place an order. order_type: MARKET / LIMIT / STOP_LOSS / STOP_LOSS_MARKET"""
+                price=0, trigger_price=0, product_type="CNC",
+                after_market=False, amo_time="OPEN"):
+    """Place an order. order_type: MARKET / LIMIT / STOP_LOSS / STOP_LOSS_MARKET.
+    after_market=True places an AMO (queued for next session)."""
     payload = {
         "dhanClientId": get_client_id(),
         "transactionType": transaction_type,   # BUY / SELL
@@ -173,13 +175,22 @@ def place_order(security_id, quantity, transaction_type, order_type="MARKET",
         "price": float(price) if order_type in ("LIMIT", "STOP_LOSS") else 0,
         "triggerPrice": float(trigger_price) if order_type in ("STOP_LOSS", "STOP_LOSS_MARKET") else 0,
         "disclosedQuantity": 0,
-        "afterMarketOrder": False,
+        "afterMarketOrder": bool(after_market),
     }
+    if after_market:
+        payload["amoTime"] = amo_time  # OPEN / PRE_OPEN / OPEN_30 / OPEN_60
     r = requests.post(f"{BASE}/orders", headers=_headers(), json=payload, timeout=20)
     body = r.json() if r.text else {}
     if r.status_code not in (200, 201):
-        return {"success": False, "error": body.get("errorMessage") or body.get("message") or r.text[:200]}
+        return {"success": False,
+                "error": body.get("errorMessage") or body.get("message") or r.text[:200],
+                "raw": body, "status": r.status_code}
     return {"success": True, "orderId": body.get("orderId"), "orderStatus": body.get("orderStatus"), "raw": body}
+
+
+def is_market_closed_error(result) -> bool:
+    msg = str(result.get("error", "")).lower()
+    return "market is closed" in msg or "offline order" in msg or "amo" in msg
 
 
 def modify_order(order_id, quantity, order_type, trigger_price=0, price=0):

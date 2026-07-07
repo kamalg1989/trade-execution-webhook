@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { AlertTriangle, AlertCircle, CheckCircle, ShieldOff, Shield, Zap, Loader, Trash2, TrendingUp, LogOut } from 'lucide-react';
+import { AlertTriangle, AlertCircle, CheckCircle, ShieldOff, Shield, Zap, Loader, Trash2, TrendingUp, LogOut, RefreshCw } from 'lucide-react';
 
 const api = async (path, body) => {
   const r = await fetch(path, {
@@ -16,6 +16,7 @@ export default function StopLossTracker() {
   const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [choice, setChoice] = useState({});   // per-position selected SL price
   const [busy, setBusy] = useState({});
   const [message, setMessage] = useState(null);
@@ -103,6 +104,7 @@ export default function StopLossTracker() {
   const zoneStyle = (z) => ({
     SAFE: 'bg-green-900 text-green-400', WARNING: 'bg-yellow-900 text-yellow-400',
     CRITICAL: 'bg-red-900 text-red-400', NO_SL: 'bg-orange-900 text-orange-400',
+    DANGER: 'bg-red-600 text-white',
   }[z] || 'bg-slate-600 text-slate-300');
 
   if (loading) return <div className="p-8 text-slate-400">Loading stop loss data...</div>;
@@ -120,10 +122,17 @@ export default function StopLossTracker() {
               Forever orders · {protectedPos.length} protected · {unprotected.length} unprotected · manual buttons only
             </p>
           </div>
-          <button onClick={() => setAutoRefresh(!autoRefresh)}
-            className={`self-start flex items-center gap-2 px-3 py-1.5 rounded text-sm font-semibold ${autoRefresh ? 'bg-blue-600' : 'bg-slate-700 text-slate-300'}`}>
-            <Zap className="w-4 h-4" />{autoRefresh ? 'Live (20s)' : 'Paused'}
-          </button>
+          <div className="flex items-center gap-2 self-start">
+            <button onClick={() => { setRefreshing(true); fetchData().finally(() => setRefreshing(false)); }}
+              disabled={refreshing}
+              className="flex items-center gap-2 px-3 py-1.5 rounded text-sm font-semibold bg-slate-700 hover:bg-slate-600 text-slate-200 disabled:opacity-50">
+              <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />Refresh
+            </button>
+            <button onClick={() => setAutoRefresh(!autoRefresh)}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded text-sm font-semibold ${autoRefresh ? 'bg-blue-600' : 'bg-slate-700 text-slate-300'}`}>
+              <Zap className="w-4 h-4" />{autoRefresh ? 'Live (20s)' : 'Paused'}
+            </button>
+          </div>
         </div>
 
         {message && (
@@ -144,7 +153,7 @@ export default function StopLossTracker() {
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
               {unprotected.map(p => (
                 <div key={p.id} className="bg-slate-800 rounded-lg p-4 border border-orange-800/50">
-                  <div className="flex justify-between items-start mb-3">
+                  <div className="flex justify-between items-start mb-2">
                     <div>
                       <p className="font-bold text-base">{p.symbol}</p>
                       <p className="text-xs text-slate-400">{p.quantity} qty · buy ₹{p.buyPrice}</p>
@@ -155,6 +164,12 @@ export default function StopLossTracker() {
                         {p.pnl >= 0 ? '+' : ''}₹{p.pnl?.toLocaleString('en-IN', {maximumFractionDigits: 0})}
                       </p>
                     </div>
+                  </div>
+
+                  {/* Reference SL levels */}
+                  <div className="flex gap-3 mb-3 text-[11px]">
+                    <span className="text-slate-400">Safety −8%: <span className="text-slate-200">₹{p.safetySL ?? '—'}</span></span>
+                    <span className="text-slate-400">Structural: <span className={p.structuralSL ? 'text-purple-300' : 'text-slate-500'}>{p.structuralSL ? `₹${p.structuralSL}` : '—'}</span></span>
                   </div>
 
                   {/* Suggested-level dropdown */}
@@ -195,25 +210,44 @@ export default function StopLossTracker() {
                 // Trail dropdown: only levels ABOVE the current SL (ratchet up)
                 const trailOpts = (p.slOptions || []).filter(o => o.price > p.stop_loss);
                 return (
-                <div key={p.id} className="bg-slate-800 rounded-lg p-4">
+                <div key={p.id} className={`rounded-lg p-4 ${p.danger ? 'bg-red-950/70 border border-red-600' : p.watch ? 'bg-amber-950/50 border border-amber-700/60' : 'bg-slate-800'}`}>
+                  {(p.danger || p.watch) && (
+                    <div className={`mb-2 text-xs font-semibold flex items-center gap-1.5 ${p.danger ? 'text-red-300' : 'text-amber-300'}`}>
+                      <AlertTriangle className="w-4 h-4" />
+                      {p.danger
+                        ? `Closed ₹${p.lastClose} below structural SL ₹${p.structuralSL} — EXIT at next market open`
+                        : `Live ₹${p.current_price} below structural SL ₹${p.structuralSL} — watch for a close below`}
+                    </div>
+                  )}
                   <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
-                    <div className="grid grid-cols-3 lg:grid-cols-7 gap-3 flex-1 text-sm">
+                    <div className="grid grid-cols-3 lg:grid-cols-8 gap-x-3 gap-y-2 flex-1 text-sm">
                       <div><p className="text-[10px] text-slate-400">Symbol</p><p className="font-bold">{p.symbol}</p></div>
                       <div><p className="text-[10px] text-slate-400">Qty</p><p>{p.quantity}</p></div>
                       <div><p className="text-[10px] text-slate-400">Buy</p><p>₹{p.buyPrice}</p></div>
                       <div><p className="text-[10px] text-slate-400">Current</p><p className="text-blue-400">₹{p.current_price}</p></div>
                       <div>
-                        <p className="text-[10px] text-slate-400">SL</p>
-                        <p className="text-red-400">₹{p.stop_loss}
+                        <p className="text-[10px] text-slate-400">Safety −8%</p>
+                        <p className="text-slate-300">₹{p.safetySL ?? '—'}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-slate-400">Structural</p>
+                        <p className={p.structuralSL ? 'text-purple-300' : 'text-slate-500'}>
+                          {p.structuralSL ? `₹${p.structuralSL}` : '—'}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-slate-400">Current SL</p>
+                        <p className="text-red-400 font-semibold">₹{p.stop_loss}
                           {p.slPctFromEntry != null && (
-                            <span className="text-slate-400"> ({p.slPctFromEntry > 0 ? '+' : ''}{p.slPctFromEntry}%)</span>
+                            <span className="text-slate-400 font-normal"> ({p.slPctFromEntry > 0 ? '+' : ''}{p.slPctFromEntry}%)</span>
                           )}
                         </p>
                       </div>
-                      <div><p className="text-[10px] text-slate-400">Dist</p><p>{p.distanceToSL}%</p></div>
                       <div>
-                        <p className="text-[10px] text-slate-400">Zone</p>
-                        <span className={`px-2 py-0.5 rounded text-xs font-bold ${zoneStyle(p.riskZone)}`}>{p.riskZone}</span>
+                        <p className="text-[10px] text-slate-400">SL is at</p>
+                        <span className={`px-2 py-0.5 rounded text-xs font-bold ${p.danger ? zoneStyle('DANGER') : zoneStyle(p.riskZone)}`}>
+                          {p.danger ? 'DANGER' : (p.slBasis || p.riskZone)}
+                        </span>
                       </div>
                     </div>
 

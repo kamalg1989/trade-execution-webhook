@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { TrendingUp, TrendingDown, AlertCircle, ShoppingCart, Maximize2 } from 'lucide-react';
+import { TrendingUp, TrendingDown, AlertCircle, ShoppingCart, Maximize2, RefreshCw, Loader, Calendar, Database } from 'lucide-react';
 import ChartModal, { makeResponsive } from '../components/ChartModal';
 
 export default function Dashboard() {
@@ -9,10 +9,40 @@ export default function Dashboard() {
   const [chartType, setChartType] = useState('daily'); // 'daily' | 'weekly'
   const [chartOpen, setChartOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState(null);
+  const [scanning, setScanning] = useState(false);
 
   useEffect(() => {
     fetchRecommendations();
+    fetchStatus();
   }, []);
+
+  const fetchStatus = async () => {
+    try {
+      const r = await fetch('/api/data-status');
+      if (r.ok) setStatus(await r.json());
+    } catch { /* ignore */ }
+  };
+
+  const runScan = async () => {
+    if (!window.confirm('Run the screener now? This scans the NIFTY-500 and takes a few minutes.')) return;
+    setScanning(true);
+    try {
+      const r = await fetch('/api/recommendations/refresh', { method: 'POST' });
+      const d = await r.json();
+      alert(d.message || 'Scan started');
+    } catch {
+      alert('Failed to start scan');
+    }
+    setScanning(false);
+    setTimeout(fetchStatus, 2000);
+  };
+
+  const fmtDate = (s) => {
+    if (!s) return '—';
+    try { return new Date(s).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); }
+    catch { return s; }
+  };
 
   const fetchRecommendations = async () => {
     try {
@@ -65,26 +95,27 @@ export default function Dashboard() {
   };
 
   const handleBuy = async (stock) => {
+    const qty = stock.recommendedQty || stock.qty || 1;
+    const entry = stock.entry || stock.currentPrice;
+    const sl = stock.stopLoss;
+    if (!window.confirm(
+      `Place a REAL Dhan BUY order?\n\n${stock.symbol}\nQty: ${qty}\nLimit price: ₹${entry}\nStop loss: ₹${sl}\n\n(If the market is closed it will be queued as an after-market order.)`
+    )) return;
     try {
       const response = await fetch('/api/buy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          symbol: stock.symbol,
-          quantity: stock.recommendedQty || 1,
-          price: stock.currentPrice,
-          stopLoss: stock.stopLoss
-        })
+        body: JSON.stringify({ symbol: stock.symbol, quantity: qty, price: entry, stopLoss: sl })
       });
       const result = await response.json();
-      if (result.success) {
-        alert(`✅ Order placed for ${stock.symbol}`);
+      if (response.ok && result.success) {
+        alert(`✅ ${result.message}\nOrder ID: ${result.orderId}`);
       } else {
-        alert(`❌ Order failed: ${result.error}`);
+        alert(`❌ Order failed: ${result.detail || result.error || 'Unknown error'}`);
       }
     } catch (error) {
       console.error('Order placement failed:', error);
-      alert('❌ Order placement failed');
+      alert('❌ Order placement failed (network error)');
     }
   };
 
@@ -94,10 +125,34 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 text-white p-4 lg:p-8">
       <div className="max-w-7xl mx-auto">
         {/* Header */}
-        <div className="mb-6 lg:mb-8">
-          <h1 className="text-2xl lg:text-4xl font-bold mb-1 lg:mb-2">📊 Trading Dashboard</h1>
-          <p className="text-xs lg:text-base text-slate-400">Daily stock recommendations powered by AI screening</p>
+        <div className="mb-4 lg:mb-6 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <div>
+            <h1 className="text-2xl lg:text-4xl font-bold mb-1">📊 Trading Dashboard</h1>
+            <p className="text-xs lg:text-base text-slate-400">Daily stock recommendations powered by AI screening</p>
+          </div>
+          <button
+            onClick={runScan}
+            disabled={scanning || status?.scanRunning}
+            className="self-start flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 font-semibold px-4 py-2 rounded-lg"
+          >
+            {(scanning || status?.scanRunning) ? <Loader className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+            {status?.scanRunning ? 'Scanning…' : 'Run Screener Now'}
+          </button>
         </div>
+
+        {/* Data freshness bar */}
+        {status && (
+          <div className="mb-4 lg:mb-6 bg-slate-800/70 border border-slate-700 rounded-lg px-4 py-2.5 flex flex-wrap items-center gap-x-6 gap-y-1 text-xs lg:text-sm">
+            <span className="flex items-center gap-1.5 text-slate-300">
+              <Calendar className="w-4 h-4 text-blue-400" /> Signals from: <b className="text-white">{fmtDate(status.signalBarDate)}</b>
+            </span>
+            <span className="flex items-center gap-1.5 text-slate-300">
+              <Database className="w-4 h-4 text-green-400" /> Data in DB through: <b className="text-white">{fmtDate(status.dbLatestCandle)}</b>
+            </span>
+            <span className="text-slate-400">Picks generated: <b className="text-slate-200">{status.recsGeneratedAt ? new Date(status.recsGeneratedAt).toLocaleString('en-IN') : '—'}</b></span>
+            {status.regime && <span className="text-slate-400">Regime: <b className="text-purple-300">{status.regime}</b></span>}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-8">
           {/* Left: Recommendations List */}
@@ -197,6 +252,31 @@ export default function Dashboard() {
                   <p className="mt-3 lg:mt-4 text-slate-300 text-xs lg:text-sm">
                     <strong>Reason:</strong> {selectedStock.reason}
                   </p>
+
+                  {/* Full screener detail (matches Telegram alert) */}
+                  {selectedStock.entryType && (
+                    <div className="mt-4 pt-4 border-t border-slate-600">
+                      <div className="flex flex-wrap gap-2 mb-3 text-xs">
+                        {selectedStock.regime && <span className="px-2 py-1 rounded bg-purple-900/60 text-purple-300">🌍 {selectedStock.regime}</span>}
+                        <span className="px-2 py-1 rounded bg-blue-900/60 text-blue-300">🎯 {selectedStock.entryType}</span>
+                        {selectedStock.signalBarDate && <span className="px-2 py-1 rounded bg-slate-600 text-slate-200">📅 Signal: {selectedStock.signalBarDate}</span>}
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2 text-xs lg:text-sm">
+                        <Detail label="Entry (buy above)" value={`₹${selectedStock.entry ?? '—'}`} />
+                        <Detail label="Stop Loss (close below)" value={`₹${selectedStock.stopLoss}`} />
+                        <Detail label={`Target (${selectedStock.targetStrategy || 'FIXED_R'})`} value={`₹${selectedStock.target}`} />
+                        <Detail label="Qty" value={`${selectedStock.recommendedQty}${selectedStock.baseStage != null ? ` (stage ${selectedStock.baseStage}, x${selectedStock.stageMultiplier ?? 1})` : ''}`} />
+                        <Detail label="Risk / Share" value={selectedStock.riskPerShare != null ? `₹${selectedStock.riskPerShare}` : '—'} />
+                        <Detail label="R : R" value={selectedStock.rrRatio != null ? `1 : ${selectedStock.rrRatio}` : '—'} />
+                        <Detail label="Tick" value={selectedStock.tickSize != null ? `₹${selectedStock.tickSize}` : '—'} />
+                        <Detail label="Base Stage" value={selectedStock.baseStage ?? '—'} />
+                        <Detail label="Base Quality" value={selectedStock.baseQuality != null ? selectedStock.baseQuality.toFixed(2) : '—'} />
+                        <Detail label="Liquidity" value={selectedStock.liquidityCr != null ? `₹${selectedStock.liquidityCr} cr/day` : '—'} />
+                        <Detail label="IFP" value={selectedStock.ifp ?? '—'} />
+                        <Detail label="Base Range" value={selectedStock.baseRangePct != null ? `${selectedStock.baseRangePct}%` : '—'} />
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Chart Section — Daily / Weekly toggle */}
@@ -254,6 +334,15 @@ export default function Dashboard() {
         open={chartOpen}
         onClose={() => setChartOpen(false)}
       />
+    </div>
+  );
+}
+
+function Detail({ label, value }) {
+  return (
+    <div>
+      <p className="text-slate-400 text-[10px] lg:text-xs">{label}</p>
+      <p className="font-semibold text-white">{value}</p>
     </div>
   );
 }

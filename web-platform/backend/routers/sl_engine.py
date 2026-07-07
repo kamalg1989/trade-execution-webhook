@@ -16,6 +16,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from datetime import datetime
 import logging
+import json
+import os
 import sys
 
 sys.path.insert(0, '/root/trade-execution-webhook')
@@ -36,51 +38,112 @@ except Exception as e:  # pragma: no cover
 ACTIVE_STATUSES = ("PENDING", "CONFIRM", "TRANSIT")
 
 SAFETY_PCT = 0.92  # mirrors sl_engine.SAFETY_SL_PCT (−8%)
+RECS_FILE = '/root/trade-execution-webhook/latest_recommendations.json'
 
 
 def _sl_options(entry, ltp, structural_sl):
     """
-    Build the suggested-SL dropdown for a position, grounded in the SL-engine
-    logic: −8% safety (from buy), −8% trail (from current close), structural
-    (from sheet), plus standard %-offsets and breakeven. Each option carries
-    its price and % relative to both buy price and current price. Only levels
-    strictly below the current price are valid SL triggers.
+    Suggested-SL dropdown, in display order:
+      1) Safety −8% (from buy)
+      2) Structural SL
+      3) Buy price (breakeven)
+      4) Trail ladder from current price: −12%, −10%, −8%, −5%
+    Only levels strictly below the current price are valid triggers.
     """
-    opts = []
-
-    def add(label, price, basis):
+    def mk(label, price, basis):
         if not price or price <= 0 or (ltp > 0 and price >= ltp):
-            return
-        opts.append({
+            return None
+        return {
             "label": label,
             "price": round(price, 1),
             "basis": basis,
             "pctFromEntry": round(((price - entry) / entry) * 100, 1) if entry else None,
             "pctFromCurrent": round(((price - ltp) / ltp) * 100, 1) if ltp else None,
-        })
+        }
 
+    ordered = []
     if entry:
-        add("−8% safety (from buy)", entry * SAFETY_PCT, "safety")
-    if ltp:
-        add("−8% trail (from current)", ltp * SAFETY_PCT, "trail")
+        ordered.append(mk("Safety −8% (from buy)", entry * SAFETY_PCT, "safety"))
     if structural_sl:
-        add("Structural SL (sheet)", structural_sl, "structural")
+        ordered.append(mk("Structural SL", structural_sl, "structural"))
+    if entry:
+        ordered.append(mk("Buy price (breakeven)", entry, "breakeven"))
     if ltp:
-        add("−5% from current", ltp * 0.95, "pct5")
-        add("−10% from current", ltp * 0.90, "pct10")
-        add("−12% from current", ltp * 0.88, "pct12")
-    if entry and ltp > entry:
-        add("Breakeven (buy price)", entry, "breakeven")
+        for pct in (0.88, 0.90, 0.92, 0.95):  # −12, −10, −8, −5 %
+            ordered.append(mk(f"Trail −{round((1 - pct) * 100)}% (from current)", ltp * pct, f"trail{round((1 - pct) * 100)}"))
 
-    # De-duplicate by price (keep first/most-meaningful label), sort tightest first
-    seen, uniq = set(), []
-    for o in sorted(opts, key=lambda x: -x["price"]):
-        key = o["price"]
-        if key in seen:
+    # keep display order, drop invalid and duplicate prices (first label wins)
+    seen, out = set(), []
+    for o in ordered:
+        if not o or o["price"] in seen:
             continue
-        seen.add(key)
-        uniq.append(o)
-    return uniq
+        seen.add(o["price"])
+        out.append(o)
+    return out
+
+
+def _classify_sl(sl_price, entry, structural, safety):
+    """Which level the current SL trigger corresponds to."""
+    if not sl_price:
+        return None
+    tol = max(sl_price * 0.005, 0.05)
+    if safety and abs(sl_price - safety) <= tol:
+        return "Safety −8%"
+    if structural and abs(sl_price - structural) <= tol:
+        return "Structural"
+    if entry and abs(sl_price - entry) <= tol:
+        return "Breakeven"
+    if entry and sl_price > entry:
+        return f"Trail (+{round((sl_price - entry) / entry * 100, 1)}% vs buy)"
+    return "Custom"
+
+
+def _screener_structural_map():
+    """{SYMBOL(no .NS): stopLoss} from the latest screener output — used as the
+    structural SL for holdings not present in the Google Sheet."""
+    try:
+        with open(RECS_FILE) as f:
+            data = json.load(f)
+        m = {}
+        for s in data.get('stocks', []):
+            sym = str(s.get('symbol', '')).replace('.NS', '').strip().upper()
+            sl = s.get('stopLoss') or s.get('stop_loss')
+            if sym and sl:
+                m[sym] = float(sl)
+        return m
+    except Exception:
+        return {}
+
+
+def _last_close_map(symbols):
+    """{SYMBOL: last daily close} from the local market_data DB (for the
+    'closes below structural SL' danger confirmation)."""
+    out = {}
+    if not symbols:
+        return out
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=os.getenv("MD_DB_HOST", "localhost"),
+            port=int(os.getenv("MD_DB_PORT", "5432")),
+            dbname=os.getenv("MD_DB_NAME", "market_data"),
+            user=os.getenv("MD_DB_USER", "market_data_user"),
+            password=os.getenv("MD_DB_PASSWORD", os.getenv("DB_PASSWORD", "")),
+            connect_timeout=5,
+        )
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT DISTINCT ON (symbol) symbol, close
+            FROM ohlcv_data
+            WHERE symbol = ANY(%s)
+            ORDER BY symbol, time DESC
+        """, (symbols,))
+        for sym, close in cur.fetchall():
+            out[str(sym)] = float(close)
+        conn.close()
+    except Exception as e:
+        logger.warning(f"last-close query failed: {e}")
+    return out
 
 
 def _forever_sl_map():
@@ -123,9 +186,15 @@ async def get_sl_alerts():
         holdings = dhan_client.get_holdings()      # has lastTradedPrice
         sl_map = _forever_sl_map()                  # existing forever SLs
         struct = _structural_map()                  # structural SL from sheet
+        screener_struct = _screener_structural_map()  # fallback from screener output
     except Exception as e:
         logger.error(f"SL data fetch failed: {e}")
         raise HTTPException(status_code=502, detail=f"Dhan/sheet error: {str(e)[:140]}")
+
+    # Last daily close per symbol (for the close-confirmed danger check)
+    hold_syms = [str(h.get("tradingSymbol", "")).replace(".NS", "").upper()
+                 for h in holdings if int(h.get("totalQty") or h.get("availableQty") or 0) > 0]
+    close_map = _last_close_map(hold_syms)
 
     positions, alerts = [], []
     for h in holdings:
@@ -134,6 +203,7 @@ async def get_sl_alerts():
             continue
         sec_id = str(h.get("securityId", ""))
         symbol = h.get("tradingSymbol", "")
+        sym_key = str(symbol).replace(".NS", "").upper()
         avg = float(h.get("avgCostPrice") or 0)
         ltp = float(h.get("lastTradedPrice") or 0) or avg
         pnl = (ltp - avg) * qty
@@ -144,26 +214,44 @@ async def get_sl_alerts():
         has_sl = sl_price > 0
 
         s = struct.get(sec_id, {})
-        structural_sl = s.get("structuralSL")
+        # Structural SL: sheet first, else screener output
+        structural_sl = s.get("structuralSL") or screener_struct.get(sym_key)
+        structural_src = "sheet" if s.get("structuralSL") else ("screener" if screener_struct.get(sym_key) else None)
         entry = s.get("entry") or avg   # prefer sheet entry, else avg cost
         safety_sl = round(entry * sl_engine.SAFETY_SL_PCT, 1) if entry else None
+        last_close = close_map.get(sym_key)
 
         sl_pct_from_entry = round(((sl_price - entry) / entry) * 100, 1) if (has_sl and entry) else None
         sl_options = _sl_options(entry, ltp, structural_sl)
+        sl_basis = _classify_sl(sl_price, entry, structural_sl, safety_sl) if has_sl else None
+
+        # Danger: live price below structural (soft watch) and daily close below structural (hard)
+        below_live = bool(structural_sl and ltp < structural_sl)
+        below_close = bool(structural_sl and last_close and last_close < structural_sl)
 
         if has_sl and ltp > 0:
             distance = round(((ltp - sl_price) / ltp) * 100, 2)
             zone = "SAFE" if distance > 10 else "WARNING" if distance > 5 else "CRITICAL"
-            if zone == "WARNING":
-                alerts.append({"symbol": symbol, "type": "WARNING",
-                               "message": f"⚠️ {symbol}: {distance}% above SL ₹{sl_price}"})
-            elif zone == "CRITICAL":
-                alerts.append({"symbol": symbol, "type": "CRITICAL",
-                               "message": f"🚨 {symbol}: only {distance}% above SL ₹{sl_price}"})
         else:
             distance, zone = None, "NO_SL"
+
+        # Alerts (danger takes priority)
+        if below_close:
+            zone = "DANGER"
+            alerts.append({"symbol": symbol, "type": "DANGER",
+                           "message": f"🛑 {symbol}: closed ₹{last_close} below structural SL ₹{structural_sl} — EXIT at next open"})
+        elif below_live:
+            alerts.append({"symbol": symbol, "type": "WATCH",
+                           "message": f"⚠️ {symbol}: live ₹{round(ltp,2)} below structural SL ₹{structural_sl} — watch for a close below"})
+        elif not has_sl:
             alerts.append({"symbol": symbol, "type": "NO_SL",
                            "message": f"❗ {symbol}: no active stop loss"})
+        elif zone == "CRITICAL":
+            alerts.append({"symbol": symbol, "type": "CRITICAL",
+                           "message": f"🚨 {symbol}: only {distance}% above SL ₹{sl_price}"})
+        elif zone == "WARNING":
+            alerts.append({"symbol": symbol, "type": "WARNING",
+                           "message": f"⚠️ {symbol}: {distance}% above SL ₹{sl_price}"})
 
         positions.append({
             "id": sec_id,
@@ -174,13 +262,20 @@ async def get_sl_alerts():
             "buyPrice": round(avg, 2),
             "avgCost": round(avg, 2),
             "current_price": round(ltp, 2),
+            "lastClose": round(last_close, 2) if last_close else None,
             "stop_loss": round(sl_price, 2) if has_sl else 0,
             "slPctFromEntry": sl_pct_from_entry,
+            "slBasis": sl_basis,                   # which level the current SL sits at
             "distanceToSL": distance,
             "riskZone": zone,
-            "structuralSL": structural_sl,
+            "structuralSL": round(structural_sl, 2) if structural_sl else None,
+            "structuralSrc": structural_src,       # 'sheet' | 'screener' | None
             "safetySL": safety_sl,
             "hasStructural": structural_sl is not None,
+            "belowStructuralLive": below_live,
+            "belowStructuralClose": below_close,
+            "danger": below_close,
+            "watch": below_live and not below_close,
             "slOptions": sl_options,
             "pnl": round(pnl, 2),
             "slOrders": [

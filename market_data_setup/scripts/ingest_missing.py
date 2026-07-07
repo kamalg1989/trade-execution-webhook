@@ -126,7 +126,7 @@ def main():
         rows = [(sym, dt, o, h, l, c, v) for (dt, o, h, l, c, v) in candles]
         cur.executemany(
             "INSERT INTO ohlcv_data (symbol, time, open, high, low, close, volume) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s)", rows)
+            "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (symbol, time) DO NOTHING", rows)
         # register in symbols_meta (best-effort — never let a meta conflict lose the OHLCV)
         try:
             cur.execute(

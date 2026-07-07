@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { TrendingUp, TrendingDown, AlertCircle, ShoppingCart, BarChart3 } from 'lucide-react';
+import { TrendingUp, TrendingDown, AlertCircle, ShoppingCart, BarChart3, RefreshCw, Loader } from 'lucide-react';
 import ChartModal from '../components/ChartModal';
 
 export default function DashboardMobile() {
@@ -7,10 +7,24 @@ export default function DashboardMobile() {
   const [selectedStock, setSelectedStock] = useState(null);
   const [loading, setLoading] = useState(true);
   const [chartOpen, setChartOpen] = useState(false);
+  const [status, setStatus] = useState(null);
+  const [scanning, setScanning] = useState(false);
 
   useEffect(() => {
     fetchRecommendations();
+    fetch('/api/data-status').then(r => r.ok && r.json()).then(d => d && setStatus(d)).catch(() => {});
   }, []);
+
+  const runScan = async () => {
+    if (!window.confirm('Run the screener now? Takes a few minutes.')) return;
+    setScanning(true);
+    try {
+      const r = await fetch('/api/recommendations/refresh', { method: 'POST' });
+      const d = await r.json();
+      alert(d.message || 'Scan started');
+    } catch { alert('Failed to start scan'); }
+    setScanning(false);
+  };
 
   const fetchRecommendations = async () => {
     try {
@@ -35,33 +49,49 @@ export default function DashboardMobile() {
   };
 
   const handleBuy = async (stock) => {
+    const qty = stock.recommendedQty || stock.qty || 1;
+    const entry = stock.entry || stock.currentPrice;
+    const sl = stock.stopLoss;
+    if (!window.confirm(`Place a REAL Dhan BUY order?\n\n${stock.symbol}\nQty: ${qty}\nLimit: ₹${entry}\nSL: ₹${sl}\n\n(Queued as after-market order if market is closed.)`)) return;
     try {
       const response = await fetch('/api/buy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          symbol: stock.symbol,
-          quantity: stock.recommendedQty || 1,
-          price: stock.currentPrice,
-          stopLoss: stock.stopLoss
-        })
+        body: JSON.stringify({ symbol: stock.symbol, quantity: qty, price: entry, stopLoss: sl })
       });
       const result = await response.json();
-      if (result.success) {
-        alert(`✅ Order placed for ${stock.symbol}`);
+      if (response.ok && result.success) {
+        alert(`✅ ${result.message}\nOrder ID: ${result.orderId}`);
       } else {
-        alert(`❌ Order failed: ${result.error}`);
+        alert(`❌ Order failed: ${result.detail || result.error || 'Unknown error'}`);
       }
     } catch (error) {
       console.error('Order placement failed:', error);
-      alert('❌ Order placement failed');
+      alert('❌ Order placement failed (network error)');
     }
   };
 
   if (loading) return <div className="p-4 text-center text-slate-400">Loading...</div>;
 
+  const fmtD = (s) => { if (!s) return '—'; try { return new Date(s).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }); } catch { return s; } };
+
   return (
     <div className="bg-gradient-to-br from-slate-900 to-slate-800 text-white min-h-screen">
+      {/* Status + scan */}
+      {status && (
+        <div className="px-4 pt-3 pb-2 border-b border-slate-800 flex items-center justify-between gap-2">
+          <div className="text-[11px] text-slate-400 leading-tight">
+            <div>📅 Signals: <b className="text-slate-200">{fmtD(status.signalBarDate)}</b> · 🗄️ DB: <b className="text-slate-200">{fmtD(status.dbLatestCandle)}</b></div>
+            {status.regime && <div>Regime: <b className="text-purple-300">{status.regime}</b></div>}
+          </div>
+          <button onClick={runScan} disabled={scanning || status.scanRunning}
+            className="flex items-center gap-1.5 bg-blue-600 active:bg-blue-700 disabled:opacity-50 text-xs font-semibold px-3 py-2 rounded-lg flex-shrink-0">
+            {(scanning || status.scanRunning) ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+            {status.scanRunning ? 'Scanning' : 'Scan'}
+          </button>
+        </div>
+      )}
+
       {/* Recommendations List */}
       <div className="px-4 py-4">
         <h2 className="text-lg font-bold mb-3 flex items-center gap-2">
@@ -145,9 +175,32 @@ export default function DashboardMobile() {
               </div>
             </div>
 
-            <p className="mt-3 text-xs text-slate-300 line-clamp-2">
+            <p className="mt-3 text-xs text-slate-300">
               <strong>Reason:</strong> {selectedStock.reason}
             </p>
+
+            {/* Full screener detail */}
+            {selectedStock.entryType && (
+              <div className="mt-3 pt-3 border-t border-slate-600">
+                <div className="flex flex-wrap gap-1.5 mb-2 text-[10px]">
+                  {selectedStock.regime && <span className="px-2 py-0.5 rounded bg-purple-900/60 text-purple-300">🌍 {selectedStock.regime}</span>}
+                  <span className="px-2 py-0.5 rounded bg-blue-900/60 text-blue-300">🎯 {selectedStock.entryType}</span>
+                  {selectedStock.signalBarDate && <span className="px-2 py-0.5 rounded bg-slate-600 text-slate-200">📅 {selectedStock.signalBarDate}</span>}
+                </div>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
+                  <D label="Entry (buy above)" v={`₹${selectedStock.entry ?? '—'}`} />
+                  <D label="Target" v={`₹${selectedStock.target}`} />
+                  <D label="Qty" v={`${selectedStock.recommendedQty}${selectedStock.baseStage != null ? ` (st${selectedStock.baseStage} x${selectedStock.stageMultiplier ?? 1})` : ''}`} />
+                  <D label="Risk/Share" v={selectedStock.riskPerShare != null ? `₹${selectedStock.riskPerShare}` : '—'} />
+                  <D label="R:R" v={selectedStock.rrRatio != null ? `1:${selectedStock.rrRatio}` : '—'} />
+                  <D label="Tick" v={selectedStock.tickSize != null ? `₹${selectedStock.tickSize}` : '—'} />
+                  <D label="Base Quality" v={selectedStock.baseQuality != null ? selectedStock.baseQuality.toFixed(2) : '—'} />
+                  <D label="Liquidity" v={selectedStock.liquidityCr != null ? `₹${selectedStock.liquidityCr}cr` : '—'} />
+                  <D label="IFP" v={selectedStock.ifp ?? '—'} />
+                  <D label="Base Range" v={selectedStock.baseRangePct != null ? `${selectedStock.baseRangePct}%` : '—'} />
+                </div>
+              </div>
+            )}
           </div>
 
           {/* View Chart button — opens fullscreen chart modal */}
@@ -175,6 +228,15 @@ export default function DashboardMobile() {
         open={chartOpen}
         onClose={() => setChartOpen(false)}
       />
+    </div>
+  );
+}
+
+function D({ label, v }) {
+  return (
+    <div>
+      <p className="text-slate-400 text-[9px]">{label}</p>
+      <p className="font-semibold text-white">{v}</p>
     </div>
   );
 }

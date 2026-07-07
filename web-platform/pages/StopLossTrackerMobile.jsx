@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { CheckCircle, AlertCircle, Zap, Shield, ShieldOff, Loader, TrendingUp, LogOut, Trash2 } from 'lucide-react';
+import { CheckCircle, AlertCircle, Zap, Shield, ShieldOff, Loader, TrendingUp, LogOut, Trash2, RefreshCw, AlertTriangle } from 'lucide-react';
 
 const api = async (path, body) => {
   const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -12,6 +12,7 @@ export default function StopLossTrackerMobile() {
   const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [choice, setChoice] = useState({});
   const [busy, setBusy] = useState({});
   const [message, setMessage] = useState(null);
@@ -74,6 +75,7 @@ export default function StopLossTrackerMobile() {
   const zoneColor = (z) => ({
     SAFE: 'text-green-400 bg-green-900', WARNING: 'text-yellow-400 bg-yellow-900',
     CRITICAL: 'text-red-400 bg-red-900', NO_SL: 'text-orange-400 bg-orange-900',
+    DANGER: 'text-white bg-red-600',
   }[z] || 'text-slate-300 bg-slate-600');
 
   if (loading) return <div className="p-4 text-center text-slate-400">Loading...</div>;
@@ -85,10 +87,17 @@ export default function StopLossTrackerMobile() {
     <div className="bg-gradient-to-br from-slate-900 to-slate-800 text-white min-h-screen pb-8">
       <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
         <span className="text-xs text-slate-400">{protectedPos.length} protected · {unprotected.length} unprotected</span>
-        <button onClick={() => setAutoRefresh(!autoRefresh)}
-          className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-semibold ${autoRefresh ? 'bg-blue-600' : 'bg-slate-700 text-slate-300'}`}>
-          <Zap className="w-3 h-3" />{autoRefresh ? 'Live' : 'Paused'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => { setRefreshing(true); fetchData().finally(() => setRefreshing(false)); }}
+            disabled={refreshing}
+            className="flex items-center gap-1.5 px-3 py-1 rounded text-xs font-semibold bg-slate-700 text-slate-200 disabled:opacity-50">
+            <RefreshCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />Refresh
+          </button>
+          <button onClick={() => setAutoRefresh(!autoRefresh)}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-semibold ${autoRefresh ? 'bg-blue-600' : 'bg-slate-700 text-slate-300'}`}>
+            <Zap className="w-3 h-3" />{autoRefresh ? 'Live' : 'Paused'}
+          </button>
+        </div>
       </div>
 
       {message && (
@@ -108,12 +117,16 @@ export default function StopLossTrackerMobile() {
           <div className="space-y-2">
             {unprotected.map(p => (
               <div key={p.id} className="bg-slate-800 border border-orange-800/50 rounded-lg p-3">
-                <div className="flex justify-between items-start mb-2">
+                <div className="flex justify-between items-start mb-1.5">
                   <div><p className="font-bold text-sm">{p.symbol}</p><p className="text-xs text-slate-400">{p.quantity} · buy ₹{p.buyPrice}</p></div>
                   <div className="text-right">
                     <p className="font-bold text-sm">₹{p.current_price}</p>
                     <p className={`text-xs ${p.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>{p.pnl >= 0 ? '+' : ''}₹{Math.abs(p.pnl)?.toLocaleString('en-IN', {maximumFractionDigits: 0})}</p>
                   </div>
+                </div>
+                <div className="flex gap-3 mb-2 text-[10px]">
+                  <span className="text-slate-400">Safety −8%: <span className="text-slate-200">₹{p.safetySL ?? '—'}</span></span>
+                  <span className="text-slate-400">Struct: <span className={p.structuralSL ? 'text-purple-300' : 'text-slate-500'}>{p.structuralSL ? `₹${p.structuralSL}` : '—'}</span></span>
                 </div>
                 <div className="flex items-stretch gap-2 flex-nowrap min-w-0">
                   <select
@@ -150,18 +163,30 @@ export default function StopLossTrackerMobile() {
             {protectedPos.map(p => {
               const trailOpts = (p.slOptions || []).filter(o => o.price > p.stop_loss);
               return (
-              <div key={p.id} className="bg-slate-700 rounded-lg p-3">
+              <div key={p.id} className={`rounded-lg p-3 ${p.danger ? 'bg-red-950/70 border border-red-600' : p.watch ? 'bg-amber-950/50 border border-amber-700/60' : 'bg-slate-700'}`}>
                 <div className="flex justify-between items-start mb-2">
                   <div><p className="font-bold text-sm">{p.symbol}</p><p className="text-xs text-slate-400">{p.quantity} · buy ₹{p.buyPrice}</p></div>
-                  <span className={`px-2 py-0.5 rounded text-xs font-bold ${zoneColor(p.riskZone)}`}>{p.riskZone}</span>
+                  <span className={`px-2 py-0.5 rounded text-xs font-bold ${p.danger ? zoneColor('DANGER') : zoneColor(p.riskZone)}`}>
+                    {p.danger ? 'DANGER' : (p.slBasis || p.riskZone)}
+                  </span>
                 </div>
+                {(p.danger || p.watch) && (
+                  <div className={`mb-2 text-[11px] font-semibold flex items-start gap-1 ${p.danger ? 'text-red-300' : 'text-amber-300'}`}>
+                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />
+                    {p.danger
+                      ? `Closed ₹${p.lastClose} below structural ₹${p.structuralSL} — EXIT next open`
+                      : `Live below structural ₹${p.structuralSL} — watch for close below`}
+                  </div>
+                )}
                 <div className="bg-slate-600/60 rounded p-2 space-y-1 text-xs mb-2">
                   <div className="flex justify-between"><span className="text-slate-400">Current:</span><span className="text-blue-400 font-bold">₹{p.current_price}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400">Safety −8%:</span><span className="text-slate-300">₹{p.safetySL ?? '—'}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400">Structural:</span><span className={p.structuralSL ? 'text-purple-300' : 'text-slate-500'}>{p.structuralSL ? `₹${p.structuralSL}` : '—'}</span></div>
                   <div className="flex justify-between">
-                    <span className="text-slate-400">SL:</span>
-                    <span className="text-red-400 font-bold">₹{p.stop_loss}{p.slPctFromEntry != null && <span className="text-slate-400 font-normal"> ({p.slPctFromEntry > 0 ? '+' : ''}{p.slPctFromEntry}% vs buy)</span>}</span>
+                    <span className="text-slate-400">Current SL:</span>
+                    <span className="text-red-400 font-bold">₹{p.stop_loss}{p.slPctFromEntry != null && <span className="text-slate-400 font-normal"> ({p.slPctFromEntry > 0 ? '+' : ''}{p.slPctFromEntry}%)</span>}</span>
                   </div>
-                  <div className="flex justify-between"><span className="text-slate-400">Distance:</span><span>{p.distanceToSL}%</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400">SL is at:</span><span className="text-slate-200">{p.slBasis || '—'}</span></div>
                   <div className="flex justify-between"><span className="text-slate-400">P&L:</span><span className={p.pnl >= 0 ? 'text-green-400 font-bold' : 'text-red-400 font-bold'}>{p.pnl >= 0 ? '+' : ''}₹{Math.abs(p.pnl)?.toLocaleString('en-IN', {maximumFractionDigits: 0})}</span></div>
                 </div>
                 {/* Trail-to-level dropdown */}

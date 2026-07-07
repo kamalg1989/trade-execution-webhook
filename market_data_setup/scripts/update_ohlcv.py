@@ -311,6 +311,7 @@ async def update_missing_data(token: str, pool, symbol: str, dhan_id: str, from_
                 await conn.executemany(
                     """INSERT INTO ohlcv_data (symbol, time, open, high, low, close, volume, oi)
                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                       ON CONFLICT (symbol, time) DO NOTHING
                     """,
                     rows
                 )

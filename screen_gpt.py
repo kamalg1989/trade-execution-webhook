@@ -660,6 +660,10 @@ def fetch_from_db(stock, max_stale_days=4):
         df = df.rename(columns={"open": "Open", "high": "High", "low": "Low",
                                 "close": "Close", "volume": "Volume"})
         df = df[["Open", "High", "Low", "Close", "Volume"]].astype(float).sort_index()
+        # Drop duplicate dates (DB can hold >1 row per day after re-ingests);
+        # keep the last. Without this, .loc[date] returns a Series and breaks
+        # downstream scalar comparisons (e.g. IFP).
+        df = df[~df.index.duplicated(keep="last")]
 
         # Staleness check — if DB is too far behind, fall back to API
         from datetime import datetime as _dt, timezone as _tz, timedelta as _td
@@ -1793,6 +1797,20 @@ Tick: `₹{trade['tick_size']:.4f}`
             "confidence": int(round(m["base_quality_score"] * 100)),
             "reason": f"{type_label} | Base stage {m['base_stage']} | R:R 1:{rr_ratio} | Regime: {regime}",
             "recommendedQty": qty,
+            # --- full screener detail (matches the Telegram alert) ---
+            "regime": regime,
+            "entryType": type_label,
+            "signalBarDate": trade.get("signal_bar_date"),
+            "riskPerShare": round(risk, 2),
+            "rrRatio": rr_ratio,
+            "targetStrategy": TARGET_STRATEGY,
+            "tickSize": round(float(trade.get("tick_size", 0)), 4),
+            "baseStage": m["base_stage"],
+            "stageMultiplier": trade.get("stage_multiplier"),
+            "baseQuality": round(m["base_quality_score"], 2),
+            "liquidityCr": round(m["turnover"] / 1e7, 2),
+            "ifp": round(m["ifp_score"], 2),
+            "baseRangePct": round(m["base_range_pct"] * 100, 1),
         })
 
     # Write recommendations JSON for web platform API
