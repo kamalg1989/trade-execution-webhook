@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS stock_indicators (
   vol_dryup_ratio    NUMERIC(8,2),     -- base(20) vol / prior(60) vol
   prior_upmove_pct   NUMERIC(8,2),     -- run-up in the 60 bars before the base
   giveback_pct       NUMERIC(8,2),     -- % of prior upmove given back
+  ifp_score          NUMERIC(5,3),     -- institutional footprint 0..1 (100d/1.5x/0.60)
+  updown_vol_ratio   NUMERIC(8,2),     -- 50d up-vol / down-vol
+  obv_slope          NUMERIC(6,3),     -- 50d net signed volume fraction
   bars_available     INT,
   is_new_52w_high    BOOLEAN,      -- did THIS day set a fresh 252-day high (per-day fact)
   is_new_52w_low     BOOLEAN,      -- did THIS day set a fresh 252-day low

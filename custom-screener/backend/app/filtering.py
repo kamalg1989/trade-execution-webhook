@@ -45,6 +45,7 @@ SORTABLE = {
     "pct_chg_1d", "pct_chg_5d", "pct_chg_1m", "pct_chg_3m", "pct_chg_6m", "pct_chg_1y",
     "atr_pct", "base_range_20d_pct", "dist_20d_high_pct", "vol_ratio_1d",
     "vol_dryup_ratio", "prior_upmove_pct", "giveback_pct",
+    "ifp_score", "updown_vol_ratio", "obv_slope",
 }
 
 
@@ -54,10 +55,14 @@ def validate_filters(filters: dict):
         _range_ok(key, filters.get(key))
     for key in ("within52wHighPct", "below52wHighPct", "within52wLowPct", "above52wLowPct",
                 "baseRange20dMaxPct", "within20dHighPct", "volRatioMin",
-                "volDryupMaxRatio", "priorUpmoveMinPct", "givebackMaxPct"):
+                "volDryupMaxRatio", "priorUpmoveMinPct", "givebackMaxPct",
+                "updownVolRatioMin"):
         v = filters.get(key)
         if v is not None and v <= 0:
             raise FilterError(f"{key} must be > 0")
+    ifp = filters.get("ifpScoreMin")
+    if ifp is not None and not (0 <= ifp <= 1):
+        raise FilterError("ifpScoreMin must be between 0 and 1")
     for key in ("sma200", "sma50", "ema50"):
         if filters.get(key) not in (None, "any", "above", "below"):
             raise FilterError(f"{key} must be one of: any, above, below")
@@ -138,6 +143,15 @@ def _row_matches(r: dict, f: dict, include_insufficient: bool) -> bool:
     if gb is not None and (r.get("giveback_pct") is None or r["giveback_pct"] > gb):
         return False
     if not _passes_range(r.get("atr_pct"), f.get("atrPct")):
+        return False
+
+    ifp = f.get("ifpScoreMin")
+    if ifp is not None and (r.get("ifp_score") is None or r["ifp_score"] < ifp):
+        return False
+    uv = f.get("updownVolRatioMin")
+    if uv is not None and (r.get("updown_vol_ratio") is None or r["updown_vol_ratio"] < uv):
+        return False
+    if f.get("obvSlopePositive") and not (r.get("obv_slope") is not None and r["obv_slope"] > 0):
         return False
 
     for key, col in _PCT_MAP.items():

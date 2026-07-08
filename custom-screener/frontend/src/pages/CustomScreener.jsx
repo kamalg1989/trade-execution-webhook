@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { getSnapshot, runFilter, computeDate, computeStatus } from '../api/client.js';
+import { getSnapshot, runFilter, computeDate, computeStatus, scoreIfp } from '../api/client.js';
 import FilterPanel from '../components/FilterPanel.jsx';
 import MarketSnapshot from '../components/MarketSnapshot.jsx';
 import ResultsTable from '../components/ResultsTable.jsx';
@@ -21,6 +21,9 @@ export default function CustomScreener() {
   const [fetching, setFetching] = useState(false);
   const [fetchMsg, setFetchMsg] = useState('');
   const pollRef = useRef(null);
+  const [ifp, setIfp] = useState({ lookback: 100, volMult: 1.5, closePos: 0.6 });
+  const [ifpLoading, setIfpLoading] = useState(false);
+  const [ifpMsg, setIfpMsg] = useState('');
 
   const loadSnapshot = async (d) => {
     setError('');
@@ -52,8 +55,10 @@ export default function CustomScreener() {
     setError('');
     try {
       const res = await runFilter(buildPayload());
-      setRows(res.results);
+      // ifp column defaults to the precomputed score; tunable panel can override.
+      setRows(res.results.map((r) => ({ ...r, ifp: r.ifpScore, ifpCustom: null })));
       setMatchCount(res.matchCount);
+      setIfpMsg('');
     } catch (e) {
       setError(`Filter: ${e.message}`);
       setRows([]);
@@ -64,6 +69,30 @@ export default function CustomScreener() {
   };
 
   const reset = () => { setFilters(EMPTY); setIncludeInsufficient(false); };
+
+  // Tunable IFP recompute over the current (filtered) result symbols.
+  const scoreIfpOnResults = async () => {
+    if (!rows.length) return;
+    setIfpLoading(true);
+    setIfpMsg('');
+    try {
+      const res = await scoreIfp({
+        symbols: rows.map((r) => r.symbol),
+        indicatorDate: date || null,
+        lookback: Number(ifp.lookback), volMult: Number(ifp.volMult), closePos: Number(ifp.closePos),
+      });
+      const map = Object.fromEntries(res.results.map((r) => [r.symbol, r.ifpScore]));
+      setRows((rs) => rs.map((r) => {
+        const c = map[r.symbol];
+        return { ...r, ifpCustom: c ?? null, ifp: c ?? r.ifpScore };
+      }));
+      setIfpMsg(`IFP recomputed for ${res.count} stocks (lookback ${ifp.lookback}, vol ${ifp.volMult}×, close ${ifp.closePos}). Sort by IFP column; * = custom.`);
+    } catch (e) {
+      setIfpMsg(`IFP: ${e.message}`);
+    } finally {
+      setIfpLoading(false);
+    }
+  };
 
   const onDateChange = (e) => {
     const d = e.target.value;
@@ -140,6 +169,35 @@ export default function CustomScreener() {
         </div>
         <ExportCsvButton rows={rows} date={date} />
       </div>
+
+      {/* Tunable IFP — recompute on the current filtered subset */}
+      {rows.length > 0 && (
+        <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="text-[11px] uppercase tracking-wide text-slate-500 w-full sm:w-auto">Tune IFP on these {rows.length} stocks</div>
+            <label className="flex flex-col text-xs text-slate-300 gap-1">Lookback (days)
+              <input type="number" min="10" max="300" value={ifp.lookback}
+                onChange={(e) => setIfp({ ...ifp, lookback: e.target.value })}
+                className="bg-slate-800 border border-slate-600 rounded px-2 py-1 w-24 text-slate-100" />
+            </label>
+            <label className="flex flex-col text-xs text-slate-300 gap-1">Vol surge ×
+              <input type="number" step="0.1" min="1" value={ifp.volMult}
+                onChange={(e) => setIfp({ ...ifp, volMult: e.target.value })}
+                className="bg-slate-800 border border-slate-600 rounded px-2 py-1 w-24 text-slate-100" />
+            </label>
+            <label className="flex flex-col text-xs text-slate-300 gap-1">Close pos (0–1)
+              <input type="number" step="0.05" min="0" max="1" value={ifp.closePos}
+                onChange={(e) => setIfp({ ...ifp, closePos: e.target.value })}
+                className="bg-slate-800 border border-slate-600 rounded px-2 py-1 w-24 text-slate-100" />
+            </label>
+            <button onClick={scoreIfpOnResults} disabled={ifpLoading}
+              className="px-4 py-1.5 text-sm rounded bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-semibold">
+              {ifpLoading ? 'Scoring…' : 'Recompute IFP'}
+            </button>
+          </div>
+          {ifpMsg && <div className="text-xs text-slate-400 mt-2">{ifpMsg}</div>}
+        </div>
+      )}
 
       <ResultsTable rows={rows} onPick={setPicked} />
 

@@ -36,6 +36,11 @@ class Filters(BaseModel):
     givebackMaxPct: Optional[float] = None        # giveback <= X%
     atrPct: Optional[RangeFilter] = None          # volatility % of price (range)
 
+    # Institutional footprint (default-param columns; tune live via /api/ifp)
+    ifpScoreMin: Optional[float] = None           # ifp_score >= X
+    updownVolRatioMin: Optional[float] = None     # updown_vol_ratio >= X
+    obvSlopePositive: Optional[bool] = None       # obv_slope > 0
+
     pctChg1d: Optional[RangeFilter] = None
     pctChg5d: Optional[RangeFilter] = None
     pctChg1m: Optional[RangeFilter] = None
@@ -54,3 +59,13 @@ class FilterRequest(BaseModel):
     includeInsufficientHistory: bool = False
     filters: Filters = Field(default_factory=Filters)
     sort: SortSpec = Field(default_factory=SortSpec)
+
+
+class IfpRequest(BaseModel):
+    """On-demand tunable IFP over a filtered subset of symbols."""
+    symbols: list[str]
+    indicatorDate: Optional[date] = None
+    lookback: int = 100
+    volMult: float = 1.5
+    closePos: float = 0.60
+    minScore: Optional[float] = None   # optional: drop symbols below this

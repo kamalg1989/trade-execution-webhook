@@ -15,6 +15,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from compute.ifp import ifp_series, obv_slope, updown_vol_ratio
+
 # Trading-day offsets for percentage-change lookbacks.
 PCT_OFFSETS = {
     "pct_chg_1d": 1,
@@ -125,6 +127,11 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     _gb = np.where(_denom > 0, (prior_high - close) / _denom * 100.0, 100.0)
     out["giveback_pct"] = np.round(np.clip(_gb, 0.0, None), 2)
 
+    # --- Institutional footprint + volume flow (default params; pure math) ---
+    out["ifp_score"] = ifp_series(df)                 # BAU parity: 100d/1.5x/0.60
+    out["updown_vol_ratio"] = updown_vol_ratio(df)    # 50d up-vol / down-vol
+    out["obv_slope"] = obv_slope(df)                  # 50d net signed volume fraction
+
     # --- Data quality ---
     out["bars_available"] = np.arange(1, len(out) + 1, dtype=int)
 
@@ -149,5 +156,6 @@ PERSIST_COLUMNS = [
     "atr_14", "atr_pct",
     "base_range_20d_pct", "dist_20d_high_pct", "vol_ratio_1d", "vol_dryup_ratio",
     "prior_upmove_pct", "giveback_pct",
+    "ifp_score", "updown_vol_ratio", "obv_slope",
     "bars_available", "is_new_52w_high", "is_new_52w_low",
 ]

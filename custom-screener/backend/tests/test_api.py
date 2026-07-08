@@ -49,6 +49,19 @@ class FakeRepo:
     async def historical(self, symbol, frm, to, limit):
         return [r for r in self._rows if r["symbol"] == symbol]
 
+    async def ohlcv_tail(self, symbols, upto, bars):
+        # synthetic accumulating series per requested symbol
+        import numpy as np, pandas as pd
+        out = {}
+        for s in symbols:
+            n = 140
+            close = list(np.cumsum(np.full(n, 0.3)) + 100)
+            t = pd.date_range("2020-01-01", periods=n, freq="D")
+            out[s] = [{"time": t[i], "open": close[i], "high": close[i] + 0.5,
+                       "low": close[i] - 0.5, "close": close[i],
+                       "volume": 3_000_000 if i % 2 == 0 else 500_000} for i in range(n)]
+        return out
+
 
 @pytest.fixture
 def client():
@@ -104,4 +117,18 @@ def test_historical(client):
 def test_historical_bad_range_400(client):
     r = client.get("/api/historical", params={"symbol": "AAA",
                     "fromDate": "2026-07-08", "toDate": "2026-01-01"})
+    assert r.status_code == 400
+
+
+def test_ifp_tunable(client):
+    r = client.post("/api/ifp", json={"symbols": ["AAA", "BBB"], "lookback": 100,
+                                      "volMult": 1.5, "closePos": 0.6})
+    assert r.status_code == 200
+    j = r.json()
+    assert j["count"] == 2
+    assert all("ifpScore" in x for x in j["results"])
+
+
+def test_ifp_requires_symbols(client):
+    r = client.post("/api/ifp", json={"symbols": []})
     assert r.status_code == 400

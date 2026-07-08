@@ -27,6 +27,9 @@ const UPMOVE = [['All', null], ['≥ 15%', 15], ['≥ 25%', 25], ['≥ 50%', 50]
 const GIVEBACK = [['All', null], ['≤ 30%', 30], ['≤ 50%', 50]];
 const ATR = [['All', null], ['< 3%', { max: 3 }], ['< 5%', { max: 5 }], ['> 5%', { min: 5 }]];
 const ALIGN = [['All', null], ['Close>EMA50>SMA200', true]];
+const IFP = [['All', null], ['≥ 0.20', 0.2], ['≥ 0.25', 0.25], ['≥ 0.30', 0.3], ['≥ 0.40', 0.4]];
+const UDVR = [['All', null], ['≥ 1.0', 1.0], ['≥ 1.2', 1.2], ['≥ 1.5', 1.5], ['≥ 2.0', 2.0]];
+const OBV = [['All', null], ['Positive', true]];
 
 function Sel({ label, options, value, onChange }) {
   return (
@@ -97,6 +100,15 @@ export default function FilterPanel({ filters, setFilters, includeInsufficient, 
           <Sel label="% Chg 1M" options={PCT} value={filters.pctChg1m ?? null} onChange={(v) => set('pctChg1m', v)} />
           <Sel label="% Chg 3M" options={PCT} value={filters.pctChg3m ?? null} onChange={(v) => set('pctChg3m', v)} />
           <Sel label="% Chg 1Y" options={PCT} value={filters.pctChg1y ?? null} onChange={(v) => set('pctChg1y', v)} />
+        </div>
+      </div>
+
+      <div>
+        <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-2">Institutional Footprint (default 100d/1.5×/0.60 — tune below results)</div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <Sel label="IFP score" options={IFP} value={filters.ifpScoreMin ?? null} onChange={(v) => set('ifpScoreMin', v)} />
+          <Sel label="Up/Down Vol (50d)" options={UDVR} value={filters.updownVolRatioMin ?? null} onChange={(v) => set('updownVolRatioMin', v)} />
+          <Sel label="OBV slope (50d)" options={OBV} value={filters.obvSlopePositive ?? null} onChange={(v) => set('obvSlopePositive', v)} />
         </div>
       </div>
 

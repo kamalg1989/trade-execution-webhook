@@ -6,7 +6,7 @@ const COLS = [
   ['dist52wHighPct', '52WH %', (r) => pct(r.dist52wHighPct)],
   ['distSma200Pct', 'SMA200 %', (r) => pct(r.distSma200Pct)],
   ['baseRange20dPct', 'Base20d', (r) => (r.baseRange20dPct != null ? `${fmt(r.baseRange20dPct)}%` : '—')],
-  ['volRatio1d', 'Vol×', (r) => (r.volRatio1d != null ? `${fmt(r.volRatio1d)}×` : '—')],
+  ['ifp', 'IFP', (r) => (r.ifp != null ? Number(r.ifp).toFixed(2) + (r.ifpCustom != null ? '*' : '') : '—')],
   ['pctChg1m', '%1M', (r) => pct(r.pctChg1m)],
   ['pctChg3m', '%3M', (r) => pct(r.pctChg3m)],
   ['pctChg1y', '%1Y', (r) => pct(r.pctChg1y)],

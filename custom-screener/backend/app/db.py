@@ -22,6 +22,7 @@ _ROW_COLS = """
     pct_chg_1d, pct_chg_5d, pct_chg_1m, pct_chg_3m, pct_chg_6m, pct_chg_1y,
     atr_14, atr_pct, base_range_20d_pct, dist_20d_high_pct,
     vol_ratio_1d, vol_dryup_ratio, prior_upmove_pct, giveback_pct,
+    ifp_score, updown_vol_ratio, obv_slope,
     bars_available
 """
 
@@ -31,6 +32,7 @@ class Repo(Protocol):
     async def day_slice(self, d: date) -> list[dict]: ...
     async def snapshot(self, d: date) -> Optional[dict]: ...
     async def historical(self, symbol: str, frm: date, to: date, limit: int) -> list[dict]: ...
+    async def ohlcv_tail(self, symbols: list[str], upto: date, bars: int) -> dict: ...
 
 
 class PgRepo:
@@ -70,6 +72,31 @@ class PgRepo:
                 symbol, frm, to, limit,
             )
             return [_to_float_dict(r) for r in rows]
+
+    async def ohlcv_tail(self, symbols: list[str], upto: date, bars: int) -> dict:
+        """Last `bars` OHLCV rows per symbol up to `upto`, grouped by symbol.
+        Used by the on-demand tunable IFP endpoint (operates on a filtered subset)."""
+        async with self.pool.acquire() as con:
+            # window per symbol via row_number, then keep the last `bars`
+            rows = await con.fetch(
+                """
+                SELECT symbol, time, open, high, low, close, volume FROM (
+                  SELECT symbol, time, open, high, low, close, volume,
+                         row_number() OVER (PARTITION BY symbol ORDER BY time DESC) AS rn
+                  FROM ohlcv_data
+                  WHERE symbol = ANY($1) AND time::date <= $2
+                ) t WHERE rn <= $3
+                ORDER BY symbol, time ASC
+                """,
+                symbols, upto, bars,
+            )
+        out: dict[str, list] = {}
+        for r in rows:
+            out.setdefault(r["symbol"], []).append({
+                "time": r["time"], "open": float(r["open"]), "high": float(r["high"]),
+                "low": float(r["low"]), "close": float(r["close"]), "volume": float(r["volume"]),
+            })
+        return out
 
 
 def _to_float_dict(r) -> dict:

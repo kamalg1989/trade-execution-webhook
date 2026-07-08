@@ -21,6 +21,14 @@ export const runFilter = (payload) =>
 export const getHistorical = (symbol, fromDate, toDate) =>
   req(`/historical?symbol=${symbol}&fromDate=${fromDate}&toDate=${toDate}`);
 
+// Tunable IFP recompute over a filtered subset.
+export const scoreIfp = (payload) =>
+  req('/ifp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
 // On-demand compute for a selected date (manual "fetch data" button).
 export const computeDate = (date) =>
   req(`/compute-date?date=${date}`, { method: 'POST' });

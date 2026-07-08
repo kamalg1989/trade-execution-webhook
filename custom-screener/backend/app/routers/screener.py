@@ -9,8 +9,12 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+import pandas as pd
+
+from compute.ifp import ifp_components   # sibling top-level package (cwd=backend)
+
 from ..filtering import FilterError, apply_filters
-from ..models import FilterRequest
+from ..models import FilterRequest, IfpRequest
 
 router = APIRouter()
 
@@ -48,6 +52,8 @@ def _project(r: dict) -> dict:
         "baseRange20dPct": r.get("base_range_20d_pct"), "dist20dHighPct": r.get("dist_20d_high_pct"),
         "volRatio1d": r.get("vol_ratio_1d"), "volDryupRatio": r.get("vol_dryup_ratio"),
         "priorUpmovePct": r.get("prior_upmove_pct"), "givebackPct": r.get("giveback_pct"),
+        "ifpScore": r.get("ifp_score"), "updownVolRatio": r.get("updown_vol_ratio"),
+        "obvSlope": r.get("obv_slope"),
         "pctChg1d": r.get("pct_chg_1d"), "pctChg5d": r.get("pct_chg_5d"),
         "pctChg1m": r.get("pct_chg_1m"), "pctChg3m": r.get("pct_chg_3m"),
         "pctChg6m": r.get("pct_chg_6m"), "pctChg1y": r.get("pct_chg_1y"),
@@ -154,6 +160,43 @@ async def compute_date(request: Request, date_q: date = Query(..., alias="date")
     )
     request.app.state.compute_proc = p
     return {"started": True, "date": str(date_q)}
+
+
+@router.post("/ifp")
+async def ifp_tunable(req: IfpRequest, repo=Depends(get_repo)):
+    """Recompute IFP with custom params for a filtered subset of symbols.
+    Fetches trailing OHLCV for just those symbols (fast), so params are tunable
+    live without a universe recompute."""
+    if not req.symbols:
+        raise HTTPException(400, "symbols required")
+    if len(req.symbols) > 800:
+        raise HTTPException(400, "too many symbols (max 800); filter further first")
+    if not (10 <= req.lookback <= 300):
+        raise HTTPException(400, "lookback must be 10..300")
+    d = await _resolve_date(repo, req.indicatorDate)
+    need = req.lookback + 25   # + avg-vol window + buffer
+    series = await repo.ohlcv_tail([s.upper() for s in req.symbols], d, need)
+    results = []
+    for sym in req.symbols:
+        bars = series.get(sym.upper())
+        if not bars:
+            results.append({"symbol": sym.upper(), "ifpScore": None, "accumDays": None,
+                            "quietDownDays": None, "bars": 0})
+            continue
+        df = pd.DataFrame(bars)
+        comp = ifp_components(df, lookback=req.lookback, vol_mult=req.volMult,
+                              close_pos_min=req.closePos)
+        comp["symbol"] = sym.upper()
+        results.append(comp)
+    if req.minScore is not None:
+        results = [r for r in results if r["ifpScore"] is not None and r["ifpScore"] >= req.minScore]
+    results.sort(key=lambda r: (r["ifpScore"] is None, -(r["ifpScore"] or 0)))
+    return {
+        "indicatorDate": str(d),
+        "params": {"lookback": req.lookback, "volMult": req.volMult, "closePos": req.closePos},
+        "count": len(results),
+        "results": results,
+    }
 
 
 @router.get("/compute-status")

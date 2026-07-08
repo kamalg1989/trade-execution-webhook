@@ -68,12 +68,14 @@ def _rows_g1():
          "dist_ema_50_pct": 4, "ema_50": 90, "sma_200": 80, "dist_sma_200_pct": 10,
          "base_range_20d_pct": 6.0, "dist_20d_high_pct": -1.5, "vol_ratio_1d": 2.1,
          "vol_dryup_ratio": 0.9, "prior_upmove_pct": 30, "giveback_pct": 20, "atr_pct": 2.5,
-         "dist_52w_high_pct": -4, "dist_52w_low_pct": 60},
+         "dist_52w_high_pct": -4, "dist_52w_low_pct": 60,
+         "ifp_score": 0.35, "updown_vol_ratio": 1.8, "obv_slope": 0.2},
         {"symbol": "WIDE", "bars_available": 800, "ma_aligned": False,
          "dist_ema_50_pct": -3, "ema_50": 100, "sma_200": 110, "dist_sma_200_pct": -8,
          "base_range_20d_pct": 25.0, "dist_20d_high_pct": -18, "vol_ratio_1d": 0.6,
          "vol_dryup_ratio": 1.6, "prior_upmove_pct": 5, "giveback_pct": 70, "atr_pct": 7.0,
-         "dist_52w_high_pct": -30, "dist_52w_low_pct": 12},
+         "dist_52w_high_pct": -30, "dist_52w_low_pct": 12,
+         "ifp_score": 0.08, "updown_vol_ratio": 0.7, "obv_slope": -0.15},
     ]
 
 
@@ -104,3 +106,9 @@ def test_52w_below_high_and_above_low():
 def test_atr_range():
     out = apply_filters(_rows_g1(), {"atrPct": {"max": 4}})
     assert [r["symbol"] for r in out] == ["TIGHT"]
+
+
+def test_ifp_and_flow_filters():
+    assert [r["symbol"] for r in apply_filters(_rows_g1(), {"ifpScoreMin": 0.25})] == ["TIGHT"]
+    assert [r["symbol"] for r in apply_filters(_rows_g1(), {"updownVolRatioMin": 1.5})] == ["TIGHT"]
+    assert [r["symbol"] for r in apply_filters(_rows_g1(), {"obvSlopePositive": True})] == ["TIGHT"]
