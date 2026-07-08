@@ -1,0 +1,11 @@
+[Unit]
+Description=Custom Screener nightly indicator compute
+After=network.target postgresql.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/trade-execution-webhook/custom-screener/backend
+EnvironmentFile=/root/trade-execution-webhook/custom-screener/backend/.env
+# Incremental: computes the latest available bar date + snapshot.
+ExecStart=/usr/bin/python3 -m compute.compute_stock_indicators

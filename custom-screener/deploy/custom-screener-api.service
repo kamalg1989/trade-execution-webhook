@@ -1,0 +1,17 @@
+[Unit]
+Description=Custom Screener API (FastAPI, :8005)
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/trade-execution-webhook/custom-screener/backend
+# Reuse the existing platform .env (has DB_HOST/PORT/USER/PASSWORD/NAME).
+EnvironmentFile=/root/trade-execution-webhook/.env
+# deploy_vps.sh rewrites ExecStart to use the repo venv python if present.
+ExecStart=/usr/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8005
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

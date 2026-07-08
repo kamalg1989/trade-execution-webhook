@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Custom Screener compute daily at 18:30 IST (after 18:00 OHLCV update)
+
+[Timer]
+# 18:30 IST == 13:00 UTC. Adjust if the server clock is not UTC.
+OnCalendar=*-*-* 13:00:00
+Persistent=true
+Unit=custom-screener-compute.service
+
+[Install]
+WantedBy=timers.target
