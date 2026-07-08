@@ -62,7 +62,13 @@ echo "==> [4/6] nginx routing"
 CONF=$(grep -rl "server_name ohmstockvault" /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | head -1)
 [ -n "$CONF" ] || die "could not find nginx server block for ohmstockvault"
 echo "     config: $CONF"
-cp "$CONF" "$CONF.bak.$(date +%s)"
+# Backups must live OUTSIDE sites-enabled — nginx includes every file there,
+# so a .bak sitting alongside would load as a duplicate server block.
+BAKDIR=/root/nginx-backups; mkdir -p "$BAKDIR"
+CONFDIR=$(dirname "$CONF")
+mv "$CONFDIR"/*.bak.* "$BAKDIR"/ 2>/dev/null || true   # sweep any strays from earlier runs
+BAK="$BAKDIR/$(basename "$CONF").bak.$(date +%s)"
+cp "$CONF" "$BAK"
 if grep -q "custom-screener" "$CONF"; then
   ok "location blocks already present"
 else
@@ -80,7 +86,7 @@ else
     ins=1
   } { print }' "$CONF" > /tmp/cs_conf && mv /tmp/cs_conf "$CONF"
   if nginx -t 2>/dev/null; then ok "blocks inserted"; else
-    warn "nginx -t failed — reverting"; cp "$CONF".bak.* "$CONF"; nginx -t; die "reverted nginx change"
+    warn "nginx -t failed — reverting"; cp "$BAK" "$CONF"; nginx -t; die "reverted nginx change"
   fi
 fi
 
