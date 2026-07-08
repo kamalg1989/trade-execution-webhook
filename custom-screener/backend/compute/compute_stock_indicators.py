@@ -121,7 +121,8 @@ async def _aggregate_snapshot(con, d: date):
     return snap
 
 
-async def run(frm: date, to: date, lookback_bars: int | None = None):
+async def run(frm: date, to: date, lookback_bars: int | None = None,
+              reaggregate_only: bool = False):
     import asyncpg
     pool = await asyncpg.create_pool(
         host=config.DB_HOST, port=config.DB_PORT, user=config.DB_USER,
@@ -130,6 +131,19 @@ async def run(frm: date, to: date, lookback_bars: int | None = None):
     processed = 0
     try:
         async with pool.acquire() as con:
+            if reaggregate_only:
+                # Rebuild market_snapshot from existing stock_indicators only —
+                # no OHLCV reload. Fast; used after cleaning orphan rows.
+                log.info("Re-aggregating snapshots %s..%s (no symbol reload)", frm, to)
+                d = frm
+                while d <= to:
+                    snap = await _aggregate_snapshot(con, d)
+                    if snap["total_stocks"]:
+                        log.info("Snapshot %s: regime=%s complete=%s (%d stocks)",
+                                 d, snap["regime"], snap["is_complete"], snap["total_stocks"])
+                    d += timedelta(days=1)
+                log.info("Re-aggregation done.")
+                return
             symbols = await _universe(con)
             mode = f"tail={lookback_bars} bars" if lookback_bars else "full series"
             log.info("Universe: %d symbols. Computing %s..%s (%s)",
@@ -171,6 +185,8 @@ def _parse_args():
     p.add_argument("--backfill-years", type=int)
     p.add_argument("--lookback-bars", type=int,
                    help="load only the last N bars per symbol (fast single-date/narrow computes; needs >=260)")
+    p.add_argument("--reaggregate-only", action="store_true",
+                   help="rebuild market_snapshot from existing stock_indicators (no OHLCV reload)")
     return p.parse_args()
 
 
@@ -190,7 +206,7 @@ def main():
     if lookback is not None and lookback < 260:
         log.warning("lookback-bars %d too small for 252-day windows; bumping to 300", lookback)
         lookback = 300
-    asyncio.run(run(frm, to, lookback_bars=lookback))
+    asyncio.run(run(frm, to, lookback_bars=lookback, reaggregate_only=a.reaggregate_only))
 
 
 if __name__ == "__main__":
