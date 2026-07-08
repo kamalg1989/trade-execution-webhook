@@ -21,6 +21,14 @@ export const runFilter = (payload) =>
 export const getHistorical = (symbol, fromDate, toDate) =>
   req(`/historical?symbol=${symbol}&fromDate=${fromDate}&toDate=${toDate}`);
 
-// Chart SVG from the existing Market Data API (data-only dependency).
-export const chartUrl = (symbol, type = 'daily', theme = 'dark') =>
-  `/api/v1/charts/${type}?symbol=${encodeURIComponent(symbol)}&theme=${theme}`;
+// On-demand compute for a selected date (manual "fetch data" button).
+export const computeDate = (date) =>
+  req(`/compute-date?date=${date}`, { method: 'POST' });
+
+export const computeStatus = (date) =>
+  req(`/compute-status?date=${date}`);
+
+// Chart SVG from the existing Market Data API (same charts used by the dashboard).
+export const chartUrl = (symbol, type = 'daily', theme = 'dark', fromDate) =>
+  `/api/v1/charts/${type}?symbol=${encodeURIComponent(symbol)}&theme=${theme}` +
+  (fromDate ? `&from_date=${fromDate}` : '');

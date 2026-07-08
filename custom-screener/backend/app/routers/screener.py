@@ -1,7 +1,11 @@
 """Custom Screener API routes (served under /api/... ; nginx maps the public path)."""
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from datetime import date
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -9,6 +13,9 @@ from ..filtering import FilterError, apply_filters
 from ..models import FilterRequest
 
 router = APIRouter()
+
+# .../backend  (so `python -m compute.compute_stock_indicators` resolves)
+BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
 def get_repo(request: Request):
@@ -124,6 +131,39 @@ async def historical(
         "dateRange": {"from": str(fromDate), "to": str(toDate)},
         "rowCount": len(data),
         "data": data,
+    }
+
+
+@router.post("/compute-date")
+async def compute_date(request: Request, date_q: date = Query(..., alias="date")):
+    """Trigger an on-demand compute for one date (fast tail-load path).
+    Returns immediately; poll /compute-status to know when it's ready."""
+    proc = getattr(request.app.state, "compute_proc", None)
+    if proc is not None and proc.poll() is None:
+        raise HTTPException(409, "A data fetch is already running — please wait for it to finish.")
+    log_path = f"/tmp/cs_compute_{date_q}.log"
+    logf = open(log_path, "w")
+    p = subprocess.Popen(
+        [sys.executable, "-m", "compute.compute_stock_indicators",
+         "--date", str(date_q), "--lookback-bars", "400"],
+        cwd=str(BACKEND_DIR), stdout=logf, stderr=subprocess.STDOUT,
+        start_new_session=True, env=os.environ.copy(),
+    )
+    request.app.state.compute_proc = p
+    return {"started": True, "date": str(date_q)}
+
+
+@router.get("/compute-status")
+async def compute_status(request: Request, date_q: date = Query(..., alias="date"), repo=Depends(get_repo)):
+    proc = getattr(request.app.state, "compute_proc", None)
+    running = proc is not None and proc.poll() is None
+    snap = await repo.snapshot(date_q)
+    ready = bool(snap and snap.get("is_complete"))
+    return {
+        "date": str(date_q),
+        "running": running,
+        "ready": ready,
+        "exitCode": (proc.poll() if proc is not None else None),
     }
 
 

@@ -60,6 +60,23 @@ async def _load_series(con, symbol: str) -> pd.DataFrame:
     return df
 
 
+async def _load_series_tail(con, symbol: str, upto: date, bars: int) -> pd.DataFrame:
+    """Load only the last `bars` daily bars up to `upto` — fast path for a single
+    date / narrow window (avoids reading the full 15-year series per symbol)."""
+    rows = await con.fetch(
+        "SELECT time, open, high, low, close, volume FROM ohlcv_data "
+        "WHERE symbol = $1 AND time::date <= $2 ORDER BY time DESC LIMIT $3",
+        symbol, upto, bars,
+    )
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame([dict(r) for r in reversed(rows)])
+    df["symbol"] = symbol
+    for c in ("open", "high", "low", "close", "volume"):
+        df[c] = df[c].astype(float)
+    return df
+
+
 async def _upsert_indicators(con, df: pd.DataFrame, frm: date, to: date):
     sub = df[(df["indicator_date"] >= frm) & (df["indicator_date"] <= to)]
     if sub.empty:
@@ -104,7 +121,7 @@ async def _aggregate_snapshot(con, d: date):
     return snap
 
 
-async def run(frm: date, to: date):
+async def run(frm: date, to: date, lookback_bars: int | None = None):
     import asyncpg
     pool = await asyncpg.create_pool(
         host=config.DB_HOST, port=config.DB_PORT, user=config.DB_USER,
@@ -114,10 +131,15 @@ async def run(frm: date, to: date):
     try:
         async with pool.acquire() as con:
             symbols = await _universe(con)
-            log.info("Universe: %d symbols. Computing %s..%s", len(symbols), frm, to)
+            mode = f"tail={lookback_bars} bars" if lookback_bars else "full series"
+            log.info("Universe: %d symbols. Computing %s..%s (%s)",
+                     len(symbols), frm, to, mode)
             for i, sym in enumerate(symbols, 1):
                 try:
-                    df = await _load_series(con, sym)
+                    if lookback_bars:
+                        df = await _load_series_tail(con, sym, to, lookback_bars)
+                    else:
+                        df = await _load_series(con, sym)
                     if df.empty:
                         continue
                     ind = compute_indicators(df)
@@ -147,6 +169,8 @@ def _parse_args():
     p.add_argument("--from", dest="frm", type=lambda s: datetime.strptime(s, "%Y-%m-%d").date())
     p.add_argument("--to", dest="to", type=lambda s: datetime.strptime(s, "%Y-%m-%d").date())
     p.add_argument("--backfill-years", type=int)
+    p.add_argument("--lookback-bars", type=int,
+                   help="load only the last N bars per symbol (fast single-date/narrow computes; needs >=260)")
     return p.parse_args()
 
 
@@ -162,7 +186,11 @@ def main():
         frm, to = a.frm, a.to
     else:
         frm = to = today  # incremental (compute writes only dates that have bars)
-    asyncio.run(run(frm, to))
+    lookback = a.lookback_bars
+    if lookback is not None and lookback < 260:
+        log.warning("lookback-bars %d too small for 252-day windows; bumping to 300", lookback)
+        lookback = 300
+    asyncio.run(run(frm, to, lookback_bars=lookback))
 
 
 if __name__ == "__main__":

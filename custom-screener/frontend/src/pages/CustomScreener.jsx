@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { getSnapshot, runFilter } from '../api/client.js';
+import React, { useEffect, useRef, useState } from 'react';
+import { getSnapshot, runFilter, computeDate, computeStatus } from '../api/client.js';
 import FilterPanel from '../components/FilterPanel.jsx';
 import MarketSnapshot from '../components/MarketSnapshot.jsx';
 import ResultsTable from '../components/ResultsTable.jsx';
@@ -18,6 +18,9 @@ export default function CustomScreener() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [picked, setPicked] = useState(null);
+  const [fetching, setFetching] = useState(false);
+  const [fetchMsg, setFetchMsg] = useState('');
+  const pollRef = useRef(null);
 
   const loadSnapshot = async (d) => {
     setError('');
@@ -68,17 +71,59 @@ export default function CustomScreener() {
     loadSnapshot(d);
   };
 
+  // Manual "fetch data for this date" — triggers a compute, polls until ready.
+  const fetchThisDate = async () => {
+    if (!date || fetching) return;
+    setError('');
+    setFetching(true);
+    setFetchMsg(`Fetching data for ${date}… this takes a few minutes.`);
+    try {
+      await computeDate(date);
+    } catch (e) {
+      setFetching(false);
+      setFetchMsg('');
+      setError(`Fetch: ${e.message}`);
+      return;
+    }
+    clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const s = await computeStatus(date);
+        if (s.ready) {
+          clearInterval(pollRef.current);
+          setFetching(false);
+          setFetchMsg(`Data ready for ${date}.`);
+          loadSnapshot(date);
+        } else if (!s.running) {
+          clearInterval(pollRef.current);
+          setFetching(false);
+          setFetchMsg('');
+          setError(`Fetch finished but no complete data for ${date} (market holiday or partial data?).`);
+        }
+      } catch { /* keep polling */ }
+    }, 8000);
+  };
+
+  useEffect(() => () => clearInterval(pollRef.current), []);
+
   return (
     <div className="min-h-screen text-slate-100 p-4 sm:p-6 max-w-7xl mx-auto space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Custom Screener</h1>
-        <label className="flex items-center gap-2 text-sm text-slate-300">
-          Date
-          <input type="date" value={date} onChange={onDateChange}
-            className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100" />
-        </label>
+        <div className="flex items-center gap-2">
+          <label className="flex items-center gap-2 text-sm text-slate-300">
+            Date
+            <input type="date" value={date} onChange={onDateChange}
+              className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100" />
+          </label>
+          <button onClick={fetchThisDate} disabled={fetching || !date}
+            className="px-3 py-1.5 text-sm rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold whitespace-nowrap">
+            {fetching ? 'Fetching…' : 'Fetch this date'}
+          </button>
+        </div>
       </div>
 
+      {fetchMsg && <div className="bg-emerald-900/30 border border-emerald-700 text-emerald-200 text-sm rounded px-3 py-2">{fetchMsg}</div>}
       {error && <div className="bg-red-900/40 border border-red-700 text-red-200 text-sm rounded px-3 py-2">{error}</div>}
 
       <MarketSnapshot snap={snap} />

@@ -47,6 +47,7 @@ export default function ResultsTable({ rows, onPick }) {
                 {label}{sortBy === key ? (asc ? ' ▲' : ' ▼') : ''}
               </th>
             ))}
+            <th className="px-3 py-2 text-left whitespace-nowrap">Chart</th>
           </tr>
         </thead>
         <tbody>
@@ -58,10 +59,17 @@ export default function ResultsTable({ rows, onPick }) {
                   {render(r)}
                 </td>
               ))}
+              <td className="px-3 py-1.5 whitespace-nowrap">
+                <button
+                  onClick={(e) => { e.stopPropagation(); onPick(r); }}
+                  className="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold">
+                  📈 Chart
+                </button>
+              </td>
             </tr>
           ))}
           {sorted.length === 0 && (
-            <tr><td colSpan={COLS.length} className="px-3 py-6 text-center text-slate-500">No stocks match these filters.</td></tr>
+            <tr><td colSpan={COLS.length + 1} className="px-3 py-6 text-center text-slate-500">No stocks match these filters.</td></tr>
           )}
         </tbody>
       </table>
