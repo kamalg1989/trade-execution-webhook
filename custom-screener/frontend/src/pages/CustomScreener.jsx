@@ -175,7 +175,7 @@ export default function CustomScreener() {
         <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-3">
           <div className="flex flex-wrap items-end gap-3">
             <div className="text-[11px] uppercase tracking-wide text-slate-500 w-full sm:w-auto">Tune IFP on these {rows.length} stocks</div>
-            <label className="flex flex-col text-xs text-slate-300 gap-1">Lookback (days)
+            <label className="flex flex-col text-xs text-slate-300 gap-1">IFP days
               <input type="number" min="10" max="300" value={ifp.lookback}
                 onChange={(e) => setIfp({ ...ifp, lookback: e.target.value })}
                 className="bg-slate-800 border border-slate-600 rounded px-2 py-1 w-24 text-slate-100" />
