@@ -6,6 +6,7 @@ After=network.target postgresql.service
 Type=oneshot
 User=root
 WorkingDirectory=/root/trade-execution-webhook/custom-screener/backend
-EnvironmentFile=/root/trade-execution-webhook/custom-screener/backend/.env
+# Reuse the existing platform .env (shared DB creds).
+EnvironmentFile=/root/trade-execution-webhook/.env
 # Incremental: computes the latest available bar date + snapshot.
-ExecStart=/usr/bin/python3 -m compute.compute_stock_indicators
+ExecStart=/root/trade-execution-webhook/venv/bin/python -m compute.compute_stock_indicators
