@@ -56,7 +56,11 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     out = pd.DataFrame()
     out["symbol"] = df["symbol"] if "symbol" in df else np.nan
-    out["indicator_date"] = pd.to_datetime(df["time"]).dt.date
+    # ohlcv_data.time is IST-midnight stored as timestamptz; asyncpg hands it back
+    # in UTC. Convert to Asia/Kolkata before taking the date, else every bar shifts
+    # to the previous calendar day (IST midnight = prior-day 18:30 UTC).
+    _t = pd.to_datetime(df["time"], utc=True).dt.tz_convert("Asia/Kolkata")
+    out["indicator_date"] = _t.dt.date
     out["close"] = close.round(2)
 
     # --- Moving averages (parity with screen_gpt) ---
