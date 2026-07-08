@@ -29,6 +29,8 @@ WINDOW_52W = 252          # trading days ~ 1 year
 MIN_BARS_200SMA = 200     # below this, sma_200 is NULL (insufficient history)
 TURNOVER_WINDOW = 20      # ~1 month, matches screen_gpt liquidity window
 ATR_PERIOD = 14
+BASE_BARS = 20            # BAU base lookback (tightness, 20d high, base volume)
+PRIOR_BARS = 60          # BAU prior-upmove lookback (60 bars before the base)
 
 
 def _pct(a: pd.Series, b: pd.Series) -> pd.Series:
@@ -66,13 +68,18 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # --- Moving averages (parity with screen_gpt) ---
     out["ema_10"] = close.ewm(span=10).mean().round(2)
     out["ema_21"] = close.ewm(span=21).mean().round(2)
+    out["ema_50"] = close.ewm(span=50).mean().round(2)   # BAU trend-alignment MA
     out["sma_50"] = close.rolling(50).mean().round(2)
     out["sma_200"] = close.rolling(MIN_BARS_200SMA).mean().round(2)  # NaN < 200 bars
 
     out["dist_ema_10_pct"] = np.round(_pct(close, out["ema_10"]), 2)
     out["dist_ema_21_pct"] = np.round(_pct(close, out["ema_21"]), 2)
+    out["dist_ema_50_pct"] = np.round(_pct(close, out["ema_50"]), 2)
     out["dist_sma_50_pct"] = np.round(_pct(close, out["sma_50"]), 2)
     out["dist_sma_200_pct"] = np.round(_pct(close, out["sma_200"]), 2)
+
+    # MA trend alignment (BAU "medium/strict" trend gate): close > EMA50 > SMA200
+    out["ma_aligned"] = (close > out["ema_50"]) & (out["ema_50"] > out["sma_200"])
 
     # --- 52-week high/low (inclusive; over available history) ---
     out["price_52w_high"] = high.rolling(WINDOW_52W, min_periods=1).max().round(2)
@@ -90,12 +97,33 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         [(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1
     ).max(axis=1)
     out["atr_14"] = tr.ewm(alpha=1.0 / ATR_PERIOD, adjust=False).mean().round(2)
+    out["atr_pct"] = np.round((out["atr_14"] / close) * 100.0, 2)   # volatility as % of price
 
     # --- Liquidity ---
     out["turnover_1m_avg_cr"] = (
         (close * volume).rolling(TURNOVER_WINDOW).mean() / 1e7
     ).round(2)
     out["volume_1m_avg"] = volume.rolling(TURNOVER_WINDOW).mean().round(0)
+
+    # --- Base tightness / breakout proximity (BAU 20-bar base) ---
+    high20 = high.rolling(BASE_BARS).max()
+    low20 = low.rolling(BASE_BARS).min()
+    out["base_range_20d_pct"] = np.round((high20 - low20) / low20 * 100.0, 2)      # tightness
+    out["dist_20d_high_pct"] = np.round(_pct(close, high20), 2)                    # <=0 near breakout
+
+    # --- Volume expansion + dry-up (BAU technical + base-quality) ---
+    vol20 = volume.rolling(BASE_BARS).mean()
+    out["vol_ratio_1d"] = np.round(volume / vol20, 2)                             # today vs 20d avg
+    prior_vol_avg = volume.shift(BASE_BARS).rolling(PRIOR_BARS).mean()
+    out["vol_dryup_ratio"] = np.round(vol20 / prior_vol_avg, 2)                   # base vs prior vol
+
+    # --- Prior upmove + giveback (BAU base-quality) ---
+    prior_high = high.shift(BASE_BARS).rolling(PRIOR_BARS).max()
+    prior_low = low.shift(BASE_BARS).rolling(PRIOR_BARS).min()
+    out["prior_upmove_pct"] = np.round((prior_high - prior_low) / prior_low * 100.0, 2)
+    _denom = (prior_high - prior_low)
+    _gb = np.where(_denom > 0, (prior_high - close) / _denom * 100.0, 100.0)
+    out["giveback_pct"] = np.round(np.clip(_gb, 0.0, None), 2)
 
     # --- Data quality ---
     out["bars_available"] = np.arange(1, len(out) + 1, dtype=int)
@@ -113,9 +141,13 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 PERSIST_COLUMNS = [
     "symbol", "indicator_date", "close",
     "turnover_1m_avg_cr", "volume_1m_avg",
-    "ema_10", "ema_21", "sma_50", "sma_200",
-    "dist_ema_10_pct", "dist_ema_21_pct", "dist_sma_50_pct", "dist_sma_200_pct",
+    "ema_10", "ema_21", "ema_50", "sma_50", "sma_200",
+    "dist_ema_10_pct", "dist_ema_21_pct", "dist_ema_50_pct",
+    "dist_sma_50_pct", "dist_sma_200_pct", "ma_aligned",
     "price_52w_high", "price_52w_low", "dist_52w_high_pct", "dist_52w_low_pct",
     "pct_chg_1d", "pct_chg_5d", "pct_chg_1m", "pct_chg_3m", "pct_chg_6m", "pct_chg_1y",
-    "atr_14", "bars_available", "is_new_52w_high", "is_new_52w_low",
+    "atr_14", "atr_pct",
+    "base_range_20d_pct", "dist_20d_high_pct", "vol_ratio_1d", "vol_dryup_ratio",
+    "prior_upmove_pct", "giveback_pct",
+    "bars_available", "is_new_52w_high", "is_new_52w_low",
 ]

@@ -8,12 +8,15 @@ CREATE TABLE IF NOT EXISTS stock_indicators (
   volume_1m_avg      BIGINT,
   ema_10             NUMERIC(12,2),
   ema_21             NUMERIC(12,2),
+  ema_50             NUMERIC(12,2),
   sma_50             NUMERIC(12,2),
   sma_200            NUMERIC(12,2),
   dist_ema_10_pct    NUMERIC(8,2),
   dist_ema_21_pct    NUMERIC(8,2),
+  dist_ema_50_pct    NUMERIC(8,2),
   dist_sma_50_pct    NUMERIC(8,2),
   dist_sma_200_pct   NUMERIC(8,2),
+  ma_aligned         BOOLEAN,          -- close > EMA50 > SMA200
   price_52w_high     NUMERIC(12,2),
   price_52w_low      NUMERIC(12,2),
   dist_52w_high_pct  NUMERIC(8,2),
@@ -25,6 +28,13 @@ CREATE TABLE IF NOT EXISTS stock_indicators (
   pct_chg_6m         NUMERIC(8,2),
   pct_chg_1y         NUMERIC(8,2),
   atr_14             NUMERIC(12,2),
+  atr_pct            NUMERIC(8,2),
+  base_range_20d_pct NUMERIC(8,2),     -- 20-bar (high-low)/low %  (tightness)
+  dist_20d_high_pct  NUMERIC(8,2),     -- close vs 20-day high %   (<=0 near breakout)
+  vol_ratio_1d       NUMERIC(8,2),     -- today volume / 20d avg
+  vol_dryup_ratio    NUMERIC(8,2),     -- base(20) vol / prior(60) vol
+  prior_upmove_pct   NUMERIC(8,2),     -- run-up in the 60 bars before the base
+  giveback_pct       NUMERIC(8,2),     -- % of prior upmove given back
   bars_available     INT,
   is_new_52w_high    BOOLEAN,      -- did THIS day set a fresh 252-day high (per-day fact)
   is_new_52w_low     BOOLEAN,      -- did THIS day set a fresh 252-day low

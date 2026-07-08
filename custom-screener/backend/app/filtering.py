@@ -40,26 +40,27 @@ def _passes_range(val, rng: Optional[dict]) -> bool:
 
 SORTABLE = {
     "symbol", "close", "turnover_1m_avg_cr",
-    "ema_10", "ema_21", "sma_50", "sma_200",
+    "ema_10", "ema_21", "ema_50", "sma_50", "sma_200",
     "dist_sma_200_pct", "dist_52w_high_pct", "dist_52w_low_pct",
     "pct_chg_1d", "pct_chg_5d", "pct_chg_1m", "pct_chg_3m", "pct_chg_6m", "pct_chg_1y",
+    "atr_pct", "base_range_20d_pct", "dist_20d_high_pct", "vol_ratio_1d",
+    "vol_dryup_ratio", "prior_upmove_pct", "giveback_pct",
 }
 
 
 def validate_filters(filters: dict):
     """Raise FilterError on bad input before doing any work."""
-    for key in ("pctChg1d", "pctChg5d", "pctChg1m", "pctChg3m", "pctChg6m", "pctChg1y"):
+    for key in ("pctChg1d", "pctChg5d", "pctChg1m", "pctChg3m", "pctChg6m", "pctChg1y", "atrPct"):
         _range_ok(key, filters.get(key))
-    for key in ("within52wHighPct", "within52wLowPct"):
+    for key in ("within52wHighPct", "below52wHighPct", "within52wLowPct", "above52wLowPct",
+                "baseRange20dMaxPct", "within20dHighPct", "volRatioMin",
+                "volDryupMaxRatio", "priorUpmoveMinPct", "givebackMaxPct"):
         v = filters.get(key)
         if v is not None and v <= 0:
             raise FilterError(f"{key} must be > 0")
-    sma = filters.get("sma200")
-    if sma not in (None, "any", "above", "below"):
-        raise FilterError("sma200 must be one of: any, above, below")
-    sma50 = filters.get("sma50")
-    if sma50 not in (None, "any", "above", "below"):
-        raise FilterError("sma50 must be one of: any, above, below")
+    for key in ("sma200", "sma50", "ema50"):
+        if filters.get(key) not in (None, "any", "above", "below"):
+            raise FilterError(f"{key} must be one of: any, above, below")
 
 
 _PCT_MAP = {
@@ -79,6 +80,7 @@ def _row_matches(r: dict, f: dict, include_insufficient: bool) -> bool:
     for direction_key, dist_col, ma_col in (
         ("sma200", "dist_sma_200_pct", "sma_200"),
         ("sma50", "dist_sma_50_pct", "sma_50"),
+        ("ema50", "dist_ema_50_pct", "ema_50"),
     ):
         d = f.get(direction_key)
         if d in (None, "any"):
@@ -91,6 +93,9 @@ def _row_matches(r: dict, f: dict, include_insufficient: bool) -> bool:
         if d == "below" and not (dist is not None and dist < 0):
             return False
 
+    if f.get("maAligned") and not r.get("ma_aligned"):
+        return False
+
     lo = f.get("ema10Above")
     hi = f.get("ema10Below")
     if lo is not None and (r.get("ema_10") is None or r["ema_10"] <= lo):
@@ -98,11 +103,41 @@ def _row_matches(r: dict, f: dict, include_insufficient: bool) -> bool:
     if hi is not None and (r.get("ema_10") is None or r["ema_10"] >= hi):
         return False
 
+    # 52-week high: within X% (near) or more than X% below
     wh = f.get("within52wHighPct")
     if wh is not None and (r.get("dist_52w_high_pct") is None or r["dist_52w_high_pct"] <= -wh):
         return False
+    bh = f.get("below52wHighPct")
+    if bh is not None and (r.get("dist_52w_high_pct") is None or r["dist_52w_high_pct"] >= -bh):
+        return False
+    # 52-week low: within X% (near) or more than X% above
     wl = f.get("within52wLowPct")
     if wl is not None and (r.get("dist_52w_low_pct") is None or r["dist_52w_low_pct"] >= wl):
+        return False
+    al = f.get("above52wLowPct")
+    if al is not None and (r.get("dist_52w_low_pct") is None or r["dist_52w_low_pct"] <= al):
+        return False
+
+    # Group-1 technical / base-quality
+    br = f.get("baseRange20dMaxPct")
+    if br is not None and (r.get("base_range_20d_pct") is None or r["base_range_20d_pct"] > br):
+        return False
+    w20 = f.get("within20dHighPct")
+    if w20 is not None and (r.get("dist_20d_high_pct") is None or r["dist_20d_high_pct"] <= -w20):
+        return False
+    vr = f.get("volRatioMin")
+    if vr is not None and (r.get("vol_ratio_1d") is None or r["vol_ratio_1d"] < vr):
+        return False
+    vd = f.get("volDryupMaxRatio")
+    if vd is not None and (r.get("vol_dryup_ratio") is None or r["vol_dryup_ratio"] > vd):
+        return False
+    pu = f.get("priorUpmoveMinPct")
+    if pu is not None and (r.get("prior_upmove_pct") is None or r["prior_upmove_pct"] < pu):
+        return False
+    gb = f.get("givebackMaxPct")
+    if gb is not None and (r.get("giveback_pct") is None or r["giveback_pct"] > gb):
+        return False
+    if not _passes_range(r.get("atr_pct"), f.get("atrPct")):
         return False
 
     for key, col in _PCT_MAP.items():

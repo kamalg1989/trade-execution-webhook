@@ -15,11 +15,14 @@ from . import config
 # Columns returned to the API layer (superset of what the client sees)
 _ROW_COLS = """
     symbol, indicator_date, close, turnover_1m_avg_cr, volume_1m_avg,
-    ema_10, ema_21, sma_50, sma_200,
-    dist_ema_10_pct, dist_ema_21_pct, dist_sma_50_pct, dist_sma_200_pct,
+    ema_10, ema_21, ema_50, sma_50, sma_200,
+    dist_ema_10_pct, dist_ema_21_pct, dist_ema_50_pct, dist_sma_50_pct, dist_sma_200_pct,
+    ma_aligned,
     price_52w_high, price_52w_low, dist_52w_high_pct, dist_52w_low_pct,
     pct_chg_1d, pct_chg_5d, pct_chg_1m, pct_chg_3m, pct_chg_6m, pct_chg_1y,
-    atr_14, bars_available
+    atr_14, atr_pct, base_range_20d_pct, dist_20d_high_pct,
+    vol_ratio_1d, vol_dryup_ratio, prior_upmove_pct, giveback_pct,
+    bars_available
 """
 
 

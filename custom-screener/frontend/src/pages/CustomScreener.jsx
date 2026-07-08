@@ -6,7 +6,7 @@ import ResultsTable from '../components/ResultsTable.jsx';
 import ChartModal from '../components/ChartModal.jsx';
 import ExportCsvButton from '../components/ExportCsvButton.jsx';
 
-const EMPTY = { sma200: 'any', sma50: 'any' };
+const EMPTY = { sma200: 'any', sma50: 'any', ema50: 'any' };
 
 export default function CustomScreener() {
   const [date, setDate] = useState('');
