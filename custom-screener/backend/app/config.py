@@ -32,5 +32,7 @@ ROOT_PATH = os.getenv("CUSTOM_SCREENER_ROOT_PATH", "")
 # Charts API used by the frontend chart modal (data-only dependency)
 CHARTS_API_BASE = os.getenv("CHARTS_API_BASE", "/api/v1")
 
-# Compute completeness threshold
-COMPLETE_THRESHOLD = int(os.getenv("SNAPSHOT_COMPLETE_THRESHOLD", "2600"))
+# Compute completeness threshold. A normal trading day has ~2,500 symbols with
+# data (not the full 2,731 universe — delistings, IPO dates, missing bars), so
+# 2000 marks real days complete while still rejecting truly-partial compute runs.
+COMPLETE_THRESHOLD = int(os.getenv("SNAPSHOT_COMPLETE_THRESHOLD", "2000"))
