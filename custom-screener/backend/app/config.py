@@ -5,9 +5,15 @@ from pathlib import Path
 # Load .env if present (own file; falls back to process env)
 try:
     from dotenv import load_dotenv
-    env_path = Path(__file__).resolve().parents[1] / ".env"
-    if env_path.exists():
-        load_dotenv(env_path)
+    # Walk up from this file and load the nearest .env — this finds either
+    # custom-screener/backend/.env or the platform-root .env (/root/trade-execution-webhook/.env),
+    # so manual compute runs work without sourcing env by hand.
+    _here = Path(__file__).resolve()
+    for _parent in _here.parents:
+        _cand = _parent / ".env"
+        if _cand.exists():
+            load_dotenv(_cand)
+            break
 except Exception:
     pass
 
