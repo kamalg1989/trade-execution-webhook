@@ -29,6 +29,10 @@ export const computeStatus = (date) =>
   req(`/compute-status?date=${date}`);
 
 // Chart SVG from the existing Market Data API (same charts used by the dashboard).
-export const chartUrl = (symbol, type = 'daily', theme = 'dark', fromDate) =>
-  `/api/v1/charts/${type}?symbol=${encodeURIComponent(symbol)}&theme=${theme}` +
-  (fromDate ? `&from_date=${fromDate}` : '');
+// /api/v1/charts requires BOTH from_date and to_date.
+export const chartUrl = (symbol, type = 'daily', theme = 'dark', fromDate, toDate) => {
+  const today = new Date().toISOString().slice(0, 10);
+  return `/api/v1/charts/${type}?symbol=${encodeURIComponent(symbol)}&theme=${theme}` +
+    (fromDate ? `&from_date=${fromDate}` : '') +
+    `&to_date=${toDate || today}`;
+};
