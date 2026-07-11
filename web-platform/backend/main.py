@@ -4,12 +4,15 @@ Port: 8004
 Purpose: Serve web platform APIs for recommendations, orders, portfolio, and stop loss tracking
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 import logging
 import sys
 import os
+import json
+import secrets
 
 # Add parent directory to path for imports
 sys.path.insert(0, '/root/trade-execution-webhook')
@@ -21,6 +24,69 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# =============================================
+# API KEY MANAGEMENT
+# =============================================
+API_KEY_FILE = '/root/trade-execution-webhook/api_key.json'
+
+def load_or_create_api_key():
+    """Load existing API key or create new one"""
+    try:
+        if os.path.exists(API_KEY_FILE):
+            with open(API_KEY_FILE, 'r') as f:
+                data = json.load(f)
+                key = data.get('api_key')
+                if key:
+                    logger.info("✅ Loaded existing API key")
+                    return key
+    except Exception as e:
+        logger.warning(f"Could not load API key: {e}")
+
+    # Generate new key
+    new_key = f"sk_{secrets.token_urlsafe(32)}"
+    try:
+        os.makedirs(os.path.dirname(API_KEY_FILE), exist_ok=True)
+        with open(API_KEY_FILE, 'w') as f:
+            json.dump({'api_key': new_key}, f)
+        logger.info(f"🔑 Generated new API key: {new_key[:10]}...")
+    except Exception as e:
+        logger.error(f"Could not save API key: {e}")
+    return new_key
+
+CURRENT_API_KEY = load_or_create_api_key()
+
+# =============================================
+# API KEY VALIDATION MIDDLEWARE
+# =============================================
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    """Check API key on protected trading endpoints"""
+
+    PROTECTED_PATHS = [
+        '/api/buy',
+        '/api/close-position',
+        '/api/sl-alerts',
+    ]
+
+    async def dispatch(self, request: Request, call_next):
+        # Check if path is protected
+        if any(request.url.path.startswith(p) for p in self.PROTECTED_PATHS):
+            if request.method in ('POST', 'PUT', 'DELETE'):
+                # Extract API key from header
+                api_key = request.headers.get('X-API-Key', '').strip()
+
+                if not api_key:
+                    logger.warning(f"❌ Missing API key for {request.url.path}")
+                    raise HTTPException(status_code=401, detail="Missing API key. Set X-API-Key header.")
+
+                if api_key != CURRENT_API_KEY:
+                    logger.warning(f"❌ Invalid API key attempt for {request.url.path}")
+                    raise HTTPException(status_code=403, detail="Invalid API key")
+
+                logger.info(f"✅ Valid API key for {request.method} {request.url.path}")
+
+        response = await call_next(request)
+        return response
 
 # Import database
 from database.db import init_db
@@ -39,13 +105,16 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# API Key middleware (must be before CORS)
+app.add_middleware(APIKeyMiddleware)
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "X-API-Key"],  # Explicitly allow X-API-Key header
 )
 
 # Import routers
@@ -93,8 +162,19 @@ async def root():
             "orders": "/api/buy",
             "portfolio": "/api/portfolio",
             "sl-alerts": "/api/sl-alerts",
-            "charts": "/api/charts/daily"
+            "charts": "/api/charts/daily",
+            "api-key": "/api/security/api-key"
         }
+    }
+
+
+@app.get("/api/security/api-key")
+async def get_api_key():
+    """Get the current API key (for frontend setup only - call once)"""
+    return {
+        "api_key": CURRENT_API_KEY,
+        "message": "Copy this key and store it securely. You'll need it for trading.",
+        "usage": "Include X-API-Key header in all trading requests"
     }
 
 

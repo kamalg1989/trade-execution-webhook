@@ -123,9 +123,17 @@ export default function Dashboard() {
       `Place a REAL Dhan BUY forever order?\n\n${stock.symbol}\nQty: ${qty}\nBuy above (trigger): ₹${entry}\n\nThis rests on Dhan and triggers when price crosses ₹${entry}.\nSet a stop loss from the SL tab once it fills.`
     )) return;
     try {
+      const apiKey = localStorage.getItem('trading_api_key');
+      if (!apiKey) {
+        alert('❌ API key not found. Please load it from Settings first.');
+        return;
+      }
       const response = await fetch('/api/buy', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': apiKey
+        },
         body: JSON.stringify({ symbol: stock.symbol, quantity: qty, price: entry, stopLoss: sl })
       });
       const result = await response.json();

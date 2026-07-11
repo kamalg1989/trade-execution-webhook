@@ -3,7 +3,19 @@ import { AlertTriangle, AlertCircle, CheckCircle, ShieldOff, Shield, Zap, Loader
   Trash2, TrendingUp, LogOut, RefreshCw, Check, Pencil } from 'lucide-react';
 
 const api = async (path, body) => {
-  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const apiKey = localStorage.getItem('trading_api_key');
+  if (!apiKey) {
+    alert('❌ API key not found. Please load it from Settings first.');
+    return { ok: false, data: {} };
+  }
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': apiKey
+    },
+    body: JSON.stringify(body)
+  });
   const data = await r.json().catch(() => ({}));
   return { ok: r.ok, data };
 };

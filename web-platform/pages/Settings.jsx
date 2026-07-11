@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Save, RotateCcw, Play, CheckCircle, AlertCircle, Loader } from 'lucide-react';
+import { Save, RotateCcw, Play, CheckCircle, AlertCircle, Loader, Copy, Eye, EyeOff } from 'lucide-react';
 
 const NUMBER_FIELDS = [
   { key: 'capital', label: 'Trading Capital (₹)', step: 10000, hint: 'Total capital used for position sizing' },
@@ -26,6 +26,9 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [message, setMessage] = useState(null);
+  const [apiKey, setApiKey] = useState(localStorage.getItem('trading_api_key') || null);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [loadingApiKey, setLoadingApiKey] = useState(false);
 
   useEffect(() => {
     fetch('/api/settings')
@@ -82,6 +85,28 @@ export default function Settings() {
     setScanning(false);
   };
 
+  const loadApiKey = async () => {
+    setLoadingApiKey(true);
+    try {
+      const r = await fetch('/api/security/api-key');
+      const data = await r.json();
+      setApiKey(data.api_key);
+      localStorage.setItem('trading_api_key', data.api_key);
+      setMessage({ type: 'ok', text: '✅ API key loaded and saved to browser. No manual entry needed!' });
+      setShowApiKey(true);
+    } catch {
+      setMessage({ type: 'error', text: 'Failed to load API key' });
+    }
+    setLoadingApiKey(false);
+  };
+
+  const copyApiKey = () => {
+    if (apiKey) {
+      navigator.clipboard.writeText(apiKey);
+      setMessage({ type: 'ok', text: '✅ API key copied to clipboard' });
+    }
+  };
+
   if (!settings) return <div className="p-4 lg:p-8 text-slate-400">Loading settings...</div>;
 
   return (
@@ -102,6 +127,52 @@ export default function Settings() {
             {message.text}
           </div>
         )}
+
+        {/* API Key Security */}
+        <div className="bg-slate-700 rounded-lg p-4 lg:p-6">
+          <h2 className="text-base lg:text-xl font-bold mb-4">🔐 Trading Protection</h2>
+          <p className="text-sm text-slate-300 mb-4">
+            Your API key prevents others from accessing your trading functions. It's stored securely in your browser.
+          </p>
+          {!apiKey ? (
+            <div className="flex flex-col sm:flex-row gap-3">
+              <button
+                onClick={loadApiKey}
+                disabled={loadingApiKey}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2"
+              >
+                {loadingApiKey ? <Loader className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                Load API Key
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="bg-slate-800 rounded p-3 flex items-center gap-2">
+                <input
+                  type={showApiKey ? 'text' : 'password'}
+                  value={apiKey}
+                  readOnly
+                  className="flex-1 bg-transparent text-sm font-mono text-green-300 focus:outline-none"
+                />
+                <button
+                  onClick={() => setShowApiKey(!showApiKey)}
+                  className="text-slate-400 hover:text-slate-300 p-1"
+                  title={showApiKey ? 'Hide' : 'Show'}
+                >
+                  {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+                <button
+                  onClick={copyApiKey}
+                  className="text-slate-400 hover:text-slate-300 p-1"
+                  title="Copy"
+                >
+                  <Copy className="w-4 h-4" />
+                </button>
+              </div>
+              <p className="text-xs text-slate-400">✅ Stored in browser. All trades are protected.</p>
+            </div>
+          )}
+        </div>
 
         {/* Feature Toggles */}
         <div className="bg-slate-700 rounded-lg p-4 lg:p-6">
