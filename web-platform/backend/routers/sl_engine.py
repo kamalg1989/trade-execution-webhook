@@ -178,9 +178,14 @@ def _recommendation(p):
 
     if n >= 2 and not p["half_booked"] and p["qty"] >= 2:
         one_r = round(avg + r_unit, 1)
+        # Alternative: don't book, just trail the full position up the ladder
+        alt_target = round(avg + (n - 1) * r_unit, 1)
+        alt = None
+        if p["sl_price"] < alt_target - tol and ltp and alt_target < ltp:
+            alt = {"label": f"Trail full to +{n-1}R (₹{alt_target})", "trigger": alt_target}
         return {"action": "SELL_HALF", "label": "Sell half + SL to +1R",
                 "reason": f"Crossed +2R — book half, trail rest to ₹{one_r}",
-                "trigger": one_r, "urgency": 2}
+                "trigger": one_r, "urgency": 2, "altTrail": alt}
 
     if n >= 1:
         target = avg if n == 1 else avg + (n - 1) * r_unit
@@ -539,8 +544,19 @@ async def structural_exit(req: StructuralExitReq):
         req.securityId, req.quantity, close_price, req.symbol)
     if not ok:
         raise HTTPException(status_code=400, detail="Dhan rejected exit order")
+
+    # Cancel any resting SL orders — the exit replaces them (avoid stale/double sells)
+    cancelled = 0
+    for o in _forever_sl_map().get(str(req.securityId), []):
+        if o.get("orderId") != order_id:
+            if sl_engine.cancel_forever_order(o.get("orderId"), req.symbol):
+                cancelled += 1
+
+    msg = f"Exit order placed for {req.symbol} (fills at open @ ~₹{trigger})"
+    if cancelled:
+        msg += f" · {cancelled} old SL order(s) cancelled"
     return {"success": True, "orderId": order_id, "trigger": trigger,
-            "message": f"Exit order placed for {req.symbol} (fills at open @ ~₹{trigger})"}
+            "oldCancelled": cancelled, "message": msg}
 
 
 @router.post("/sl/trail")

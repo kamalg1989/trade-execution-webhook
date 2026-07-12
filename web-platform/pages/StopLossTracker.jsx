@@ -170,12 +170,23 @@ export default function StopLossTracker() {
             <p className="text-xs text-slate-300 mt-1">{r.reason}</p>
             {['SELL_HALF', 'TRAIL'].includes(r.action) && <RLadder p={p} />}
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0" onClick={e => e.stopPropagation()}>
+          <div className="flex items-center gap-2 flex-shrink-0 flex-wrap" onClick={e => e.stopPropagation()}>
             {r.action !== 'NONE' && (
               <button onClick={() => executeReco(p)} disabled={isBusy || (!r.trigger && r.action !== 'EXIT')}
                 className={`${btnStyle[r.action]} disabled:opacity-50 text-white font-semibold text-sm px-4 py-2.5 rounded-lg whitespace-nowrap flex items-center gap-2`}>
                 {isBusy ? <Loader className="w-4 h-4 animate-spin" /> : null}
                 {r.label}
+              </button>
+            )}
+            {r.action === 'SELL_HALF' && r.altTrail?.trigger && (
+              <button onClick={() => run(`alt-${p.id}`,
+                  `Trail ${p.symbol} FULL position SL to ₹${r.altTrail.trigger} (no selling)?\n\nPlaces new SL, cancels old.`,
+                  '/api/sl/move', { securityId: p.id, quantity: p.quantity, symbol: p.symbol, trigger: r.altTrail.trigger, oldOrderId: p.slOrders?.[0]?.orderId || '' },
+                  d => `🔼 ${p.symbol}: full position SL → ₹${d.trigger}`)}
+                disabled={busy[`alt-${p.id}`]}
+                className="bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white font-semibold text-sm px-4 py-2.5 rounded-lg whitespace-nowrap flex items-center gap-2">
+                {busy[`alt-${p.id}`] ? <Loader className="w-4 h-4 animate-spin" /> : null}
+                {r.altTrail.label}
               </button>
             )}
             <div className="relative">
