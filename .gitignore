@@ -30,3 +30,6 @@ run_*/
 .DS_Store
 .idea/
 .vscode/
+web-platform/dist.tar.gz
+web-platform/*.timestamp-*.mjs
+web-platform/build*.log
