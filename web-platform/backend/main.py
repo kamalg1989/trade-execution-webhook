@@ -7,7 +7,9 @@ Purpose: Serve web platform APIs for recommendations, orders, portfolio, and sto
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from pydantic import BaseModel
 import logging
 import sys
 import os
@@ -56,6 +58,10 @@ def load_or_create_api_key():
 
 CURRENT_API_KEY = load_or_create_api_key()
 
+# Setup PIN for accessing API key (password protection)
+SETUP_PIN = os.getenv('SETUP_PIN', '1234')  # Default: 1234, change via environment variable
+logger.info(f"🔐 Setup PIN configured (default: 1234, set SETUP_PIN env var to change)")
+
 # =============================================
 # API KEY VALIDATION MIDDLEWARE
 # =============================================
@@ -65,7 +71,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
     PROTECTED_PATHS = [
         '/api/buy',
         '/api/close-position',
-        '/api/sl-alerts',
+        '/api/sl',          # covers /api/sl/* actions and /api/sl-alerts writes
     ]
 
     async def dispatch(self, request: Request, call_next):
@@ -77,11 +83,11 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
 
                 if not api_key:
                     logger.warning(f"❌ Missing API key for {request.url.path}")
-                    raise HTTPException(status_code=401, detail="Missing API key. Set X-API-Key header.")
+                    return JSONResponse(status_code=401, content={"detail": "Missing API key. Set X-API-Key header."})
 
                 if api_key != CURRENT_API_KEY:
                     logger.warning(f"❌ Invalid API key attempt for {request.url.path}")
-                    raise HTTPException(status_code=403, detail="Invalid API key")
+                    return JSONResponse(status_code=403, content={"detail": "Invalid API key"})
 
                 logger.info(f"✅ Valid API key for {request.method} {request.url.path}")
 
@@ -168,13 +174,24 @@ async def root():
     }
 
 
-@app.get("/api/security/api-key")
-async def get_api_key():
-    """Get the current API key (for frontend setup only - call once)"""
+class SetupPINRequest(BaseModel):
+    pin: str = None
+
+@app.post("/api/security/api-key")
+async def get_api_key(request: SetupPINRequest):
+    """Get the current API key (password protected - only you know the PIN)"""
+    if not request.pin:
+        raise HTTPException(status_code=400, detail="PIN required")
+
+    if request.pin != SETUP_PIN:
+        logger.warning(f"❌ Invalid PIN attempt for API key")
+        raise HTTPException(status_code=403, detail="Invalid PIN")
+
+    logger.info("✅ API key retrieved with correct PIN")
     return {
         "api_key": CURRENT_API_KEY,
-        "message": "Copy this key and store it securely. You'll need it for trading.",
-        "usage": "Include X-API-Key header in all trading requests"
+        "message": "API key loaded. Store it securely in your browser.",
+        "usage": "X-API-Key header will be auto-sent with all trading requests"
     }
 
 

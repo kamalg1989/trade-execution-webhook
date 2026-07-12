@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { AlertTriangle, AlertCircle, CheckCircle, ShieldOff, Shield, Zap, Loader,
-  Trash2, TrendingUp, LogOut, RefreshCw, Check, Pencil } from 'lucide-react';
+import { AlertTriangle, AlertCircle, CheckCircle, Shield, Loader, RefreshCw,
+  MoreVertical, LogOut, Trash2, Check, ChevronDown, Zap } from 'lucide-react';
 
 const api = async (path, body) => {
   const apiKey = localStorage.getItem('trading_api_key');
@@ -10,42 +10,56 @@ const api = async (path, body) => {
   }
   const r = await fetch(path, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-API-Key': apiKey
-    },
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
     body: JSON.stringify(body)
   });
   const data = await r.json().catch(() => ({}));
   return { ok: r.ok, data };
 };
 
-// Row tint by R-multiple of the current move (danger overrides).
-const rowTint = (p) => {
-  if (p.danger) return 'border-l-4 border-red-500 bg-red-950/50';
-  const r = p.rMultiple;
-  if (r == null) return 'border-l-4 border-slate-600 bg-slate-800';
-  if (r < 0) return 'border-l-4 border-red-500 bg-red-950/30';
-  if (r < 1) return 'border-l-4 border-green-700 bg-green-950/30';
-  if (r < 2) return 'border-l-4 border-green-500 bg-green-800/30';
-  return 'border-l-4 border-emerald-300 bg-emerald-700/30';
-};
-const rBadge = (r) => {
-  if (r == null) return null;
-  const cls = r < 0 ? 'text-red-400' : r < 1 ? 'text-green-400' : r < 2 ? 'text-green-300' : 'text-emerald-200';
-  return <span className={`text-xs font-bold ${cls}`}>{r >= 0 ? '+' : ''}{r}R</span>;
+// ---------- R-ladder progress bar ----------
+const RLadder = ({ p }) => {
+  const rStop = p.structuralSL || p.safetySL;
+  if (!rStop || !p.buyPrice || p.buyPrice <= rStop) return null;
+  const rUnit = p.buyPrice - rStop;
+  const maxR = Math.max(3, Math.ceil(p.rMultiple ?? 0) + 1);
+  const toPct = (price) => Math.min(97, Math.max(0, ((price - p.buyPrice) / (rUnit * maxR)) * 100));
+  const ticks = [];
+  for (let i = 0; i <= maxR; i++) ticks.push(i);
+  return (
+    <div className="mt-3 mb-1">
+      <div className="relative h-7">
+        <div className="absolute top-2.5 left-0 right-0 h-1 rounded bg-slate-600/40" />
+        <div className="absolute top-2.5 left-0 h-1 rounded bg-green-400"
+          style={{ width: `${toPct(p.current_price)}%` }} />
+        {ticks.map(i => (
+          <React.Fragment key={i}>
+            <div className="absolute top-1 w-0.5 h-4 bg-slate-500" style={{ left: `${(i / maxR) * 100}%` }} />
+            <div className="absolute top-6 text-[9px] text-slate-400 -translate-x-1/2"
+              style={{ left: `${(i / maxR) * 100}%` }}>{i === 0 ? 'Buy' : `${i}R`}</div>
+          </React.Fragment>
+        ))}
+        {p.stop_loss > 0 && (
+          <div className="absolute top-0.5 w-1 h-5 bg-red-400 rounded -translate-x-1/2"
+            title={`SL ₹${p.stop_loss}`} style={{ left: `${toPct(p.stop_loss)}%` }} />
+        )}
+        <div className="absolute top-1.5 w-3 h-3 rounded-full bg-green-400 border-2 border-slate-900 -translate-x-1/2"
+          title={`Now ₹${p.current_price}`} style={{ left: `${toPct(p.current_price)}%` }} />
+      </div>
+    </div>
+  );
 };
 
 export default function StopLossTracker() {
   const [positions, setPositions] = useState([]);
-  const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [autoRefresh, setAutoRefresh] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [choice, setChoice] = useState({});       // per-position chosen SL price
-  const [structIn, setStructIn] = useState({});    // per-position structural SL input
   const [busy, setBusy] = useState({});
   const [message, setMessage] = useState(null);
+  const [menuOpen, setMenuOpen] = useState(null);   // position id with open menu
+  const [showDone, setShowDone] = useState(false);
+  const [structIn, setStructIn] = useState({});
+  const [customSl, setCustomSl] = useState({});
 
   const fetchData = useCallback(async () => {
     try {
@@ -53,17 +67,16 @@ export default function StopLossTracker() {
       if (!r.ok) throw new Error('fetch failed');
       const data = await r.json();
       setPositions(data.positions || []);
-      setAlerts(data.alerts || []);
     } catch (e) { console.error('SL fetch failed:', e); }
     setLoading(false);
   }, []);
 
+  useEffect(() => { fetchData(); }, [fetchData]);
   useEffect(() => {
-    fetchData();
-    if (!autoRefresh) return;
-    const t = setInterval(fetchData, 20000);
-    return () => clearInterval(t);
-  }, [autoRefresh, fetchData]);
+    const close = () => setMenuOpen(null);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, []);
 
   const run = async (key, confirmMsg, path, body, okMsg) => {
     if (confirmMsg && !window.confirm(confirmMsg)) return;
@@ -75,85 +88,194 @@ export default function StopLossTracker() {
     setBusy(b => ({ ...b, [key]: false }));
   };
 
-  const placeChosen = (p) => {
-    const sl = Number(choice[p.id] ?? p.slOptions?.[0]?.price);
-    if (!sl || sl <= 0 || sl >= p.current_price) return setMessage({ type: 'error', text: `${p.symbol}: choose a level below ₹${p.current_price}` });
-    run(`set-${p.id}`, `Place SL for ${p.symbol} @ ₹${sl}?\n\nReal Dhan forever order.`,
-      '/api/sl/place-at-level', { securityId: p.id, quantity: p.quantity, symbol: p.symbol, trigger: sl },
-      (d) => `✅ ${p.symbol}: SL @ ₹${d.trigger}`);
+  // ---------- Execute the recommended action ----------
+  const executeReco = (p) => {
+    const r = p.recommendation || {};
+    if (r.action === 'EXIT') {
+      run(`reco-${p.id}`, `EXIT ${p.symbol} at next open?\n\n${r.reason}\nReal Dhan order.`,
+        '/api/sl/structural-exit', { securityId: p.id, quantity: p.quantity, symbol: p.symbol },
+        d => `📤 ${p.symbol}: exit placed @ ~₹${d.trigger}`);
+    } else if (r.action === 'SET_SL' && r.trigger) {
+      run(`reco-${p.id}`, `Place SL for ${p.symbol} @ ₹${r.trigger}?\n\nReal Dhan forever order.`,
+        '/api/sl/place-at-level', { securityId: p.id, quantity: p.quantity, symbol: p.symbol, trigger: r.trigger },
+        d => `🛡️ ${p.symbol}: SL set @ ₹${d.trigger}`);
+    } else if (r.action === 'SELL_HALF') {
+      run(`reco-${p.id}`, `${p.symbol}: sell HALF (${Math.floor(p.quantity / 2)}) at next open and move SL on the rest to ₹${r.trigger}?\n\nReal Dhan orders.`,
+        '/api/sl/sell-half', { securityId: p.id, symbol: p.symbol, newTrigger: r.trigger },
+        d => `💰 ${d.message}`);
+    } else if (r.action === 'TRAIL' && r.trigger) {
+      run(`reco-${p.id}`, `Move ${p.symbol} SL up to ₹${r.trigger}?\n\nPlaces new SL, cancels old.`,
+        '/api/sl/move', { securityId: p.id, quantity: p.quantity, symbol: p.symbol, trigger: r.trigger, oldOrderId: p.slOrders?.[0]?.orderId || '' },
+        d => `🔼 ${p.symbol}: SL → ₹${d.trigger}`);
+    }
   };
 
-  const moveChosen = (p) => {
-    const sl = Number(choice[p.id]);
-    if (!sl || sl <= 0 || sl >= p.current_price) return setMessage({ type: 'error', text: `${p.symbol}: choose a level below ₹${p.current_price}` });
-    run(`move-${p.id}`, `Move ${p.symbol} SL to ₹${sl}?\n\nPlaces new SL, cancels old.`,
-      '/api/sl/move', { securityId: p.id, quantity: p.quantity, symbol: p.symbol, trigger: sl, oldOrderId: p.slOrders?.[0]?.orderId || '' },
-      (d) => `🔼 ${p.symbol}: SL → ₹${d.trigger}`);
+  // ---------- Menu actions ----------
+  const customMove = (p) => {
+    const sl = Number(customSl[p.id]);
+    if (!sl || sl <= 0 || sl >= p.current_price) return setMessage({ type: 'error', text: `${p.symbol}: level must be below ₹${p.current_price}` });
+    const hasSl = p.stop_loss > 0;
+    run(`custom-${p.id}`, `${hasSl ? 'Move' : 'Place'} ${p.symbol} SL ${hasSl ? 'to' : '@'} ₹${sl}?`,
+      hasSl ? '/api/sl/move' : '/api/sl/place-at-level',
+      hasSl ? { securityId: p.id, quantity: p.quantity, symbol: p.symbol, trigger: sl, oldOrderId: p.slOrders?.[0]?.orderId || '' }
+            : { securityId: p.id, quantity: p.quantity, symbol: p.symbol, trigger: sl },
+      d => `✅ ${p.symbol}: SL @ ₹${d.trigger}`);
   };
-
-  const structuralExit = (p) => run(`exit-${p.id}`,
-    `Structural EXIT for ${p.symbol}?\n\nExit-forever sells at next open. Real Dhan order.`,
-    '/api/sl/structural-exit', { securityId: p.id, quantity: p.quantity, symbol: p.symbol },
-    (d) => `📤 ${p.symbol}: exit @ ~₹${d.trigger}`);
-
-  const cancel = (p, orderId) => run(`cancel-${orderId}`, `Cancel SL for ${p.symbol}?`,
-    '/api/sl/cancel', { orderId, symbol: p.symbol }, () => `🗑️ ${p.symbol}: SL cancelled`);
 
   const saveStructural = (p) => {
     const v = Number(structIn[p.id]);
     if (!v || v <= 0) return setMessage({ type: 'error', text: 'Enter a valid structural SL' });
     run(`struct-${p.id}`, null, '/api/sl/set-structural',
-      { symbol: p.symbol, structuralSL: v }, () => `✅ ${p.symbol}: structural SL set to ₹${v}`);
+      { symbol: p.symbol, structuralSL: v }, () => `✅ ${p.symbol}: structural SL ₹${v}`);
   };
 
-  const zoneStyle = (z) => ({
-    SAFE: 'bg-green-900 text-green-300', WARNING: 'bg-yellow-900 text-yellow-300',
-    CRITICAL: 'bg-red-900 text-red-300', DANGER: 'bg-red-600 text-white',
-  }[z] || 'bg-slate-600 text-slate-200');
+  if (loading) return <div className="p-8 text-slate-400 dark:text-slate-400">Loading stop loss data…</div>;
 
-  // Compact structural cell: value if present, else inline editable input
-  const StructuralCell = ({ p, small }) => (
-    p.structuralSL && !p.structuralEditable ? (
-      <span className="text-purple-300">₹{p.structuralSL}</span>
-    ) : (
-      <span className="inline-flex items-center gap-1">
-        <input type="number" step="0.05" placeholder={p.structuralSL ? String(p.structuralSL) : 'set'}
-          value={structIn[p.id] ?? (p.structuralSL || '')}
-          onChange={e => setStructIn(s => ({ ...s, [p.id]: e.target.value }))}
-          className={`bg-slate-900 border border-slate-600 rounded px-1.5 py-0.5 ${small ? 'w-16' : 'w-20'} text-xs focus:border-purple-500 focus:outline-none`} />
-        <button onClick={() => saveStructural(p)} disabled={busy[`struct-${p.id}`]}
-          title="Save structural SL"
-          className="text-purple-300 hover:text-purple-200 disabled:opacity-50">
-          {busy[`struct-${p.id}`] ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-        </button>
-      </span>
-    )
+  const reco = (p) => p.recommendation || { action: 'NONE' };
+  const exits = positions.filter(p => reco(p).action === 'EXIT');
+  const unprotected = positions.filter(p => reco(p).action === 'SET_SL');
+  const trailDue = positions.filter(p => ['SELL_HALF', 'TRAIL'].includes(reco(p).action));
+  const done = positions.filter(p => reco(p).action === 'NONE');
+  const pending = exits.length + unprotected.length + trailDue.length;
+
+  const btnStyle = {
+    EXIT: 'bg-red-600 hover:bg-red-700',
+    SET_SL: 'bg-amber-600 hover:bg-amber-700',
+    SELL_HALF: 'bg-emerald-600 hover:bg-emerald-700',
+    TRAIL: 'bg-green-600 hover:bg-green-700',
+  };
+
+  const Card = ({ p, accent }) => {
+    const r = reco(p);
+    const isBusy = busy[`reco-${p.id}`];
+    return (
+      <div className={`rounded-xl p-4 bg-slate-800/70 border border-slate-700/60 border-l-4 ${accent}`}>
+        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-bold text-[15px]">{p.symbol}</span>
+              {p.rMultiple != null && (
+                <span className={`text-xs font-bold ${p.rMultiple < 0 ? 'text-red-400' : 'text-green-400'}`}>
+                  {p.rMultiple >= 0 ? '+' : ''}{p.rMultiple}R
+                </span>
+              )}
+              {p.halfBooked && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/60 text-emerald-300">half booked</span>}
+            </div>
+            <p className="text-xs text-slate-400 mt-1.5">
+              Buy ₹{p.buyPrice} · Now <span className="text-blue-400">₹{p.current_price}</span>
+              {p.stop_loss > 0 && <> · SL <span className="text-red-400">₹{p.stop_loss}</span></>}
+              {p.structuralSL && <> · Struct ₹{p.structuralSL}</>}
+              {p.pnl != null && <> · <span className={p.pnl >= 0 ? 'text-green-400' : 'text-red-400'}>{p.pnl >= 0 ? '+' : ''}₹{p.pnl?.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span></>}
+            </p>
+            <p className="text-xs text-slate-300 mt-1">{r.reason}</p>
+            {['SELL_HALF', 'TRAIL'].includes(r.action) && <RLadder p={p} />}
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0" onClick={e => e.stopPropagation()}>
+            {r.action !== 'NONE' && (
+              <button onClick={() => executeReco(p)} disabled={isBusy || (!r.trigger && r.action !== 'EXIT')}
+                className={`${btnStyle[r.action]} disabled:opacity-50 text-white font-semibold text-sm px-4 py-2.5 rounded-lg whitespace-nowrap flex items-center gap-2`}>
+                {isBusy ? <Loader className="w-4 h-4 animate-spin" /> : null}
+                {r.label}
+              </button>
+            )}
+            <div className="relative">
+              <button onClick={() => setMenuOpen(menuOpen === p.id ? null : p.id)}
+                className="p-2.5 rounded-lg bg-slate-700/70 hover:bg-slate-600 text-slate-300">
+                <MoreVertical className="w-4 h-4" />
+              </button>
+              {menuOpen === p.id && (
+                <div className="absolute right-0 mt-1 w-64 bg-slate-800 border border-slate-600 rounded-lg shadow-xl z-30 p-3 space-y-3">
+                  <div>
+                    <p className="text-[11px] text-slate-400 mb-1">Custom SL level</p>
+                    <div className="flex gap-1.5">
+                      <input type="number" step="0.05" placeholder={`< ₹${p.current_price}`}
+                        value={customSl[p.id] ?? ''}
+                        onChange={e => setCustomSl(s => ({ ...s, [p.id]: e.target.value }))}
+                        className="flex-1 min-w-0 bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-xs" />
+                      <button onClick={() => customMove(p)} disabled={busy[`custom-${p.id}`]}
+                        className="bg-blue-600 hover:bg-blue-700 px-3 rounded text-xs font-semibold">
+                        {busy[`custom-${p.id}`] ? <Loader className="w-3.5 h-3.5 animate-spin" /> : 'Set'}
+                      </button>
+                    </div>
+                    {(p.slOptions || []).length > 0 && (
+                      <select onChange={e => setCustomSl(s => ({ ...s, [p.id]: e.target.value }))}
+                        className="w-full mt-1.5 bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-xs" defaultValue="">
+                        <option value="" disabled>Suggested levels…</option>
+                        {p.slOptions.map(o => <option key={o.basis} value={o.price}>₹{o.price} · {o.label}</option>)}
+                      </select>
+                    )}
+                  </div>
+                  {p.structuralEditable && (
+                    <div>
+                      <p className="text-[11px] text-slate-400 mb-1">Structural SL</p>
+                      <div className="flex gap-1.5">
+                        <input type="number" step="0.05" placeholder={p.structuralSL ? String(p.structuralSL) : 'set'}
+                          value={structIn[p.id] ?? ''}
+                          onChange={e => setStructIn(s => ({ ...s, [p.id]: e.target.value }))}
+                          className="flex-1 min-w-0 bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-xs" />
+                        <button onClick={() => saveStructural(p)} disabled={busy[`struct-${p.id}`]}
+                          className="bg-purple-600 hover:bg-purple-700 px-3 rounded text-xs font-semibold">
+                          <Check className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  <div className="border-t border-slate-700 pt-2 space-y-1">
+                    <button onClick={() => run(`exit-${p.id}`, `Exit ${p.symbol} at next open?`, '/api/sl/structural-exit',
+                        { securityId: p.id, quantity: p.quantity, symbol: p.symbol }, d => `📤 ${p.symbol}: exit @ ~₹${d.trigger}`)}
+                      className="w-full text-left text-xs px-2 py-1.5 rounded hover:bg-slate-700 text-amber-300 flex items-center gap-2">
+                      <LogOut className="w-3.5 h-3.5" /> Exit full position at open
+                    </button>
+                    {p.slOrders?.slice(0, 1).map(o => (
+                      <button key={o.orderId}
+                        onClick={() => run(`cancel-${o.orderId}`, `Cancel SL for ${p.symbol}?`, '/api/sl/cancel',
+                          { orderId: o.orderId, symbol: p.symbol }, () => `🗑️ ${p.symbol}: SL cancelled`)}
+                        className="w-full text-left text-xs px-2 py-1.5 rounded hover:bg-slate-700 text-red-300 flex items-center gap-2">
+                        <Trash2 className="w-3.5 h-3.5" /> Cancel SL order
+                      </button>
+                    ))}
+                    {p.halfBooked && (
+                      <button onClick={() => run(`clearhalf-${p.id}`, null, '/api/sl/clear-half-booked',
+                          { symbol: p.symbol }, () => `${p.symbol}: half-booked flag cleared`)}
+                        className="w-full text-left text-xs px-2 py-1.5 rounded hover:bg-slate-700 text-slate-300 flex items-center gap-2">
+                        <Zap className="w-3.5 h-3.5" /> Clear half-booked flag
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const Section = ({ title, color, items, accent }) => items.length === 0 ? null : (
+    <div>
+      <h2 className={`text-[11px] font-bold tracking-widest mb-2 ${color}`}>{title}</h2>
+      <div className="space-y-2.5">{items.map(p => <Card key={p.id} p={p} accent={accent} />)}</div>
+    </div>
   );
-
-  if (loading) return <div className="p-8 text-slate-400">Loading stop loss data…</div>;
-
-  const unprotected = positions.filter(p => p.riskZone === 'NO_SL');
-  const protectedPos = positions.filter(p => p.riskZone !== 'NO_SL');
-  const iconBtn = 'p-2 rounded-lg disabled:opacity-40 flex items-center justify-center';
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 text-white p-4 lg:p-8">
-      <div className="max-w-7xl mx-auto space-y-5">
+      <div className="max-w-5xl mx-auto space-y-6">
         {/* Header */}
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
-            <h1 className="text-2xl lg:text-3xl font-bold">🛡️ Stop Loss</h1>
-            <p className="text-xs text-slate-400">{protectedPos.length} protected · {unprotected.length} unprotected</p>
+            <h1 className="text-2xl lg:text-3xl font-bold">🛡️ Tonight's actions</h1>
+            <p className="text-xs text-slate-400 mt-1">
+              EOD review · {pending} action{pending !== 1 ? 's' : ''} pending · {done.length} OK
+            </p>
           </div>
           <div className="flex items-center gap-2">
+            {exits.length > 0 && <span className="text-[11px] px-2.5 py-1 rounded-full bg-red-900/60 text-red-300 font-semibold">{exits.length} exit</span>}
+            {unprotected.length > 0 && <span className="text-[11px] px-2.5 py-1 rounded-full bg-amber-900/60 text-amber-300 font-semibold">{unprotected.length} unprotected</span>}
+            {trailDue.length > 0 && <span className="text-[11px] px-2.5 py-1 rounded-full bg-green-900/60 text-green-300 font-semibold">{trailDue.length} trail due</span>}
             <button onClick={() => { setRefreshing(true); fetchData().finally(() => setRefreshing(false)); }}
-              disabled={refreshing} title="Refresh prices & SL"
-              className="p-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 disabled:opacity-50">
+              disabled={refreshing} className="p-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 disabled:opacity-50">
               <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
-            </button>
-            <button onClick={() => setAutoRefresh(!autoRefresh)} title="Auto-refresh"
-              className={`p-2 rounded-lg ${autoRefresh ? 'bg-blue-600' : 'bg-slate-700 text-slate-300'}`}>
-              <Zap className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -165,153 +287,83 @@ export default function StopLossTracker() {
           </div>
         )}
 
-        {/* UNPROTECTED */}
-        {unprotected.length > 0 && (
+        {pending === 0 && (
+          <div className="rounded-xl p-6 bg-green-900/20 border border-green-800/40 text-center">
+            <CheckCircle className="w-8 h-8 text-green-400 mx-auto mb-2" />
+            <p className="font-semibold text-green-300">All clear — nothing to do tonight</p>
+            <p className="text-xs text-slate-400 mt-1">Every position is protected and within its R ladder.</p>
+          </div>
+        )}
+
+        <Section title="STEP 1 — EXIT REQUIRED" color="text-red-400" items={exits} accent="border-l-red-500" />
+        <Section title="STEP 2 — PLACE INITIAL SL" color="text-amber-400" items={unprotected} accent="border-l-amber-500" />
+        <Section title="STEP 3 — BOOK PROFIT / TRAIL (R-LADDER)" color="text-green-400" items={trailDue} accent="border-l-green-500" />
+
+        {/* Nothing to do */}
+        {done.length > 0 && (
           <div>
-            <h2 className="text-sm font-bold mb-2 flex items-center gap-2 text-orange-400">
-              <ShieldOff className="w-4 h-4" /> Unprotected ({unprotected.length})
-            </h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
-              {unprotected.map(p => (
-                <div key={p.id} className={`rounded-lg p-3 ${rowTint(p)}`}>
-                  <div className="flex justify-between items-start mb-2">
-                    <div className="flex items-center gap-2">
-                      <p className="font-bold">{p.symbol}</p>
-                      {rBadge(p.rMultiple)}
-                    </div>
-                    <div className="text-right">
-                      <p className="font-bold text-sm">₹{p.current_price}</p>
-                      <p className={`text-xs ${p.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>{p.pnl >= 0 ? '+' : ''}₹{p.pnl?.toLocaleString('en-IN', {maximumFractionDigits: 0})}</p>
-                    </div>
+            <h2 className="text-[11px] font-bold tracking-widest mb-2 text-slate-500">NOTHING TO DO ({done.length})</h2>
+            <div className="space-y-1.5">
+              {(showDone ? done : done.slice(0, 4)).map(p => (
+                <div key={p.id} className="flex items-center justify-between px-4 py-2.5 rounded-lg bg-slate-800/40 border border-slate-700/40">
+                  <div className="text-sm min-w-0 flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold">{p.symbol}</span>
+                    {p.rMultiple != null && (
+                      <span className={`text-xs font-bold ${p.rMultiple < 0 ? 'text-red-400' : 'text-green-400'}`}>
+                        {p.rMultiple >= 0 ? '+' : ''}{p.rMultiple}R
+                      </span>
+                    )}
+                    <span className="text-xs text-slate-400">
+                      SL ₹{p.stop_loss}{p.slBasis ? ` (${p.slBasis})` : ''} · {reco(p).reason}
+                    </span>
                   </div>
-                  <div className="grid grid-cols-3 gap-1 text-[11px] mb-2">
-                    <div><span className="text-slate-400">Buy</span><br/><span>₹{p.buyPrice}</span></div>
-                    <div><span className="text-slate-400">Safety</span><br/><span>₹{p.safetySL ?? '—'}</span></div>
-                    <div><span className="text-slate-400">Structural</span><br/><StructuralCell p={p} small /></div>
-                  </div>
-                  <div className="flex items-stretch gap-2">
-                    <select value={choice[p.id] ?? p.slOptions?.[0]?.price ?? ''}
-                      onChange={e => setChoice(s => ({ ...s, [p.id]: e.target.value }))}
-                      className="min-w-0 flex-1 bg-slate-900 border border-slate-600 rounded px-2 text-xs h-9 focus:border-orange-500 focus:outline-none">
-                      {(p.slOptions || []).length === 0 && <option value="">No valid levels</option>}
-                      {(p.slOptions || []).map(o => (
-                        <option key={o.basis} value={o.price}>₹{o.price} · {o.label} ({o.pctFromEntry > 0 ? '+' : ''}{o.pctFromEntry}%)</option>
-                      ))}
-                    </select>
-                    <button onClick={() => placeChosen(p)} disabled={busy[`set-${p.id}`] || !(p.slOptions || []).length}
-                      title="Place SL" className="bg-orange-600 hover:bg-orange-700 disabled:opacity-50 font-semibold px-3 rounded text-sm flex items-center gap-1 h-9 flex-shrink-0">
-                      {busy[`set-${p.id}`] ? <Loader className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />} Set
+                  <div className="flex items-center gap-2 flex-shrink-0" onClick={e => e.stopPropagation()}>
+                    <span className="text-[10px] px-2 py-0.5 rounded bg-slate-700/60 text-slate-400 font-semibold">SL OK</span>
+                    <button onClick={() => setMenuOpen(menuOpen === p.id ? null : p.id)}
+                      className="p-1.5 rounded bg-slate-700/40 hover:bg-slate-600 text-slate-400">
+                      <MoreVertical className="w-3.5 h-3.5" />
                     </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* PROTECTED */}
-        <div>
-          <h2 className="text-sm font-bold mb-2 flex items-center gap-2 text-green-400">
-            <Shield className="w-4 h-4" /> Protected ({protectedPos.length})
-          </h2>
-          {protectedPos.length === 0 ? (
-            <p className="text-slate-400 text-sm py-4">No positions with active SL orders</p>
-          ) : (
-            <div className="space-y-2">
-              {protectedPos.map(p => {
-                const trailOpts = (p.slOptions || []).filter(o => o.price > p.stop_loss);
-                return (
-                <div key={p.id} className={`rounded-lg p-3 ${rowTint(p)}`}>
-                  {(p.danger || p.watch) && (
-                    <div className={`mb-2 text-xs font-semibold flex items-center gap-1.5 ${p.danger ? 'text-red-300' : 'text-amber-300'}`}>
-                      <AlertTriangle className="w-3.5 h-3.5" />
-                      {p.danger ? `Closed ₹${p.lastClose} below structural ₹${p.structuralSL} — EXIT at next open`
-                                : `Live below structural ₹${p.structuralSL} — watch for a close below`}
-                    </div>
-                  )}
-                  <div className="flex flex-col lg:flex-row lg:items-center gap-3">
-                    {/* Metrics */}
-                    <div className="grid grid-cols-3 lg:grid-cols-6 gap-x-4 gap-y-2 flex-1 text-sm">
-                      <div>
-                        <p className="text-[10px] text-slate-400">Symbol</p>
-                        <p className="font-bold flex items-center gap-1.5">{p.symbol} {rBadge(p.rMultiple)}</p>
-                      </div>
-                      <div><p className="text-[10px] text-slate-400">Buy</p><p>₹{p.buyPrice}</p></div>
-                      <div><p className="text-[10px] text-slate-400">Current</p><p className="text-blue-400">₹{p.current_price}</p></div>
-                      <div><p className="text-[10px] text-slate-400">Safety −8%</p><p className="text-slate-300">₹{p.safetySL ?? '—'}</p></div>
-                      <div><p className="text-[10px] text-slate-400">Structural</p><p><StructuralCell p={p} /></p></div>
-                      <div>
-                        <p className="text-[10px] text-slate-400">Current SL</p>
-                        <p className="text-red-400 font-semibold">₹{p.stop_loss}
-                          {p.slPctFromEntry != null && <span className="text-slate-400 font-normal"> ({p.slPctFromEntry > 0 ? '+' : ''}{p.slPctFromEntry}%)</span>}
-                        </p>
-                        <span className={`inline-block mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold ${p.danger ? zoneStyle('DANGER') : zoneStyle(p.riskZone)}`}>
-                          {p.danger ? 'DANGER' : (p.slBasis || p.riskZone)}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Actions */}
-                    <div className="flex items-stretch gap-1.5 flex-shrink-0">
-                      <select value={choice[p.id] ?? ''}
-                        onChange={e => setChoice(s => ({ ...s, [p.id]: e.target.value }))}
-                        disabled={trailOpts.length === 0}
-                        title="Trail SL to a higher level"
-                        className="min-w-0 w-32 bg-slate-900 border border-slate-600 rounded px-2 text-xs h-9 focus:border-green-500 focus:outline-none disabled:opacity-40">
-                        <option value="">{trailOpts.length ? 'Trail…' : 'SL highest'}</option>
-                        {trailOpts.map(o => (
-                          <option key={o.basis} value={o.price}>₹{o.price} · {o.label}</option>
+                    {menuOpen === p.id && (
+                      <div className="absolute right-8 mt-2 w-64 bg-slate-800 border border-slate-600 rounded-lg shadow-xl z-30 p-3 space-y-2">
+                        <div className="flex gap-1.5">
+                          <input type="number" step="0.05" placeholder={`SL < ₹${p.current_price}`}
+                            value={customSl[p.id] ?? ''}
+                            onChange={e => setCustomSl(s => ({ ...s, [p.id]: e.target.value }))}
+                            className="flex-1 min-w-0 bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-xs" />
+                          <button onClick={() => customMove(p)} className="bg-blue-600 hover:bg-blue-700 px-3 rounded text-xs font-semibold">Set</button>
+                        </div>
+                        <button onClick={() => run(`exit-${p.id}`, `Exit ${p.symbol} at next open?`, '/api/sl/structural-exit',
+                            { securityId: p.id, quantity: p.quantity, symbol: p.symbol }, d => `📤 ${p.symbol}: exit @ ~₹${d.trigger}`)}
+                          className="w-full text-left text-xs px-2 py-1.5 rounded hover:bg-slate-700 text-amber-300">Exit at open</button>
+                        {p.slOrders?.slice(0, 1).map(o => (
+                          <button key={o.orderId}
+                            onClick={() => run(`cancel-${o.orderId}`, `Cancel SL for ${p.symbol}?`, '/api/sl/cancel',
+                              { orderId: o.orderId, symbol: p.symbol }, () => `🗑️ ${p.symbol}: SL cancelled`)}
+                            className="w-full text-left text-xs px-2 py-1.5 rounded hover:bg-slate-700 text-red-300">Cancel SL</button>
                         ))}
-                      </select>
-                      <button onClick={() => moveChosen(p)} disabled={busy[`move-${p.id}`] || !choice[p.id]}
-                        title="Move SL up to the chosen level"
-                        className={`${iconBtn} bg-green-700 hover:bg-green-600`}>
-                        {busy[`move-${p.id}`] ? <Loader className="w-4 h-4 animate-spin" /> : <TrendingUp className="w-4 h-4" />}
-                      </button>
-                      <button onClick={() => structuralExit(p)} disabled={busy[`exit-${p.id}`]}
-                        title="Exit now (sells at next open)"
-                        className={`${iconBtn} bg-amber-700 hover:bg-amber-600`}>
-                        {busy[`exit-${p.id}`] ? <Loader className="w-4 h-4 animate-spin" /> : <LogOut className="w-4 h-4" />}
-                      </button>
-                      {p.slOrders?.slice(0, 1).map(o => (
-                        <button key={o.orderId} onClick={() => cancel(p, o.orderId)} disabled={busy[`cancel-${o.orderId}`]}
-                          title="Cancel SL order"
-                          className={`${iconBtn} bg-red-800 hover:bg-red-700`}>
-                          {busy[`cancel-${o.orderId}`] ? <Loader className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-                        </button>
-                      ))}
-                    </div>
+                      </div>
+                    )}
                   </div>
                 </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* ALERTS */}
-        {alerts.length > 0 && (
-          <div className="bg-slate-800/60 rounded-lg p-3">
-            <h2 className="text-sm font-bold mb-2 flex items-center gap-2 text-yellow-400">
-              <AlertTriangle className="w-4 h-4" /> Alerts ({alerts.length})
-            </h2>
-            <div className="space-y-1 max-h-48 overflow-y-auto">
-              {alerts.map((a, i) => (
-                <p key={i} className={`text-xs ${a.type === 'DANGER' ? 'text-red-300' : a.type === 'CRITICAL' ? 'text-red-300' : a.type === 'WARNING' || a.type === 'WATCH' ? 'text-yellow-300' : 'text-orange-300'}`}>{a.message}</p>
               ))}
+              {done.length > 4 && (
+                <button onClick={() => setShowDone(!showDone)}
+                  className="w-full text-center text-xs text-slate-400 hover:text-slate-200 py-2 flex items-center justify-center gap-1">
+                  {showDone ? 'Show less' : `Show ${done.length - 4} more`}
+                  <ChevronDown className={`w-3.5 h-3.5 ${showDone ? 'rotate-180' : ''}`} />
+                </button>
+              )}
             </div>
           </div>
         )}
 
-        {/* Legend */}
+        {/* Rule legend */}
         <div className="bg-slate-800/40 rounded-lg p-3 text-[11px] text-slate-400">
-          <strong className="text-slate-300">Row colour = R-multiple</strong> (R = buy − structural SL, or −8% if unset):
-          <span className="text-red-400"> below buy</span> ·
-          <span className="text-green-400"> 0–1R</span> ·
-          <span className="text-green-300"> 1–2R</span> ·
-          <span className="text-emerald-200"> 2R+</span>.
-          Actions: <TrendingUp className="w-3 h-3 inline" /> trail · <LogOut className="w-3 h-3 inline" /> exit · <Trash2 className="w-3 h-3 inline" /> cancel.
-          Structural SL is editable (<Pencil className="w-3 h-3 inline" />) when not set from the sheet/screener.
+          <strong className="text-slate-300">The 3-rule ladder:</strong>
+          <span className="text-slate-300"> +1R</span> → SL to breakeven ·
+          <span className="text-slate-300"> +2R</span> → sell half, SL to +1R ·
+          <span className="text-slate-300"> +NR</span> → trail SL to +(N−1)R.
+          Close below structural always exits at next open. R = buy − structural SL (or −8% safety if unset).
         </div>
       </div>
     </div>

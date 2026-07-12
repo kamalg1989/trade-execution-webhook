@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Home, TrendingUp, Shield, Briefcase, LogOut, Menu, X, Settings as SettingsIcon } from 'lucide-react';
 import { useDevice } from './hooks/useDevice';
+import { ThemeToggle } from './hooks/useTheme';
 import Dashboard from './pages/Dashboard';
 import ProfitLossTracker from './pages/ProfitLossTracker';
 import StopLossTracker from './pages/StopLossTracker';
@@ -159,6 +160,7 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 lg:gap-4 flex-shrink-0">
+            <ThemeToggle />
             <div className="text-right text-xs lg:text-sm hidden sm:block">
               <p className="text-slate-400">Last Updated</p>
               <p className="text-white font-semibold">

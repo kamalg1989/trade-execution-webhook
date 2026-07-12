@@ -38,6 +38,86 @@ body {
   background: #64748b;
 }
 
+/* =========================================================
+   GLOBAL LIGHT MODE
+   Toggled by adding .light to <html>. Overrides the dark
+   Tailwind utilities used across every screen so the whole
+   app flips without per-page changes.
+   ========================================================= */
+html.light ::-webkit-scrollbar-track { background: #e2e8f0; }
+html.light ::-webkit-scrollbar-thumb { background: #94a3b8; }
+
+/* Page + container backgrounds */
+html.light .bg-slate-900 { background-color: #f1f5f9; }
+html.light .bg-slate-800 { background-color: #ffffff; }
+html.light .bg-slate-700 { background-color: #f8fafc; }
+html.light .bg-slate-600 { background-color: #e2e8f0; }
+html.light .bg-slate-800\/70,
+html.light .bg-slate-800\/60,
+html.light .bg-slate-800\/40 { background-color: #ffffff; }
+html.light .bg-slate-700\/70,
+html.light .bg-slate-700\/60,
+html.light .bg-slate-700\/40 { background-color: #f1f5f9; }
+html.light .bg-slate-900\/50 { background-color: #f8fafc; }
+html.light .bg-gradient-to-br { background-image: none; background-color: #f1f5f9; }
+
+/* Text */
+html.light .text-white { color: #0f172a; }
+html.light .text-slate-200 { color: #1e293b; }
+html.light .text-slate-300 { color: #334155; }
+html.light .text-slate-400 { color: #475569; }
+html.light .text-slate-500 { color: #64748b; }
+html.light .text-blue-400 { color: #2563eb; }
+html.light .text-green-300 { color: #15803d; }
+html.light .text-green-400 { color: #16a34a; }
+html.light .text-emerald-200, html.light .text-emerald-300 { color: #047857; }
+html.light .text-red-300 { color: #b91c1c; }
+html.light .text-red-400 { color: #dc2626; }
+html.light .text-amber-300 { color: #b45309; }
+html.light .text-yellow-300, html.light .text-yellow-400 { color: #a16207; }
+html.light .text-orange-300, html.light .text-orange-400 { color: #c2410c; }
+html.light .text-purple-300 { color: #7e22ce; }
+
+/* Borders */
+html.light .border-slate-700, html.light .border-slate-600 { border-color: #cbd5e1; }
+html.light .border-slate-700\/60, html.light .border-slate-700\/40 { border-color: #e2e8f0; }
+html.light .border-slate-500 { border-color: #94a3b8; }
+
+/* Status tints */
+html.light .bg-green-900\/50, html.light .bg-green-900\/20, html.light .bg-green-900\/60 { background-color: #dcfce7; }
+html.light .bg-red-900\/50, html.light .bg-red-900\/60, html.light .bg-red-950\/50, html.light .bg-red-950\/30 { background-color: #fee2e2; }
+html.light .bg-amber-900\/60, html.light .bg-yellow-900 { background-color: #fef3c7; }
+html.light .bg-green-950\/30, html.light .bg-green-800\/30, html.light .bg-emerald-700\/30 { background-color: #dcfce7; }
+html.light .border-green-800\/40 { border-color: #86efac; }
+
+/* Keep white text on saturated action buttons (and their children) */
+html.light .bg-blue-600, html.light .bg-blue-700,
+html.light .bg-green-600, html.light .bg-green-700,
+html.light .bg-emerald-600, html.light .bg-emerald-700,
+html.light .bg-red-600, html.light .bg-red-700, html.light .bg-red-800,
+html.light .bg-amber-600, html.light .bg-amber-700,
+html.light .bg-orange-600, html.light .bg-orange-700,
+html.light .bg-purple-600, html.light .bg-purple-700 { color: #ffffff; }
+html.light .bg-blue-600 *, html.light .bg-blue-700 *,
+html.light .bg-green-600 *, html.light .bg-green-700 *,
+html.light .bg-emerald-600 *, html.light .bg-emerald-700 *,
+html.light .bg-red-600 *, html.light .bg-red-700 *, html.light .bg-red-800 *,
+html.light .bg-amber-600 *, html.light .bg-amber-700 *,
+html.light .bg-orange-600 *, html.light .bg-orange-700 *,
+html.light .bg-purple-600 *, html.light .bg-purple-700 * { color: #ffffff; }
+
+/* Inputs & selects */
+html.light input, html.light select, html.light textarea {
+  background-color: #ffffff;
+  color: #0f172a;
+  border-color: #cbd5e1;
+}
+
+/* Hover states that assume dark surfaces */
+html.light .hover\:bg-slate-700:hover { background-color: #e2e8f0; }
+html.light .hover\:bg-slate-600:hover { background-color: #cbd5e1; }
+html.light .hover\:bg-slate-500:hover { background-color: #94a3b8; }
+
 /* Smooth transitions */
 * {
   @apply transition-colors transition-all;

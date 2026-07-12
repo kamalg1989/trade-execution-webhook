@@ -29,6 +29,8 @@ export default function Settings() {
   const [apiKey, setApiKey] = useState(localStorage.getItem('trading_api_key') || null);
   const [showApiKey, setShowApiKey] = useState(false);
   const [loadingApiKey, setLoadingApiKey] = useState(false);
+  const [pinInput, setPinInput] = useState('');
+  const [showPinDialog, setShowPinDialog] = useState(false);
 
   useEffect(() => {
     fetch('/api/settings')
@@ -86,15 +88,33 @@ export default function Settings() {
   };
 
   const loadApiKey = async () => {
+    if (!pinInput) {
+      setMessage({ type: 'error', text: 'Please enter your PIN' });
+      return;
+    }
+
     setLoadingApiKey(true);
     try {
-      const r = await fetch('/api/security/api-key');
+      const r = await fetch('/api/security/api-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: pinInput })
+      });
       const data = await r.json();
+
+      if (!r.ok) {
+        setMessage({ type: 'error', text: `❌ ${data.detail || 'Invalid PIN'}` });
+        setLoadingApiKey(false);
+        return;
+      }
+
       setApiKey(data.api_key);
       localStorage.setItem('trading_api_key', data.api_key);
-      setMessage({ type: 'ok', text: '✅ API key loaded and saved to browser. No manual entry needed!' });
+      setMessage({ type: 'ok', text: '✅ API key loaded and saved to browser!' });
       setShowApiKey(true);
-    } catch {
+      setShowPinDialog(false);
+      setPinInput('');
+    } catch (error) {
       setMessage({ type: 'error', text: 'Failed to load API key' });
     }
     setLoadingApiKey(false);
@@ -135,16 +155,45 @@ export default function Settings() {
             Your API key prevents others from accessing your trading functions. It's stored securely in your browser.
           </p>
           {!apiKey ? (
-            <div className="flex flex-col sm:flex-row gap-3">
-              <button
-                onClick={loadApiKey}
-                disabled={loadingApiKey}
-                className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2"
-              >
-                {loadingApiKey ? <Loader className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
-                Load API Key
-              </button>
-            </div>
+            <>
+              {!showPinDialog ? (
+                <button
+                  onClick={() => setShowPinDialog(true)}
+                  className="bg-blue-600 hover:bg-blue-700 font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2"
+                >
+                  <CheckCircle className="w-4 h-4" />
+                  Load API Key
+                </button>
+              ) : (
+                <div className="space-y-3 bg-slate-800 rounded p-4">
+                  <label className="text-sm text-slate-300 block">Enter your PIN to access API key:</label>
+                  <input
+                    type="password"
+                    placeholder="Enter PIN (default: 1234)"
+                    value={pinInput}
+                    onChange={(e) => setPinInput(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && loadApiKey()}
+                    className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={loadApiKey}
+                      disabled={loadingApiKey || !pinInput}
+                      className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 font-bold py-2 px-4 rounded flex items-center justify-center gap-2"
+                    >
+                      {loadingApiKey ? <Loader className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                      Load Key
+                    </button>
+                    <button
+                      onClick={() => { setShowPinDialog(false); setPinInput(''); }}
+                      className="flex-1 bg-slate-600 hover:bg-slate-500 font-bold py-2 px-4 rounded"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           ) : (
             <div className="space-y-3">
               <div className="bg-slate-800 rounded p-3 flex items-center gap-2">

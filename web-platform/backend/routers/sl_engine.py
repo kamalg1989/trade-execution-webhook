@@ -40,6 +40,27 @@ ACTIVE_STATUSES = ("PENDING", "CONFIRM", "TRANSIT")
 SAFETY_PCT = 0.92  # mirrors sl_engine.SAFETY_SL_PCT (−8%)
 RECS_FILE = '/root/trade-execution-webhook/latest_recommendations.json'
 MANUAL_SL_FILE = '/root/trade-execution-webhook/manual_structural_sl.json'
+HALF_BOOKED_FILE = '/root/trade-execution-webhook/half_booked.json'
+
+
+def _half_booked_map():
+    """{SYMBOL: true} — positions where half was already sold at +2R."""
+    try:
+        with open(HALF_BOOKED_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _set_half_booked(symbol, value=True):
+    sym = str(symbol).replace('.NS', '').strip().upper()
+    data = _half_booked_map()
+    if value:
+        data[sym] = True
+    else:
+        data.pop(sym, None)
+    with open(HALF_BOOKED_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
 
 
 def _manual_structural_map():
@@ -71,13 +92,14 @@ def _save_manual_structural(symbol, value):
         json.dump(data, f, indent=2)
 
 
-def _sl_options(entry, ltp, structural_sl):
+def _sl_options(entry, ltp, structural_sl, r_unit=None):
     """
     Suggested-SL dropdown, in display order:
       1) Safety −8% (from buy)
       2) Structural SL
       3) Buy price (breakeven)
-      4) Trail ladder from current price: −12%, −10%, −8%, −5%
+      4) R-ladder levels: +1R, +2R, +3R… (from the R unit = buy − structural/safety)
+      5) Trail ladder from current price: −12%, −10%, −8%, −5%
     Only levels strictly below the current price are valid triggers.
     """
     def mk(label, price, basis):
@@ -98,6 +120,12 @@ def _sl_options(entry, ltp, structural_sl):
         ordered.append(mk("Structural SL", structural_sl, "structural"))
     if entry:
         ordered.append(mk("Buy price (breakeven)", entry, "breakeven"))
+    if entry and r_unit and r_unit > 0 and ltp:
+        # R-ladder: every +NR level that is still a valid trigger (below current price)
+        n = 1
+        while entry + n * r_unit < ltp and n <= 10:
+            ordered.append(mk(f"+{n}R (₹{round(r_unit, 1)}/R)", entry + n * r_unit, f"r{n}"))
+            n += 1
     if ltp:
         for pct in (0.88, 0.90, 0.92, 0.95):  # −12, −10, −8, −5 %
             ordered.append(mk(f"Trail −{round((1 - pct) * 100)}% (from current)", ltp * pct, f"trail{round((1 - pct) * 100)}"))
@@ -110,6 +138,64 @@ def _sl_options(entry, ltp, structural_sl):
         seen.add(o["price"])
         out.append(o)
     return out
+
+
+def _recommendation(p):
+    """
+    The 3-rule R-ladder — computes tonight's single recommended action.
+      Rule 0: close below structural            -> EXIT at next open
+      Rule 0b: no SL                            -> SET initial SL (structural if set, else safety −8%)
+      Rule 1: +1R reached, SL below breakeven   -> move SL to breakeven
+      Rule 2: +2R reached, half not booked      -> sell half at open + SL to +1R
+      Rule 3: +NR reached (N>=3)                -> trail SL to +(N-1)R
+      Else                                      -> NONE (shows next threshold)
+    p = dict with: danger, has_sl, sl_price, avg, ltp, r_unit, r_multiple,
+                   structural_sl, safety_sl, half_booked, qty
+    """
+    avg, ltp, r_unit = p["avg"], p["ltp"], p["r_unit"]
+    tol = max(avg * 0.005, 0.05) if avg else 0.05
+
+    if p["danger"]:
+        return {"action": "EXIT", "label": "Exit at open",
+                "reason": f"Closed below structural ₹{p['structural_sl']}", "trigger": None, "urgency": 0}
+
+    if not p["has_sl"]:
+        init = p["structural_sl"] if (p["structural_sl"] and ltp and p["structural_sl"] < ltp) else p["safety_sl"]
+        if init and ltp and init < ltp:
+            return {"action": "SET_SL", "label": f"Set SL ₹{round(init, 1)}",
+                    "reason": "No stop loss — place initial protection",
+                    "trigger": round(init, 1), "urgency": 1}
+        return {"action": "SET_SL", "label": "Set SL", "reason": "No stop loss and no valid level — set manually",
+                "trigger": None, "urgency": 1}
+
+    if not r_unit or r_unit <= 0:
+        return {"action": "NONE", "label": "SL OK", "reason": "No R basis (set structural SL to enable the ladder)",
+                "trigger": None, "urgency": 9}
+
+    r = p["r_multiple"] if p["r_multiple"] is not None else 0
+    sl = p["sl_price"]
+    n = int(r)  # floor of the R multiple
+
+    if n >= 2 and not p["half_booked"] and p["qty"] >= 2:
+        one_r = round(avg + r_unit, 1)
+        return {"action": "SELL_HALF", "label": "Sell half + SL to +1R",
+                "reason": f"Crossed +2R — book half, trail rest to ₹{one_r}",
+                "trigger": one_r, "urgency": 2}
+
+    if n >= 1:
+        target = avg if n == 1 else avg + (n - 1) * r_unit
+        target = round(target, 1)
+        if sl < target - tol and ltp and target < ltp:
+            label = "Move SL to breakeven" if n == 1 else f"Trail SL to +{n-1}R (₹{target})"
+            return {"action": "TRAIL", "label": label,
+                    "reason": f"Crossed +{n}R — ladder says SL at " + ("breakeven" if n == 1 else f"+{n-1}R"),
+                    "trigger": target, "urgency": 3}
+
+    nxt = n + 1
+    nxt_price = round(avg + nxt * r_unit, 1)
+    return {"action": "NONE", "label": "SL OK",
+            "reason": f"Next move at +{nxt}R (₹{nxt_price})", "trigger": None, "urgency": 9,
+            "nextTrailAt": nxt_price, "nextTrailR": nxt}
 
 
 def _classify_sl(sl_price, entry, structural, safety):
@@ -218,6 +304,7 @@ async def get_sl_alerts():
         struct = _structural_map()                  # structural SL from sheet
         screener_struct = _screener_structural_map()  # fallback from screener output
         manual_struct = _manual_structural_map()      # user-entered fallback
+        half_booked = _half_booked_map()              # +2R half-booking flags
     except Exception as e:
         logger.error(f"SL data fetch failed: {e}")
         raise HTTPException(status_code=502, detail=f"Dhan/sheet error: {str(e)[:140]}")
@@ -264,7 +351,7 @@ async def get_sl_alerts():
         r_multiple = round((ltp - avg) / r_unit, 2) if r_unit else None
 
         sl_pct_from_entry = round(((sl_price - entry) / entry) * 100, 1) if (has_sl and entry) else None
-        sl_options = _sl_options(entry, ltp, structural_sl)
+        sl_options = _sl_options(entry, ltp, structural_sl, r_unit)
         sl_basis = _classify_sl(sl_price, entry, structural_sl, safety_sl) if has_sl else None
 
         # Danger: live price below structural (soft watch) and daily close below structural (hard)
@@ -295,10 +382,20 @@ async def get_sl_alerts():
             alerts.append({"symbol": symbol, "type": "WARNING",
                            "message": f"⚠️ {symbol}: {distance}% above SL ₹{sl_price}"})
 
+        is_half_booked = bool(half_booked.get(sym_key))
+        reco = _recommendation({
+            "danger": below_close, "has_sl": has_sl, "sl_price": sl_price,
+            "avg": avg, "ltp": ltp, "r_unit": r_unit, "r_multiple": r_multiple,
+            "structural_sl": structural_sl, "safety_sl": safety_sl,
+            "half_booked": is_half_booked, "qty": qty,
+        })
+
         positions.append({
             "id": sec_id,
             "securityId": sec_id,
             "symbol": symbol,
+            "halfBooked": is_half_booked,
+            "recommendation": reco,
             "quantity": qty,
             "entry_price": round(entry, 2) if entry else round(avg, 2),
             "buyPrice": round(avg, 2),
@@ -525,3 +622,72 @@ async def cancel_sl(req: CancelReq):
     if not ok:
         raise HTTPException(status_code=400, detail="Cancel failed")
     return {"success": True, "message": f"SL order cancelled for {req.symbol}"}
+
+
+class SellHalfReq(BaseModel):
+    securityId: str
+    symbol: str
+    newTrigger: float          # SL level for the remaining half (usually +1R)
+
+
+@router.post("/sl/sell-half")
+async def sell_half(req: SellHalfReq):
+    """
+    Rule 2 of the ladder (+2R): book half at next open, move SL on the rest to +1R.
+      1. exit-forever for half the quantity (fills at open)
+      2. new forever SL for the remaining half at newTrigger
+      3. cancel the old full-quantity SL
+      4. flag the symbol as half-booked
+    """
+    holdings = dhan_client.get_holdings()
+    h = next((x for x in holdings if str(x.get("securityId")) == req.securityId), None)
+    if not h:
+        raise HTTPException(status_code=404, detail="Holding not found")
+
+    qty = int(h.get("totalQty") or h.get("availableQty") or 0)
+    if qty < 2:
+        raise HTTPException(status_code=400, detail="Need at least 2 shares to sell half")
+    half = qty // 2
+    rest = qty - half
+
+    close_price = sl_engine.get_daily_close(req.securityId, req.symbol) or float(h.get("lastTradedPrice") or 0)
+    if close_price <= 0:
+        raise HTTPException(status_code=400, detail="Could not determine close price")
+    if req.newTrigger <= 0 or req.newTrigger >= close_price:
+        raise HTTPException(status_code=400, detail=f"New SL ₹{req.newTrigger} must be below close ₹{close_price}")
+
+    # 1) book half at next open
+    ok, exit_id, exit_trigger = sl_engine.place_exit_forever(req.securityId, half, close_price, req.symbol)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Dhan rejected the half-exit order")
+
+    # 2) new SL for the remaining half (place first, then cancel old — never bare)
+    ok2, new_sl_id, level = sl_engine._place_safety_at_level(
+        req.securityId, rest, sl_engine._round_down(req.newTrigger, req.symbol), req.symbol)
+
+    # 3) cancel old full-quantity SLs
+    cancelled = 0
+    for o in _forever_sl_map().get(req.securityId, []):
+        if o.get("orderId") not in (exit_id, new_sl_id):
+            if sl_engine.cancel_forever_order(o.get("orderId"), req.symbol):
+                cancelled += 1
+
+    # 4) flag
+    _set_half_booked(req.symbol, True)
+
+    msg = f"{req.symbol}: selling {half} at open"
+    msg += f", SL on remaining {rest} moved to ₹{level}" if ok2 else f" — ⚠️ could not place new SL for remaining {rest}, set manually!"
+    return {"success": True, "exitOrderId": exit_id, "newSlOrderId": new_sl_id if ok2 else None,
+            "halfQty": half, "restQty": rest, "trigger": level if ok2 else None,
+            "oldCancelled": cancelled, "message": msg}
+
+
+class ClearHalfReq(BaseModel):
+    symbol: str
+
+
+@router.post("/sl/clear-half-booked")
+async def clear_half_booked(req: ClearHalfReq):
+    """Reset the half-booked flag (e.g., after re-entering a position)."""
+    _set_half_booked(req.symbol, False)
+    return {"success": True, "message": f"Half-booked flag cleared for {req.symbol}"}

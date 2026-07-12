@@ -2,9 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { Home, TrendingUp, Shield, Briefcase, Settings as SettingsIcon } from 'lucide-react';
 import DashboardMobile from './pages/DashboardMobile';
 import ProfitLossTrackerMobile from './pages/ProfitLossTrackerMobile';
-import StopLossTrackerMobile from './pages/StopLossTrackerMobile';
+import StopLossTracker from './pages/StopLossTracker';
 import PortfolioMobile from './pages/PortfolioMobile';
 import Settings from './pages/Settings';
+import { ThemeToggle } from './hooks/useTheme';
 
 export default function AppMobile() {
   const [currentPage, setCurrentPage] = useState('dashboard');
@@ -31,7 +32,7 @@ export default function AppMobile() {
       case 'pl-tracker':
         return <ProfitLossTrackerMobile />;
       case 'sl-tracker':
-        return <StopLossTrackerMobile />;
+        return <StopLossTracker />;
       case 'portfolio':
         return <PortfolioMobile />;
       case 'settings':
@@ -44,10 +45,11 @@ export default function AppMobile() {
   return (
     <div className="h-screen bg-slate-900 flex flex-col">
       {/* Page Title Bar */}
-      <div className="bg-slate-800 border-b border-slate-700 px-4 py-3 sticky top-0 z-20">
+      <div className="bg-slate-800 border-b border-slate-700 px-4 py-3 sticky top-0 z-20 flex items-center justify-between">
         <h1 className="text-lg font-bold text-white">
           {navigation.find(n => n.id === currentPage)?.name || 'Dashboard'}
         </h1>
+        <ThemeToggle />
       </div>
 
       {/* Content Area — key forces remount (fresh fetch) on every nav tap */}
