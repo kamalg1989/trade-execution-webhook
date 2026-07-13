@@ -49,6 +49,14 @@ app.add_middleware(
 
 app.include_router(screener.router, prefix="/api")
 
+# AI visual analysis (optional module — requires ANTHROPIC_API_KEY for POST)
+try:
+    from ai_analysis.api.router import router as ai_router
+    app.include_router(ai_router, prefix="/api")
+    log.info("✅ AI analysis router mounted")
+except Exception as e:  # missing deps (anthropic/mplfinance) shouldn't kill the service
+    log.warning("⚠️ AI analysis router not mounted: %s", e)
+
 
 @app.get("/api/health")
 async def health():
