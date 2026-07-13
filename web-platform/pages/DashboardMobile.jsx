@@ -73,9 +73,14 @@ export default function DashboardMobile() {
     const sl = stock.stopLoss;
     if (!window.confirm(`Place a REAL Dhan BUY forever order?\n\n${stock.symbol}\nQty: ${qty}\nBuy above (trigger): ₹${entry}\n\nRests on Dhan, triggers when price crosses ₹${entry}. Set SL from SL tab after fill.`)) return;
     try {
+      const apiKey = localStorage.getItem('trading_api_key');
+      if (!apiKey) {
+        alert('❌ API key not found on this device.\n\nGo to Settings → Trading Protection → Load API Key (enter your PIN) once, then retry.');
+        return;
+      }
       const response = await fetch('/api/buy', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
         body: JSON.stringify({ symbol: stock.symbol, quantity: qty, price: entry, stopLoss: sl })
       });
       const result = await response.json();

@@ -85,11 +85,20 @@ def _is_invalid_token(resp):
     return False
 
 
-def _get(path):
-    r = requests.get(f"{BASE}{path}", headers=_headers(), timeout=20)
+def _request(method, url, **kw):
+    """Any Dhan call with automatic token-refresh retry on DH-906 / 401."""
+    r = requests.request(method, url, headers=_headers(), timeout=20, **kw)
     if _is_invalid_token(r):
-        r = requests.get(f"{BASE}{path}", headers={"access-token": get_token(force_refresh=True),
-                                                   "Content-Type": "application/json"}, timeout=20)
+        logger.warning("Dhan token invalid/superseded — regenerating and retrying")
+        r = requests.request(method, url,
+                             headers={"access-token": get_token(force_refresh=True),
+                                      "Content-Type": "application/json"},
+                             timeout=20, **kw)
+    return r
+
+
+def _get(path):
+    r = _request("GET", f"{BASE}{path}")
     r.raise_for_status()
     return r.json()
 
@@ -179,7 +188,7 @@ def place_order(security_id, quantity, transaction_type, order_type="MARKET",
     }
     if after_market:
         payload["amoTime"] = amo_time  # OPEN / PRE_OPEN / OPEN_30 / OPEN_60
-    r = requests.post(f"{BASE}/orders", headers=_headers(), json=payload, timeout=20)
+    r = _request("POST", f"{BASE}/orders", json=payload)
     body = r.json() if r.text else {}
     if r.status_code not in (200, 201):
         return {"success": False,
@@ -227,7 +236,7 @@ def place_forever_buy(security_id, quantity, entry, symbol):
         "price": price,
         "triggerPrice": trigger,
     }
-    r = requests.post(f"{BASE}/forever/orders", headers=_headers(), json=payload, timeout=20)
+    r = _request("POST", f"{BASE}/forever/orders", json=payload)
     body = r.json() if r.text else {}
     if r.status_code not in (200, 201):
         return {"success": False,
@@ -240,7 +249,7 @@ def place_forever_buy(security_id, quantity, entry, symbol):
 def get_forever_orders():
     """All forever orders (for duplicate-BUY detection)."""
     try:
-        r = requests.get(f"{BASE}/forever/orders", headers=_headers(), timeout=15)
+        r = _request("GET", f"{BASE}/forever/orders")
         data = r.json() if r.status_code == 200 else []
         return data if isinstance(data, list) else []
     except Exception:
@@ -269,7 +278,7 @@ def modify_order(order_id, quantity, order_type, trigger_price=0, price=0):
         "disclosedQuantity": 0,
         "validity": "DAY",
     }
-    r = requests.put(f"{BASE}/orders/{order_id}", headers=_headers(), json=payload, timeout=20)
+    r = _request("PUT", f"{BASE}/orders/{order_id}", json=payload)
     body = r.json() if r.text else {}
     if r.status_code != 200:
         return {"success": False, "error": body.get("errorMessage") or r.text[:200]}
@@ -277,7 +286,7 @@ def modify_order(order_id, quantity, order_type, trigger_price=0, price=0):
 
 
 def cancel_order(order_id):
-    r = requests.delete(f"{BASE}/orders/{order_id}", headers=_headers(), timeout=20)
+    r = _request("DELETE", f"{BASE}/orders/{order_id}")
     body = r.json() if r.text else {}
     if r.status_code != 200:
         return {"success": False, "error": body.get("errorMessage") or r.text[:200]}
