@@ -1,14 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { Home, TrendingUp, Shield, Briefcase, Settings as SettingsIcon } from 'lucide-react';
+import { Home, TrendingUp, Shield, Briefcase, Settings as SettingsIcon, Sun, Moon } from 'lucide-react';
 import DashboardMobile from './pages/DashboardMobile';
 import ProfitLossTrackerMobile from './pages/ProfitLossTrackerMobile';
 import StopLossTracker from './pages/StopLossTracker';
 import PortfolioMobile from './pages/PortfolioMobile';
 import Settings from './pages/Settings';
-import { ThemeToggle } from './hooks/useTheme';
+import { useTheme } from './hooks/useTheme';
 
 export default function AppMobile() {
   const [currentPage, setCurrentPage] = useState('dashboard');
+  const { theme, toggle } = useTheme();
   // Increments on every nav tap so the page remounts and re-fetches fresh data
   const [navTick, setNavTick] = useState(0);
 
@@ -45,11 +46,10 @@ export default function AppMobile() {
   return (
     <div className="h-screen bg-slate-900 flex flex-col">
       {/* Page Title Bar */}
-      <div className="bg-slate-800 border-b border-slate-700 px-4 py-3 sticky top-0 z-20 flex items-center justify-between">
+      <div className="bg-slate-800 border-b border-slate-700 px-4 py-3 sticky top-0 z-20">
         <h1 className="text-lg font-bold text-white">
           {navigation.find(n => n.id === currentPage)?.name || 'Dashboard'}
         </h1>
-        <ThemeToggle />
       </div>
 
       {/* Content Area — key forces remount (fresh fetch) on every nav tap */}
@@ -58,7 +58,7 @@ export default function AppMobile() {
       </div>
 
       {/* Bottom Navigation */}
-      <div className="fixed bottom-0 left-0 right-0 bg-slate-800 border-t border-slate-700 px-0 py-2 flex justify-around items-center">
+      <div className="fixed bottom-0 left-0 right-0 bg-slate-800 border-t border-slate-700 px-0 py-2 flex justify-around items-center z-30">
         {navigation.map(item => {
           const Icon = item.icon;
           const isActive = currentPage === item.id;
@@ -77,6 +77,13 @@ export default function AppMobile() {
             </button>
           );
         })}
+        <button
+          onClick={toggle}
+          className="flex flex-col items-center py-2 px-3 rounded-lg transition-all flex-1 text-slate-400"
+        >
+          {theme === 'dark' ? <Sun className="w-6 h-6 mb-1" /> : <Moon className="w-6 h-6 mb-1" />}
+          <span className="text-xs font-semibold">Theme</span>
+        </button>
       </div>
     </div>
   );
