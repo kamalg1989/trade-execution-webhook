@@ -44,3 +44,22 @@ export const chartUrl = (symbol, type = 'daily', theme = 'dark', fromDate, toDat
     (fromDate ? `&from_date=${fromDate}` : '') +
     `&to_date=${toDate || today}`;
 };
+
+// --- AI visual analysis (ai_analysis module) ---
+export const aiAnalyze = (payload) =>
+  req('/ai-analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+export const aiFeedback = (payload) =>
+  req('/ai-analyze/feedback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+// Backend returns chart URLs as /api/ai-analyze/charts/x.png — prefix the
+// nginx path (BASE already ends with /api).
+export const aiChartSrc = (url) => (url ? url.replace(/^\/api/, BASE) : null);

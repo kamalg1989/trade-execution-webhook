@@ -5,6 +5,7 @@ import MarketSnapshot from '../components/MarketSnapshot.jsx';
 import ResultsTable from '../components/ResultsTable.jsx';
 import ChartModal from '../components/ChartModal.jsx';
 import ExportCsvButton from '../components/ExportCsvButton.jsx';
+import AiAnalysisPanel from '../components/AiAnalysisPanel.jsx';
 
 const EMPTY = { sma200: 'any', sma50: 'any', ema50: 'any' };
 
@@ -197,6 +198,10 @@ export default function CustomScreener() {
           </div>
           {ifpMsg && <div className="text-xs text-slate-400 mt-2">{ifpMsg}</div>}
         </div>
+      )}
+
+      {rows.length > 0 && (
+        <AiAnalysisPanel symbols={rows.map((r) => r.symbol)} date={date} />
       )}
 
       <ResultsTable rows={rows} onPick={setPicked} />
