@@ -93,7 +93,8 @@ async def _forward_frame(pool, symbol: str, d: date_t) -> pd.DataFrame | None:
     if not rows:
         return None
     df = pd.DataFrame([dict(r) for r in rows])
-    df["time"] = pd.to_datetime(df["time"])
+    # strip tz so the vline marker (naive date) compares cleanly in mplfinance
+    df["time"] = pd.to_datetime(df["time"], utc=True).dt.tz_convert("Asia/Kolkata").dt.tz_localize(None)
     return df.set_index("time").sort_index()
 
 
