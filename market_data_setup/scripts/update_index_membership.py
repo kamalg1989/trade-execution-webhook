@@ -33,7 +33,7 @@ INDICES = {
     "NIFTY500": "ind_nifty500list.csv",
     "MIDCAP150": "ind_niftymidcap150list.csv",
     "SMALLCAP250": "ind_niftysmallcap250list.csv",
-    "MICROCAP250": "ind_niftymicrocap250list.csv",
+    "MICROCAP250": "ind_niftymicrocap250_list.csv",
 }
 BUCKET_BY_INDEX = {"NIFTY100": "large", "MIDCAP150": "mid",
                    "SMALLCAP250": "small", "MICROCAP250": "micro"}
