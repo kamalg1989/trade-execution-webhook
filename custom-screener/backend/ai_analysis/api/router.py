@@ -1,11 +1,16 @@
 """AI analysis endpoints. Mounted under /api in app/main.py."""
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+from datetime import date as date_t
 
-from fastapi import APIRouter, HTTPException, Request, Response
+import pandas as pd
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
-from .. import config, pipeline
+from .. import config, outcomes, pipeline
+from ..charting import render_chart, resample_weekly
 from ..storage import AiRepo
 from .models import AnalyzeRequest, FeedbackRequest
 
@@ -31,7 +36,7 @@ async def ai_analyze(req: AnalyzeRequest, request: Request):
         raise HTTPException(503, "ANTHROPIC_API_KEY not configured")
     repo, ai_repo = _repos(request)
     try:
-        return await pipeline.analyze_symbols(
+        result = await pipeline.analyze_symbols(
             symbols=req.symbols,
             indicator_date=req.indicatorDate,
             screener_repo=repo,
@@ -42,6 +47,10 @@ async def ai_analyze(req: AnalyzeRequest, request: Request):
             ai_mode=req.aiMode,
             chart_scope=req.chartScope,
         )
+        # Auto-score outcomes in the background — for historical dates the
+        # forward data already exists, so returns fill in immediately.
+        asyncio.create_task(_score_outcomes_safe(repo.pool))
+        return result
     except pipeline.BudgetExceeded as e:
         raise HTTPException(429, str(e))
     except HTTPException:
@@ -61,6 +70,123 @@ async def get_chart(filename: str):
         content=png, media_type="image/png",
         headers={"Cache-Control": "public, max-age=86400"},
     )
+
+
+async def _score_outcomes_safe(pool):
+    try:
+        await outcomes.run(pool)
+    except Exception:
+        logger.exception("Background outcome scoring failed")
+
+
+async def _forward_frame(pool, symbol: str, d: date_t) -> pd.DataFrame | None:
+    """OHLCV window: ~9 months before the analysis date + ~3 months after."""
+    rows = await pool.fetch(
+        """
+        SELECT time, open::float, high::float, low::float, close::float, volume::float
+        FROM ohlcv_data
+        WHERE symbol = $1
+          AND time::date BETWEEN $2::date - INTERVAL '280 days'
+                              AND $2::date + INTERVAL '95 days'
+        ORDER BY time ASC
+        """, symbol, d)
+    if not rows:
+        return None
+    df = pd.DataFrame([dict(r) for r in rows])
+    df["time"] = pd.to_datetime(df["time"])
+    return df.set_index("time").sort_index()
+
+
+async def _latest_result_row(pool, symbol: str, d: date_t):
+    return await pool.fetchrow(
+        """
+        SELECT analysis, features, ret_5d, ret_20d, ret_60d, hit_breakout, hit_stop
+        FROM ai_analysis_results
+        WHERE symbol = $1 AND analysis_date = $2
+        ORDER BY created_at DESC LIMIT 1
+        """, symbol, d)
+
+
+@router.get("/ai-analyze/aftermath/{symbol}")
+async def aftermath(symbol: str, request: Request,
+                    date: date_t = Query(...)):
+    """What happened after an analysis: outcome numbers + forward-chart URLs."""
+    repo, _ = _repos(request)
+    symbol = symbol.upper()
+    row = await _latest_result_row(repo.pool, symbol, date)
+    if not row:
+        raise HTTPException(404, "No analysis found for that symbol/date")
+
+    df = await _forward_frame(repo.pool, symbol, date)
+    if df is None:
+        raise HTTPException(404, "No OHLCV data")
+    forward = df[df.index.date > date]
+    if forward.empty:
+        return {"available": False, "reason": "No trading days after the analysis date yet"}
+
+    analysis = row["analysis"]
+    features = row["features"]
+    if isinstance(analysis, str):
+        analysis = json.loads(analysis)
+    if isinstance(features, str):
+        features = json.loads(features)
+    bp = (analysis or {}).get("buy_point") or {}
+    entry = ((features or {}).get("daily") or {}).get("close")
+
+    # Prefer persisted outcomes; compute live for whatever is still null
+    bars = [{"high": r.high, "low": r.low, "close": r.close}
+            for r in forward.itertuples()]
+    live = outcomes.compute_outcome(float(entry), bars,
+                                    bp.get("breakout_level"), bp.get("stop_level")) \
+        if entry else {}
+    out = {
+        "ret5d": row["ret_5d"] if row["ret_5d"] is not None else live.get("ret_5d"),
+        "ret20d": row["ret_20d"] if row["ret_20d"] is not None else live.get("ret_20d"),
+        "ret60d": row["ret_60d"] if row["ret_60d"] is not None else live.get("ret_60d"),
+        "hitBreakout": row["hit_breakout"] if row["hit_breakout"] is not None else live.get("hit_breakout"),
+        "hitStop": row["hit_stop"] if row["hit_stop"] is not None else live.get("hit_stop"),
+        "forwardBars": len(forward),
+    }
+    q = f"symbol={symbol}&date={date}"
+    return {
+        "available": True,
+        "outcome": out,
+        "levels": {"breakout": bp.get("breakout_level"), "stop": bp.get("stop_level")},
+        "charts": {
+            "daily": f"/api/ai-analyze/aftermath-chart?{q}&timeframe=daily",
+            "weekly": f"/api/ai-analyze/aftermath-chart?{q}&timeframe=weekly",
+        },
+    }
+
+
+@router.get("/ai-analyze/aftermath-chart")
+async def aftermath_chart(request: Request,
+                          symbol: str = Query(...),
+                          date: date_t = Query(...),
+                          timeframe: str = Query("daily", pattern="^(daily|weekly)$")):
+    """Live-rendered forward chart: history + ~3 months after the analysis date,
+    with the analysis date marked and the AI's levels drawn across."""
+    repo, _ = _repos(request)
+    symbol = symbol.upper()
+    row = await _latest_result_row(repo.pool, symbol, date)
+    if not row:
+        raise HTTPException(404, "No analysis found")
+    df = await _forward_frame(repo.pool, symbol, date)
+    if df is None or df.empty:
+        raise HTTPException(404, "No OHLCV data")
+
+    analysis = row["analysis"]
+    if isinstance(analysis, str):
+        analysis = json.loads(analysis)
+    bp = (analysis or {}).get("buy_point") or {}
+    levels = {"breakout": bp.get("breakout_level"), "stop": bp.get("stop_level")}
+
+    frame = resample_weekly(df) if timeframe == "weekly" else df
+    png = await asyncio.to_thread(
+        render_chart, frame, symbol, timeframe, levels,
+        1200, 700, pd.Timestamp(date), "  |  AFTERMATH")
+    return Response(content=png, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=3600"})
 
 
 @router.get("/ai-analyze/outcomes/summary")

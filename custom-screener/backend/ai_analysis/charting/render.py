@@ -37,11 +37,15 @@ def render_chart(
     levels: dict | None = None,
     width_px: int = 1200,
     height_px: int = 700,
+    vline=None,
+    title_suffix: str = "",
 ) -> bytes:
     """Render candlestick PNG: volume panel + vol MA20 + EMAs (+ level lines).
 
     df: DatetimeIndex ascending, columns open/high/low/close/volume.
     levels: optional {"breakout": float, "stop": float, "support": float}.
+    vline: optional timestamp — vertical marker (e.g. analysis date on
+           aftermath charts, splitting 'what the AI saw' from 'what happened').
     """
     import mplfinance as mpf
 
@@ -74,19 +78,23 @@ def render_chart(
     style = mpf.make_mpf_style(base_mpf_style="charles", gridcolor="#dddddd", y_on_right=True)
 
     buf = io.BytesIO()
+    title = f"{symbol} — {timeframe} (as of {d.index[-1].date()}){title_suffix}"
     kwargs = dict(
         type="candle",
         volume=True,
         addplot=apd or None,
         style=style,
         figsize=(width_px / 100, height_px / 100),
-        title=f"{symbol} — {timeframe} (as of {d.index[-1].date()})",
+        title=title,
         ylabel="Price",
         ylabel_lower="Volume",
         savefig=dict(fname=buf, dpi=100, pad_inches=0.3),
     )
     if hlines:
         kwargs["hlines"] = hlines
+    if vline is not None:
+        kwargs["vlines"] = dict(vlines=[pd.Timestamp(vline)], colors=["#534AB7"],
+                                linestyle="-.", linewidths=1.4, alpha=0.9)
     mpf.plot(d, **kwargs)
     buf.seek(0)
     return buf.getvalue()

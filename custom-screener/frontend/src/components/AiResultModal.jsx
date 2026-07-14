@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { aiChartSrc, aiFeedback } from '../api/client.js';
+import React, { useEffect, useState } from 'react';
+import { aiChartSrc, aiFeedback, aiAftermath } from '../api/client.js';
 
 // Popup per approved wireframe: annotated daily/weekly chart tabs + full AI
 // report (phase, base, patterns, IFP verdict, levels vs computed, thesis,
@@ -38,6 +38,15 @@ export default function AiResultModal({ result, date, open, onClose }) {
   const [tab, setTab] = useState('daily');
   const [fb, setFb] = useState(null);
   const [fbMsg, setFbMsg] = useState('');
+  const [after, setAfter] = useState(null);
+  useEffect(() => { setAfter(null); setTab('daily'); setFb(null); setFbMsg(''); }, [result?.symbol, date]);
+  const openAftermath = async () => {
+    setTab('aftermath');
+    if (after == null) {
+      try { setAfter(await aiAftermath(result.symbol, date)); }
+      catch { setAfter({ available: false, reason: 'not available' }); }
+    }
+  };
 
   if (!open || !result) return null;
   const a = result.analysis || {};
@@ -90,7 +99,42 @@ export default function AiResultModal({ result, date, open, onClose }) {
                 {t}
               </button>
             ))}
+            <button onClick={openAftermath}
+              className={`px-4 py-1 rounded-md text-sm font-semibold ${tab === 'aftermath' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-purple-300'}`}>
+              Aftermath
+            </button>
           </div>
+          {tab === 'aftermath' ? (
+            <div className="bg-slate-950 rounded-lg p-2 border border-slate-800 space-y-2">
+              {after == null ? (
+                <div className="text-slate-500 text-sm p-6 text-center">Loading aftermath…</div>
+              ) : !after.available ? (
+                <div className="text-slate-500 text-sm p-6 text-center">
+                  No forward data yet — {after.reason || 'come back after a few trading days'}.
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 text-center">
+                    {[['+5d', after.outcome.ret5d, '%'], ['+20d', after.outcome.ret20d, '%'], ['+60d', after.outcome.ret60d, '%'],
+                      ['BO hit', after.outcome.hitBreakout, 'bool'], ['Stop hit', after.outcome.hitStop, 'bool']].map(([k, v, kind]) => (
+                      <div key={k} className="bg-slate-800/70 rounded-lg px-2 py-1.5">
+                        <div className="text-[10px] uppercase tracking-wide text-slate-500">{k}</div>
+                        <div className={`text-sm font-semibold ${kind === '%' ? (v > 0 ? 'text-emerald-400' : v < 0 ? 'text-red-400' : 'text-slate-300') : (k === 'BO hit' ? (v ? 'text-emerald-400' : 'text-slate-300') : (v ? 'text-red-400' : 'text-slate-300'))}`}>
+                          {v == null ? '—' : kind === '%' ? `${v > 0 ? '+' : ''}${v}%` : v ? 'Yes' : 'No'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <img src={aiChartSrc(after.charts.daily)} alt="Daily aftermath chart" className="w-full h-auto rounded" />
+                  <img src={aiChartSrc(after.charts.weekly)} alt="Weekly aftermath chart" className="w-full h-auto rounded" />
+                  <p className="text-[11px] text-slate-500 px-1">
+                    Purple dash-dot line = analysis date (everything right of it happened AFTER the AI's call — the AI never saw it).
+                    Green/red dashes = the AI's breakout/stop, carried forward. {after.outcome.forwardBars} trading days of aftermath shown.
+                  </p>
+                </>
+              )}
+            </div>
+          ) : (
           <div className="bg-slate-950 rounded-lg p-1 border border-slate-800">
             {img ? (
               <img src={aiChartSrc(img)} alt={`${result.symbol} ${tab} annotated chart`}
@@ -102,6 +146,7 @@ export default function AiResultModal({ result, date, open, onClose }) {
               Dashed lines: green = AI breakout, red = AI stop, gray = computed support
             </p>
           </div>
+          )}
 
           {/* Metric row */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
