@@ -74,8 +74,9 @@ export default function DashboardMobile() {
     if (!window.confirm(`Place a REAL Dhan BUY forever order?\n\n${stock.symbol}\nQty: ${qty}\nBuy above (trigger): ₹${entry}\n\nRests on Dhan, triggers when price crosses ₹${entry}. Set SL from SL tab after fill.`)) return;
     try {
       const apiKey = localStorage.getItem('trading_api_key');
-      if (!apiKey) {
-        alert('❌ API key not found on this device.\n\nGo to Settings → Trading Protection → Load API Key (enter your PIN) once, then retry.');
+      if (!apiKey || apiKey === 'undefined' || apiKey === 'null') {
+        localStorage.removeItem('trading_api_key');
+        alert('❌ API key not set on this device.\n\nGo to Settings → Trading Protection → Load API Key (enter your PIN) once, then retry.');
         return;
       }
       const response = await fetch('/api/buy', {
@@ -86,6 +87,9 @@ export default function DashboardMobile() {
       const result = await response.json();
       if (response.ok && result.success) {
         alert(`✅ ${result.message}\nOrder ID: ${result.orderId}`);
+      } else if (response.status === 401 || response.status === 403) {
+        localStorage.removeItem('trading_api_key');
+        alert('❌ Stored API key is invalid — it has been cleared.\n\nGo to Settings → Trading Protection → Load API Key (enter your PIN), then retry.');
       } else {
         alert(`❌ Order failed: ${result.detail || result.error || 'Unknown error'}`);
       }

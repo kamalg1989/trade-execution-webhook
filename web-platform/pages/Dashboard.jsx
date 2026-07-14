@@ -124,8 +124,9 @@ export default function Dashboard() {
     )) return;
     try {
       const apiKey = localStorage.getItem('trading_api_key');
-      if (!apiKey) {
-        alert('❌ API key not found. Please load it from Settings first.');
+      if (!apiKey || apiKey === 'undefined' || apiKey === 'null') {
+        localStorage.removeItem('trading_api_key');
+        alert('❌ API key not set. Go to Settings → Trading Protection → Load API Key (enter PIN) once, then retry.');
         return;
       }
       const response = await fetch('/api/buy', {
@@ -139,6 +140,9 @@ export default function Dashboard() {
       const result = await response.json();
       if (response.ok && result.success) {
         alert(`✅ ${result.message}\nOrder ID: ${result.orderId}`);
+      } else if (response.status === 401 || response.status === 403) {
+        localStorage.removeItem('trading_api_key');
+        alert('❌ Stored API key is invalid — it has been cleared.\n\nGo to Settings → Trading Protection → Load API Key (enter PIN), then retry.');
       } else {
         alert(`❌ Order failed: ${result.detail || result.error || 'Unknown error'}`);
       }

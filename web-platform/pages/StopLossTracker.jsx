@@ -4,15 +4,20 @@ import { AlertTriangle, AlertCircle, CheckCircle, Shield, Loader, RefreshCw,
 
 const api = async (path, body) => {
   const apiKey = localStorage.getItem('trading_api_key');
-  if (!apiKey) {
-    alert('❌ API key not found. Please load it from Settings first.');
-    return { ok: false, data: {} };
+  if (!apiKey || apiKey === 'undefined' || apiKey === 'null') {
+    localStorage.removeItem('trading_api_key');
+    alert('❌ API key not set on this device.\n\nGo to Settings → Trading Protection → Load API Key (enter PIN) once, then retry.');
+    return { ok: false, data: { detail: 'API key not set' } };
   }
   const r = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
     body: JSON.stringify(body)
   });
+  if (r.status === 401 || r.status === 403) {
+    localStorage.removeItem('trading_api_key');
+    return { ok: false, data: { detail: 'Stored API key invalid — cleared. Re-load it from Settings (PIN).' } };
+  }
   const data = await r.json().catch(() => ({}));
   return { ok: r.ok, data };
 };
