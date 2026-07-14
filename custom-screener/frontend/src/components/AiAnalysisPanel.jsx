@@ -65,17 +65,17 @@ export default function AiAnalysisPanel({ symbols, date }) {
           AI analysis — IFP · base · patterns
         </div>
         <label className="flex flex-col text-xs text-slate-300 gap-1">
-          <span className="flex items-center gap-1.5">AI engine <Tip text="Which model analyzes the charts. GEMINI (~Rs 0.04/stock, daily-only): Google's Gemini 2.5 Flash-Lite - by far the cheapest option and now the default, but it's a 'Lite' tier model so chart-reading/reasoning quality is unproven here - not yet A/B tested against Sonnet, so treat any recommendation loosely until you've compared a few. HAIKU (~Rs 0.5/stock): fast cheap scan - in our head-to-head test it was too optimistic on weak charts (called setups where Sonnet said AVOID), so treat its SETUP_READY loosely too. SONNET (~Rs 2/stock): best judgment, most reliable AVOID calls - use before putting real money on a setup. HYBRID (~Rs 0.9/stock): Haiku scans everything, Sonnet automatically re-checks anything Haiku rates SETUP_READY or EARLY_STAGE - Gemini is not part of this chain. Results are stored per model, so switching engines re-analyzes only if that model has not seen the stock/date." /></span>
+          <span className="flex items-center gap-1.5">AI engine <Tip text="Which model analyzes the charts. GEMINI (~Rs 0.15/stock, daily-only): Google's Gemini 3.1 Flash-Lite - cheapest option and now the default, but it's a 'Lite' tier model so chart-reading/reasoning quality is unproven here - not yet A/B tested against Sonnet, so treat any recommendation loosely until you've compared a few. HAIKU (~Rs 0.5/stock): fast cheap scan - in our head-to-head test it was too optimistic on weak charts (called setups where Sonnet said AVOID), so treat its SETUP_READY loosely too. SONNET (~Rs 2/stock): best judgment, most reliable AVOID calls - use before putting real money on a setup. HYBRID (~Rs 0.9/stock): Haiku scans everything, Sonnet automatically re-checks anything Haiku rates SETUP_READY or EARLY_STAGE - Gemini is not part of this chain. Results are stored per model, so switching engines re-analyzes only if that model has not seen the stock/date." /></span>
           <select value={aiMode} onChange={(e) => setAiMode(e.target.value)}
             className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 w-40">
-            <option value="gemini">Gemini Flash-Lite (cheapest)</option>
+            <option value="gemini">Gemini 3.1 Flash-Lite (cheapest)</option>
             <option value="haiku">Haiku (cheap)</option>
             <option value="hybrid">Hybrid (best value)</option>
             <option value="sonnet">Sonnet (best)</option>
           </select>
         </label>
         <label className="flex flex-col text-xs text-slate-300 gap-1">
-          <span className="flex items-center gap-1.5">Charts <Tip text="Daily only (default): one chart image, ~40% cheaper and faster than daily+weekly (e.g. Gemini ~Rs 0.04, Haiku ~Rs 0.4, Sonnet ~Rs 1.6 per stock) - fine for quick pattern/IFP scans, but base_count and phase lean on daily structure alone. Daily + weekly: the model also sees weekly context - base counting and market-cycle phase are much more reliable with it (your deck counts bases on weekly structure), at higher cost." /></span>
+          <span className="flex items-center gap-1.5">Charts <Tip text="Daily only (default): one chart image, ~40% cheaper and faster than daily+weekly (e.g. Gemini ~Rs 0.15, Haiku ~Rs 0.4, Sonnet ~Rs 1.6 per stock) - fine for quick pattern/IFP scans, but base_count and phase lean on daily structure alone. Daily + weekly: the model also sees weekly context - base counting and market-cycle phase are much more reliable with it (your deck counts bases on weekly structure), at higher cost." /></span>
           <select value={chartScope} onChange={(e) => setChartScope(e.target.value)}
             className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 w-36">
             <option value="daily">Daily only (-40%)</option>
