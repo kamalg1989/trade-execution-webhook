@@ -9,7 +9,16 @@ import AiAnalysisPanel from '../components/AiAnalysisPanel.jsx';
 
 const EMPTY = { sma200: 'any', sma50: 'any', ema50: 'any' };
 
+// Theme: persisted in localStorage, applied as a class on <html>.
+const getTheme = () => localStorage.getItem('cs-theme') || 'dark';
+const applyTheme = (t) => {
+  document.documentElement.classList.toggle('light', t === 'light');
+  localStorage.setItem('cs-theme', t);
+};
+
 export default function CustomScreener() {
+  const [theme, setTheme] = useState(getTheme);
+  useEffect(() => { applyTheme(theme); }, [theme]);
   const [date, setDate] = useState('');
   const [snap, setSnap] = useState(null);
   const [filters, setFilters] = useState(EMPTY);
@@ -141,6 +150,11 @@ export default function CustomScreener() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Custom Screener</h1>
         <div className="flex items-center gap-2">
+          <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            className="px-2.5 py-1.5 text-sm rounded-lg bg-slate-800 border border-slate-600 text-slate-300 hover:text-white">
+            {theme === 'dark' ? '☀️' : '🌙'}
+          </button>
           <label className="flex items-center gap-2 text-sm text-slate-300">
             Date
             <input type="date" value={date} onChange={onDateChange}

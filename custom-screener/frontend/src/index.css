@@ -4,3 +4,54 @@
 
 html, body, #root { height: 100%; }
 body { margin: 0; background: #0f172a; }
+
+/* ---------- Light mode (html.light) — remaps the dark slate palette ---------- */
+html.light body { background: #f1f5f9; }
+html.light { color-scheme: light; }
+
+/* surfaces */
+html.light .bg-slate-950 { background-color: #ffffff !important; }
+html.light .bg-slate-900 { background-color: #ffffff !important; }
+html.light .bg-slate-900\/60 { background-color: #ffffffcc !important; }
+html.light .bg-slate-800,
+html.light .bg-slate-800\/70,
+html.light .bg-slate-800\/60 { background-color: #e2e8f0 !important; }
+html.light .bg-slate-700 { background-color: #cbd5e1 !important; }
+html.light .bg-slate-600 { background-color: #94a3b8 !important; }
+html.light .hover\:bg-slate-800\/60:hover { background-color: #e2e8f0 !important; }
+html.light .hover\:bg-slate-600:hover { background-color: #94a3b8 !important; }
+
+/* text */
+html.light .text-slate-100, html.light .text-slate-200 { color: #0f172a !important; }
+html.light .text-slate-300 { color: #1e293b !important; }
+html.light .text-slate-400 { color: #475569 !important; }
+html.light .text-slate-500 { color: #64748b !important; }
+html.light .text-slate-600 { color: #94a3b8 !important; }
+html.light .text-white { color: #0f172a !important; }
+html.light .hover\:text-white:hover { color: #0f172a !important; }
+html.light .hover\:text-slate-200:hover, html.light .hover\:text-slate-300:hover { color: #1e293b !important; }
+
+/* borders */
+html.light .border-slate-600 { border-color: #cbd5e1 !important; }
+html.light .border-slate-700 { border-color: #d7dee8 !important; }
+html.light .border-slate-800 { border-color: #e2e8f0 !important; }
+
+/* semantic accents: darker text + light tints for badges/chips */
+html.light .text-emerald-200, html.light .text-emerald-300 { color: #047857 !important; }
+html.light .text-emerald-400 { color: #059669 !important; }
+html.light .text-amber-300, html.light .text-amber-400 { color: #b45309 !important; }
+html.light .text-red-200, html.light .text-red-300 { color: #b91c1c !important; }
+html.light .text-red-400 { color: #dc2626 !important; }
+html.light .text-purple-300, html.light .text-purple-400 { color: #7e22ce !important; }
+html.light .text-blue-300, html.light .text-blue-400 { color: #1d4ed8 !important; }
+html.light .bg-emerald-900\/60, html.light .bg-emerald-900\/30 { background-color: #d1fae5 !important; }
+html.light .bg-amber-900\/60 { background-color: #fef3c7 !important; }
+html.light .bg-red-900\/60, html.light .bg-red-900\/40 { background-color: #fee2e2 !important; }
+html.light .bg-purple-900\/50 { background-color: #f3e8ff !important; }
+html.light .border-emerald-700 { border-color: #6ee7b7 !important; }
+html.light .border-amber-700 { border-color: #fcd34d !important; }
+html.light .border-red-700 { border-color: #fca5a5 !important; }
+html.light .border-purple-800, html.light .border-purple-800\/60 { border-color: #d8b4fe !important; }
+
+/* modal backdrop lighter in light mode */
+html.light .bg-black\/70 { background-color: rgb(15 23 42 / 0.35) !important; }
