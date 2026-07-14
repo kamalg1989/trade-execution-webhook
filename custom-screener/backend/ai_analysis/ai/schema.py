@@ -29,6 +29,7 @@ ANALYSIS_TOOL = {
             },
             "patterns": {
                 "type": "array",
+                "maxItems": 4,
                 "items": {
                     "type": "object",
                     "properties": {

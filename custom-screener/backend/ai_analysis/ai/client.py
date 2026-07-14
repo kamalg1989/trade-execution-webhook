@@ -53,7 +53,10 @@ async def analyze_symbol_charts(
     msg = await client.messages.create(
         model=config.AI_MODEL,
         max_tokens=config.AI_MAX_TOKENS,
-        system=SYSTEM_PROMPT,
+        # cache_control: tools + system form a stable prefix, cached across
+        # calls (90% discount on cached reads when above the model's minimum).
+        system=[{"type": "text", "text": SYSTEM_PROMPT,
+                 "cache_control": {"type": "ephemeral"}}],
         tools=[ANALYSIS_TOOL],
         tool_choice={"type": "tool", "name": ANALYSIS_TOOL["name"]},
         messages=[{

@@ -29,15 +29,32 @@ retest. Structures: hammer, HH-HL.
 and logical stop unless the chart clearly shows a better structural level — if you deviate, \
 say why in the thesis.
 - Be conservative: if evidence is mixed, prefer EARLY_STAGE or NOT_READY over SETUP_READY.
+- Be brief: evidence and thesis max 2 sentences each; base_quality_reasons max 4 short phrases; \
+report at most 4 patterns (highest confidence first).
 
 Report your analysis ONLY via the report_chart_analysis tool."""
 
 
+def _compact(feats: dict) -> dict:
+    """Trim token-heavy detail before sending to the model."""
+    f = dict(feats)
+    days = f.get("absorption_days")
+    if isinstance(days, list) and days:
+        f["absorption_days_count"] = len(days)
+        f["absorption_days_recent"] = days[-2:]
+        del f["absorption_days"]
+    for k, v in f.items():
+        if isinstance(v, float):
+            f[k] = round(v, 3)
+    return f
+
+
 def feature_block(symbol: str, daily_feats: dict, weekly_feats: dict) -> str:
+    dumps = lambda d: json.dumps(_compact(d), separators=(",", ":"), default=str)  # noqa: E731
     return (
-        f"Stock: {symbol}\n\n"
-        f"COMPUTED FEATURES (daily):\n{json.dumps(daily_feats, indent=1, default=str)}\n\n"
-        f"COMPUTED FEATURES (weekly):\n{json.dumps(weekly_feats, indent=1, default=str)}\n\n"
-        "First image = daily chart, second image = weekly chart. "
+        f"Stock: {symbol}\n"
+        f"FEATURES daily: {dumps(daily_feats)}\n"
+        f"FEATURES weekly: {dumps(weekly_feats)}\n"
+        "Image 1 = daily chart, image 2 = weekly chart. "
         "Analyse base structure, IFP, patterns and buy point per your instructions."
     )
