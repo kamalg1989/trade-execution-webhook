@@ -63,6 +63,8 @@ export const aiFeedback = (payload) =>
     body: JSON.stringify(payload),
   });
 
+export const aiOutcomesSummary = () => req('/ai-analyze/outcomes/summary');
+
 // Backend returns chart URLs as /api/ai-analyze/charts/x.png — prefix the
 // nginx path (BASE already ends with /api).
 export const aiChartSrc = (url) => (url ? url.replace(/^\/api/, BASE) : null);

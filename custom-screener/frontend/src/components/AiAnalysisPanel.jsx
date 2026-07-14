@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { aiAnalyze } from '../api/client.js';
+import { aiAnalyze, aiOutcomesSummary } from '../api/client.js';
 import AiResultModal from './AiResultModal.jsx';
 import { Tip } from './FilterPanel.jsx';
 
@@ -25,6 +25,14 @@ export default function AiAnalysisPanel({ symbols, date }) {
   const [data, setData] = useState(null);
   const [picked, setPicked] = useState(null);
   const [showGated, setShowGated] = useState(false);
+  const [perf, setPerf] = useState(null);
+  const [showPerf, setShowPerf] = useState(false);
+  const togglePerf = async () => {
+    if (!showPerf && !perf) {
+      try { setPerf((await aiOutcomesSummary()).summary || []); } catch { setPerf([]); }
+    }
+    setShowPerf(!showPerf);
+  };
 
   const run = async () => {
     setRunning(true);
@@ -167,6 +175,46 @@ export default function AiAnalysisPanel({ symbols, date }) {
           )}
         </div>
       )}
+
+      <div>
+        <button onClick={togglePerf} className="text-xs text-slate-500 hover:text-slate-300 flex items-center gap-1">
+          {showPerf ? '\u25be' : '\u25b8'} AI performance (forward returns per engine and verdict)
+          <Tip text="Outcome tracking: every AI analysis is scored nightly against what the stock actually did afterwards - 5/20/60-day forward returns from the analysis-date close, whether price hit the AI breakout level within 20 bars, and whether it hit the AI stop. Win rate = % of calls with positive 20-day return. This is your ground truth for judging Haiku vs Sonnet and whether SETUP_READY calls earn - numbers fill in as days pass after each analysis." />
+        </button>
+        {showPerf && perf && (
+          <div className="overflow-x-auto mt-2">
+            {perf.length === 0 ? (
+              <div className="text-xs text-slate-500">No outcome data yet - returns fill in as trading days pass after each analysis.</div>
+            ) : (
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-slate-500 uppercase tracking-wide">
+                    <th className="py-1 pr-2">Engine</th><th className="pr-2">Verdict</th><th className="pr-2">N</th>
+                    <th className="pr-2">Avg 5d %</th><th className="pr-2">Avg 20d %</th><th className="pr-2">Avg 60d %</th>
+                    <th className="pr-2">Win 20d</th><th className="pr-2">BO hit</th><th className="pr-2">Stop hit</th><th className="pr-2">Feedback</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {perf.map((r, i) => (
+                    <tr key={i} className="border-t border-slate-800 text-slate-300">
+                      <td className="py-1 pr-2">{r.engine}</td>
+                      <td className="pr-2">{r.recommendation}</td>
+                      <td className="pr-2">{r.n}</td>
+                      <td className="pr-2">{r.avg_ret_5d ?? '\u2014'}</td>
+                      <td className="pr-2">{r.avg_ret_20d ?? '\u2014'}</td>
+                      <td className="pr-2">{r.avg_ret_60d ?? '\u2014'}</td>
+                      <td className="pr-2">{r.win_rate_20d != null ? r.win_rate_20d + '%' : '\u2014'}</td>
+                      <td className="pr-2">{r.breakout_hit_pct != null ? r.breakout_hit_pct + '%' : '\u2014'}</td>
+                      <td className="pr-2">{r.stop_hit_pct != null ? r.stop_hit_pct + '%' : '\u2014'}</td>
+                      <td className="pr-2">{r.feedback_n > 0 ? `${r.feedback_correct}/${r.feedback_n} correct` : '\u2014'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+      </div>
 
       <AiResultModal result={picked} date={data?.indicatorDate} open={!!picked} onClose={() => setPicked(null)} />
     </div>

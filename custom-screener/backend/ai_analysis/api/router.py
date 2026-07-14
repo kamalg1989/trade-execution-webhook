@@ -63,6 +63,34 @@ async def get_chart(filename: str):
     )
 
 
+@router.get("/ai-analyze/outcomes/summary")
+async def outcomes_summary(request: Request):
+    """Win rates + forward returns per model and recommendation.
+
+    The data that answers 'is Haiku good enough?' and 'does SETUP_READY earn?'
+    """
+    repo, _ = _repos(request)
+    rows = await repo.pool.fetch(
+        """
+        SELECT split_part(model, '-', 2) AS engine,
+               recommendation,
+               count(*) AS n,
+               count(ret_20d) AS n_20d,
+               round(avg(ret_5d)::numeric, 2) AS avg_ret_5d,
+               round(avg(ret_20d)::numeric, 2) AS avg_ret_20d,
+               round(avg(ret_60d)::numeric, 2) AS avg_ret_60d,
+               round(100.0 * count(*) FILTER (WHERE ret_20d > 0) / NULLIF(count(ret_20d), 0)) AS win_rate_20d,
+               round(100.0 * count(*) FILTER (WHERE hit_breakout) / NULLIF(count(hit_breakout), 0)) AS breakout_hit_pct,
+               round(100.0 * count(*) FILTER (WHERE hit_stop) / NULLIF(count(hit_stop), 0)) AS stop_hit_pct,
+               count(user_feedback) AS feedback_n,
+               count(*) FILTER (WHERE user_feedback = 'CORRECT') AS feedback_correct
+        FROM ai_analysis_results
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+        """)
+    return {"summary": [dict(r) for r in rows]}
+
+
 @router.post("/ai-analyze/feedback")
 async def save_feedback(req: FeedbackRequest, request: Request):
     """Record CORRECT / PARTIAL / WRONG feedback — future accuracy dataset."""

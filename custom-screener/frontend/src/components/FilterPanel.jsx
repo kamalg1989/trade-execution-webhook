@@ -11,7 +11,6 @@ const TREND = [
   ['Momentum — C>EMA21>50>200', 'momentum'],
   ['Power — C>10>21>50>200', 'power'],
 ];
-const DIR = [['All', 'any'], ['Above', 'above'], ['Below', 'below']];
 const UNIVERSE = [
   ['All NSE', null],
   ['Nifty 50', 'NIFTY50'], ['Nifty 100', 'NIFTY100'], ['Nifty 200', 'NIFTY200'],
@@ -19,19 +18,12 @@ const UNIVERSE = [
   ['Smallcap 250', 'SMALLCAP250'], ['Microcap 250', 'MICROCAP250'],
 ];
 const MCAPS = [['large', 'Large'], ['mid', 'Mid'], ['small', 'Small'], ['micro', 'Micro']];
-const PCT = [['All', null], ['> +4.5%', { min: 4.5 }], ['> +10%', { min: 10 }], ['> +20%', { min: 20 }],
-  ['> +50%', { min: 50 }], ['< -5%', { max: -5 }], ['< -10%', { max: -10 }]];
 
 const HIGH_52W = [['All', null],
   ['Within 5%', { k: 'within52wHighPct', v: 5 }], ['Within 10%', { k: 'within52wHighPct', v: 10 }],
   ['Within 15%', { k: 'within52wHighPct', v: 15 }], ['Within 20%', { k: 'within52wHighPct', v: 20 }],
   ['Within 25%', { k: 'within52wHighPct', v: 25 }],
   ['> 20% below', { k: 'below52wHighPct', v: 20 }], ['> 40% below', { k: 'below52wHighPct', v: 40 }]];
-const LOW_52W = [['All', null],
-  ['Within 5%', { k: 'within52wLowPct', v: 5 }], ['Within 10%', { k: 'within52wLowPct', v: 10 }],
-  ['Within 15%', { k: 'within52wLowPct', v: 15 }],
-  ['> 25% above', { k: 'above52wLowPct', v: 25 }], ['> 50% above', { k: 'above52wLowPct', v: 50 }],
-  ['> 100% above', { k: 'above52wLowPct', v: 100 }]];
 
 const BASE_RANGE = [['All', null], ['< 8%', 8], ['< 12%', 12], ['< 15%', 15], ['< 20%', 20]];
 const NEAR_HIGH20 = [['All', null], ['Within 2%', 2], ['Within 5%', 5], ['Within 10%', 10]];
@@ -40,10 +32,7 @@ const VOL_DRY = [['All', null], ['≤ 1.0', 1.0], ['≤ 1.3', 1.3]];
 const UPMOVE = [['All', null], ['≥ 15%', 15], ['≥ 25%', 25], ['≥ 50%', 50]];
 const GIVEBACK = [['All', null], ['≤ 30%', 30], ['≤ 50%', 50]];
 const ATR = [['All', null], ['< 3%', { max: 3 }], ['< 5%', { max: 5 }], ['> 5%', { min: 5 }]];
-const ALIGN = [['All', null], ['Close>EMA50>SMA200', true]];
 const IFP = [['All', null], ['≥ 0.20', 0.2], ['≥ 0.25', 0.25], ['≥ 0.30', 0.3], ['≥ 0.40', 0.4]];
-const UDVR = [['All', null], ['≥ 1.0', 1.0], ['≥ 1.2', 1.2], ['≥ 1.5', 1.5], ['≥ 2.0', 2.0]];
-const OBV = [['All', null], ['Positive', true]];
 
 // Filter purpose notes, written for the base-and-bounce setup.
 const TIPS = {
@@ -200,45 +189,32 @@ export default function FilterPanel({ filters, setFilters, includeInsufficient, 
       {showAdvanced && (
         <>
           <div>
-            <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-2">Base &amp; Structure</div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+            <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-2">Base quality</div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
               <Sel label="Base tightness (20d)" tip={TIPS.baseTight} options={BASE_RANGE} value={filters.baseRange20dMaxPct ?? null} onChange={(v) => set('baseRange20dMaxPct', v)} />
               <Sel label="Near 20d high" tip={TIPS.near20} options={NEAR_HIGH20} value={filters.within20dHighPct ?? null} onChange={(v) => set('within20dHighPct', v)} />
               <Sel label="Prior upmove" tip={TIPS.upmove} options={UPMOVE} value={filters.priorUpmoveMinPct ?? null} onChange={(v) => set('priorUpmoveMinPct', v)} />
               <Sel label="Giveback" tip={TIPS.giveback} options={GIVEBACK} value={filters.givebackMaxPct ?? null} onChange={(v) => set('givebackMaxPct', v)} />
-              <Sel label="52W low" tip={TIPS.low52} options={LOW_52W} value={cur52w(['within52wLowPct', 'above52wLowPct'])}
-                onChange={(v) => set52w(v, ['within52wLowPct', 'above52wLowPct'])} />
             </div>
           </div>
 
           <div>
-            <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-2">Volume &amp; Volatility</div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-              <Sel label="Vol expansion (1d)" tip={TIPS.volExp} options={VOL_EXP} value={filters.volRatioMin ?? null} onChange={(v) => set('volRatioMin', v)} />
+            <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-2">Volume &amp; IFP (defaults 100d/1.5×/0.60 — tune below results)</div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
               <Sel label="Vol dry-up" tip={TIPS.volDry} options={VOL_DRY} value={filters.volDryupMaxRatio ?? null} onChange={(v) => set('volDryupMaxRatio', v)} />
+              <Sel label="Vol expansion (1d)" tip={TIPS.volExp} options={VOL_EXP} value={filters.volRatioMin ?? null} onChange={(v) => set('volRatioMin', v)} />
               <Sel label="ATR %" tip={TIPS.atr} options={ATR} value={filters.atrPct ?? null} onChange={(v) => set('atrPct', v)} />
-              <Sel label="% Chg 1M" tip={TIPS.pct} options={PCT} value={filters.pctChg1m ?? null} onChange={(v) => set('pctChg1m', v)} />
-              <Sel label="% Chg 3M" tip={TIPS.pct} options={PCT} value={filters.pctChg3m ?? null} onChange={(v) => set('pctChg3m', v)} />
-            </div>
-          </div>
-
-          <div>
-            <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-2">Institutional Footprint (default 100d/1.5×/0.60 — tune below results)</div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
               <Sel label="IFP score" tip={TIPS.ifp} options={IFP} value={filters.ifpScoreMin ?? null} onChange={(v) => set('ifpScoreMin', v)} />
-              <Sel label="Up/Down Vol (50d)" tip={TIPS.udvr} options={UDVR} value={filters.updownVolRatioMin ?? null} onChange={(v) => set('updownVolRatioMin', v)} />
-              <Sel label="OBV slope (50d)" tip={TIPS.obv} options={OBV} value={filters.obvSlopePositive ?? null} onChange={(v) => set('obvSlopePositive', v)} />
             </div>
-          </div>
-
-          <div>
-            <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-2">Legacy MA controls (superseded by Trend ladder)</div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-              <Sel label="MA Alignment" tip={TIPS.align} options={ALIGN} value={filters.maAligned ?? null} onChange={(v) => set('maAligned', v)} />
-              <Sel label="SMA 200 Dir" tip={TIPS.dir} options={DIR} value={filters.sma200 ?? 'any'} onChange={(v) => set('sma200', v)} />
-              <Sel label="EMA 50 Dir" tip={TIPS.dir} options={DIR} value={filters.ema50 ?? 'any'} onChange={(v) => set('ema50', v)} />
-              <Sel label="SMA 50 Dir" tip={TIPS.dir} options={DIR} value={filters.sma50 ?? 'any'} onChange={(v) => set('sma50', v)} />
-            </div>
+            <label className="flex items-center gap-2 text-xs text-slate-300 mt-3">
+              <input type="checkbox" checked={!!filters.obvSlopePositive}
+                onChange={(e) => setFilters((f) => ({
+                  ...f,
+                  obvSlopePositive: e.target.checked ? true : null,
+                  updownVolRatioMin: e.target.checked ? 1.2 : null,
+                }))} />
+              Flow confirm <Tip text="One-click volume-flow confirmation: requires up/down volume ratio >= 1.2 (buyers dominate over 50d) AND positive OBV slope (net accumulation). These are the two components behind the IFP score - as a single toggle instead of two dropdowns." />
+            </label>
           </div>
         </>
       )}
