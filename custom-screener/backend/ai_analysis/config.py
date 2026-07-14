@@ -17,7 +17,9 @@ IFP_GATE_THRESHOLD = float(os.getenv("IFP_GATE_THRESHOLD", "0.30"))
 AI_MODE = os.getenv("AI_MODE", "gemini")                 # gemini | haiku | hybrid | sonnet
 HAIKU_MODEL = os.getenv("AI_HAIKU_MODEL", "claude-haiku-4-5-20251001")
 SONNET_MODEL = os.getenv("AI_SONNET_MODEL", "claude-sonnet-4-5")
-GEMINI_MODEL = os.getenv("AI_GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("AI_GEMINI_MODEL", "gemini-2.5-flash-lite")  # 2.5-flash was
+# deprecated for new users Jul 2026 (404s); flash-lite is the current cheapest
+# vision-capable Gemini tier ($0.10/$0.40 per M in/out vs flash's $0.50/$3.00).
 AI_MODEL = os.getenv("AI_MODEL", HAIKU_MODEL)            # legacy fallback
 MAX_CONCURRENT_AI = int(os.getenv("MAX_CONCURRENT_AI", "5"))
 AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "900"))   # output is 5x input price; schema fits in ~600
