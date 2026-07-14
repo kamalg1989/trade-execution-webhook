@@ -2,10 +2,11 @@
 
 Instant mode only (parallel with semaphore). Per-symbol failures are isolated.
 
-ai_mode:  haiku (cheap scan) | sonnet (best judgment) | hybrid (Haiku scans all,
-          Sonnet re-analyzes anything Haiku rates SETUP_READY / EARLY_STAGE).
-chart_scope: both (daily + weekly) | daily (single chart, ~40% cheaper,
-          weaker base counting).
+ai_mode:  gemini (default, cheapest) | haiku (cheap scan) | sonnet (best judgment)
+          | hybrid (Haiku scans all, Sonnet re-analyzes anything Haiku rates
+          SETUP_READY / EARLY_STAGE — Gemini is not part of the hybrid chain).
+chart_scope: daily (default, single chart, ~40% cheaper, weaker base counting)
+          | both (daily + weekly).
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ from datetime import date
 import pandas as pd
 
 from . import config
-from .ai import analyze_symbol_charts
+from .ai import analyze_symbol_charts, analyze_symbol_charts_gemini
 from .charting import render_chart, resample_weekly
 from .features import apply_gate, compute_features
 from .storage import AiRepo
@@ -133,6 +134,8 @@ async def analyze_symbols(
 
 async def _lookup_stored(ai_repo: AiRepo, sym: str, d: date, mode: str, pv: str) -> dict | None:
     """Mode-aware store lookup."""
+    if mode == "gemini":
+        return await ai_repo.get_result(sym, d, pv, config.GEMINI_MODEL)
     if mode == "sonnet":
         return await ai_repo.get_result(sym, d, pv, config.SONNET_MODEL)
     if mode == "haiku":
@@ -156,12 +159,18 @@ async def _analyze_one(sym: str, indicator_date: date, frames: dict, daily_feats
     weekly_png = (await asyncio.to_thread(render_chart, wdf, sym, "weekly")
                   if wdf is not None else None)
 
-    first_model = config.SONNET_MODEL if mode == "sonnet" else config.HAIKU_MODEL
-    out = await analyze_symbol_charts(sym, daily_png, weekly_png,
-                                      daily_feats, weekly_feats, model=first_model)
+    if mode == "gemini":
+        out = await analyze_symbol_charts_gemini(sym, daily_png, weekly_png,
+                                                 daily_feats, weekly_feats,
+                                                 model=config.GEMINI_MODEL)
+    else:
+        first_model = config.SONNET_MODEL if mode == "sonnet" else config.HAIKU_MODEL
+        out = await analyze_symbol_charts(sym, daily_png, weekly_png,
+                                          daily_feats, weekly_feats, model=first_model)
     result = await _finalize(sym, indicator_date, ddf, wdf, daily_png, weekly_png,
                              daily_feats, weekly_feats, out, ai_repo, gate_mode, pv)
-    result["stage"] = "haiku" if first_model == config.HAIKU_MODEL else "sonnet"
+    result["stage"] = ("gemini" if mode == "gemini"
+                       else "haiku" if out["model"] == config.HAIKU_MODEL else "sonnet")
 
     # Hybrid: Sonnet confirmation pass on candidate setups
     if mode == "hybrid" and (out["analysis"].get("recommendation") in CONFIRM_RECS):
@@ -195,7 +204,12 @@ async def _finalize(sym, indicator_date, ddf, wdf, daily_png, weekly_png,
     weekly_annot = (await asyncio.to_thread(render_chart, wdf, sym, "weekly", levels)
                     if wdf is not None else None)
 
-    tag = "clean" if out["model"] == config.HAIKU_MODEL else "cleanS"
+    if out["model"] == config.HAIKU_MODEL:
+        tag = "clean"
+    elif out["model"] == config.SONNET_MODEL:
+        tag = "cleanS"
+    else:
+        tag = "cleanG"  # gemini
     names = {
         "daily": AiRepo.chart_filename(sym, indicator_date, "daily", tag),
         "daily_annotated": AiRepo.chart_filename(sym, indicator_date, "daily", tag + "A"),

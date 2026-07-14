@@ -39,7 +39,8 @@ export default function AiResultModal({ result, date, open, onClose }) {
   const [fb, setFb] = useState(null);
   const [fbMsg, setFbMsg] = useState('');
   const [after, setAfter] = useState(null);
-  useEffect(() => { setAfter(null); setTab('daily'); setFb(null); setFbMsg(''); }, [result?.symbol, date]);
+  const [rawView, setRawView] = useState(false);
+  useEffect(() => { setAfter(null); setTab('daily'); setFb(null); setFbMsg(''); setRawView(false); }, [result?.symbol, date]);
   const openAftermath = async () => {
     setTab('aftermath');
     if (after == null) {
@@ -53,8 +54,10 @@ export default function AiResultModal({ result, date, open, onClose }) {
   const v = result.verification || {};
   const bp = a.buy_point || {};
   const charts = result.charts || {};
-  const img = tab === 'daily' ? charts.daily_annotated || charts.daily
-    : charts.weekly_annotated || charts.weekly;
+  const rawImg = tab === 'daily' ? charts.daily : charts.weekly;
+  const annotImg = tab === 'daily' ? charts.daily_annotated : charts.weekly_annotated;
+  const img = rawView ? (rawImg || annotImg) : (annotImg || rawImg);
+  const hasBoth = !!(rawImg && annotImg);
   const risk = bp.breakout_level && bp.stop_level ? bp.breakout_level - bp.stop_level : null;
 
   const sendFeedback = async (val) => {
@@ -92,7 +95,7 @@ export default function AiResultModal({ result, date, open, onClose }) {
 
         <div className="p-4 space-y-3">
           {/* Chart tabs */}
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {['daily', 'weekly'].map((t) => (
               <button key={t} onClick={() => setTab(t)}
                 className={`px-4 py-1 rounded-md text-sm font-semibold capitalize ${tab === t ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'}`}>
@@ -103,6 +106,18 @@ export default function AiResultModal({ result, date, open, onClose }) {
               className={`px-4 py-1 rounded-md text-sm font-semibold ${tab === 'aftermath' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-purple-300'}`}>
               Aftermath
             </button>
+            {tab !== 'aftermath' && hasBoth && (
+              <div className="ml-auto flex gap-1 bg-slate-800 rounded-md p-0.5" title="Compare what the AI actually saw vs. the chart with its levels drawn on afterward">
+                <button onClick={() => setRawView(false)}
+                  className={`px-2.5 py-0.5 rounded text-xs font-medium ${!rawView ? 'bg-slate-600 text-white' : 'text-slate-400'}`}>
+                  Annotated
+                </button>
+                <button onClick={() => setRawView(true)}
+                  className={`px-2.5 py-0.5 rounded text-xs font-medium ${rawView ? 'bg-slate-600 text-white' : 'text-slate-400'}`}>
+                  As sent to AI
+                </button>
+              </div>
+            )}
           </div>
           {tab === 'aftermath' ? (
             <div className="bg-slate-950 rounded-lg p-2 border border-slate-800 space-y-2">
@@ -137,13 +152,15 @@ export default function AiResultModal({ result, date, open, onClose }) {
           ) : (
           <div className="bg-slate-950 rounded-lg p-1 border border-slate-800">
             {img ? (
-              <img src={aiChartSrc(img)} alt={`${result.symbol} ${tab} annotated chart`}
+              <img src={aiChartSrc(img)} alt={`${result.symbol} ${tab} chart`}
                 className="w-full h-auto rounded" />
             ) : (
               <div className="text-slate-500 text-sm p-6 text-center">Chart unavailable</div>
             )}
             <p className="text-[11px] text-slate-500 px-2 py-1">
-              Dashed lines: green = AI breakout, red = AI stop, gray = computed support
+              {rawView && rawImg
+                ? 'This is the exact image sent to the AI — no levels drawn on, for reviewing chart quality/readability.'
+                : 'Dashed lines: green = AI breakout, red = AI stop, gray = computed support (drawn on after analysis, for your review).'}
             </p>
           </div>
           )}

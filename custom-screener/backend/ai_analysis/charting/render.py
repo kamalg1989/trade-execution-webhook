@@ -35,8 +35,8 @@ def render_chart(
     symbol: str,
     timeframe: str = "daily",
     levels: dict | None = None,
-    width_px: int = 1200,
-    height_px: int = 700,
+    width_px: int = 1600,
+    height_px: int = 800,
     vline=None,
     title_suffix: str = "",
 ) -> bytes:
@@ -46,12 +46,19 @@ def render_chart(
     levels: optional {"breakout": float, "stop": float, "support": float}.
     vline: optional timestamp — vertical marker (e.g. analysis date on
            aftermath charts, splitting 'what the AI saw' from 'what happened').
+
+    Default 1600x800px (up from 1200x700) so ~200 daily bars render at
+    ~8px/candle instead of ~4px. EMA lines also get an on-chart legend
+    (labeled by period, matching their color) — neither a human reviewer nor
+    a vision model can otherwise tell which colored line is which EMA.
     """
     import mplfinance as mpf
+    from matplotlib.lines import Line2D
 
     d = df[["open", "high", "low", "close", "volume"]].astype(float).copy()
 
     apd = []
+    legend_entries = []  # (label, color) for the on-chart legend
     emas = DAILY_EMAS if timeframe == "daily" else WEEKLY_EMAS
     for span, color in emas:
         if len(d) >= span:
@@ -59,6 +66,7 @@ def render_chart(
                 d["close"].ewm(span=span, adjust=False).mean(),
                 color=color, width=1.2,
             ))
+            legend_entries.append((f"EMA{span}", color))
 
     vol_ma = d["volume"].rolling(20).mean()
     if vol_ma.notna().any():
@@ -77,7 +85,6 @@ def render_chart(
 
     style = mpf.make_mpf_style(base_mpf_style="charles", gridcolor="#dddddd", y_on_right=True)
 
-    buf = io.BytesIO()
     title = f"{symbol} — {timeframe} (as of {d.index[-1].date()}){title_suffix}"
     kwargs = dict(
         type="candle",
@@ -88,13 +95,21 @@ def render_chart(
         title=title,
         ylabel="Price",
         ylabel_lower="Volume",
-        savefig=dict(fname=buf, dpi=100, pad_inches=0.3),
+        returnfig=True,
     )
     if hlines:
         kwargs["hlines"] = hlines
     if vline is not None:
         kwargs["vlines"] = dict(vlines=[pd.Timestamp(vline)], colors=["#534AB7"],
                                 linestyle="-.", linewidths=1.4, alpha=0.9)
-    mpf.plot(d, **kwargs)
+
+    fig, axlist = mpf.plot(d, **kwargs)
+    if legend_entries:
+        handles = [Line2D([0], [0], color=c, lw=1.6, label=lbl) for lbl, c in legend_entries]
+        axlist[0].legend(handles=handles, loc="upper left", fontsize=8,
+                         framealpha=0.75, ncol=len(handles))
+
+    buf = io.BytesIO()
+    fig.savefig(buf, dpi=100, pad_inches=0.3)
     buf.seek(0)
     return buf.getvalue()

@@ -199,7 +199,12 @@ async def outcomes_summary(request: Request):
     repo, _ = _repos(request)
     rows = await repo.pool.fetch(
         """
-        SELECT split_part(model, '-', 2) AS engine,
+        SELECT CASE
+                 WHEN model LIKE 'claude-haiku%' THEN 'haiku'
+                 WHEN model LIKE 'claude-sonnet%' THEN 'sonnet'
+                 WHEN model LIKE 'gemini%' THEN 'gemini'
+                 ELSE model
+               END AS engine,
                recommendation,
                count(*) AS n,
                count(ret_20d) AS n_20d,
