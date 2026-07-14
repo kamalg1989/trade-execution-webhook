@@ -50,9 +50,15 @@ class PgRepo:
             return row["snapshot_date"] if row else None
 
     async def day_slice(self, d: date) -> list[dict]:
+        # LEFT JOIN symbols_meta for SME flag / lot size / sector (may be NULL
+        # for symbols not yet in meta — filters treat NULL as non-SME).
+        cols = ", ".join(f"si.{c.strip()}" for c in _ROW_COLS.replace("\n", "").split(",") if c.strip())
         async with self.pool.acquire() as con:
             rows = await con.fetch(
-                f"SELECT {_ROW_COLS} FROM stock_indicators WHERE indicator_date = $1", d
+                f"""SELECT {cols}, sm.is_sme, sm.lot_size, sm.series, sm.sector
+                    FROM stock_indicators si
+                    LEFT JOIN symbols_meta sm ON sm.symbol = si.symbol
+                    WHERE si.indicator_date = $1""", d
             )
             return [_to_float_dict(r) for r in rows]
 

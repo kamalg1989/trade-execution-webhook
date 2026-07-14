@@ -14,6 +14,10 @@ class RangeFilter(BaseModel):
 
 class Filters(BaseModel):
     minTurnoverCr: Optional[float] = None
+    # Primary tier (2026-07 redesign)
+    minPrice: Optional[float] = None                 # close >= X (penny-stock excluder)
+    trendLadder: Optional[Literal["any", "uptrend", "confirmed", "momentum", "power"]] = "any"
+    excludeSme: Optional[bool] = True                # drop NSE EMERGE / lot-traded symbols
     sma200: Optional[Literal["any", "above", "below"]] = "any"
     sma50: Optional[Literal["any", "above", "below"]] = "any"
     ema50: Optional[Literal["any", "above", "below"]] = "any"

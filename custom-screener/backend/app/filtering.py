@@ -66,6 +66,35 @@ def validate_filters(filters: dict):
     for key in ("sma200", "sma50", "ema50"):
         if filters.get(key) not in (None, "any", "above", "below"):
             raise FilterError(f"{key} must be one of: any, above, below")
+    if filters.get("trendLadder") not in (None, "any", "uptrend", "confirmed", "momentum", "power"):
+        raise FilterError("trendLadder must be one of: any, uptrend, confirmed, momentum, power")
+    mp = filters.get("minPrice")
+    if mp is not None and mp < 0:
+        raise FilterError("minPrice must be >= 0")
+
+
+def _trend_ladder_ok(r: dict, level) -> bool:
+    """Trend ladder: each level implies all previous (deck: 'above 200/50 SMA';
+    EMA10/21 mark the swing zone). NULL MA fails the level."""
+    if level in (None, "any"):
+        return True
+
+    def _gt(a, b):
+        return a is not None and b is not None and a > b
+
+    close = r.get("close")
+    if level == "uptrend":
+        return _gt(close, r.get("sma_200"))
+    if level == "confirmed":
+        return _gt(close, r.get("sma_50")) and _gt(r.get("sma_50"), r.get("sma_200"))
+    if level == "momentum":
+        return (_gt(close, r.get("ema_21")) and _gt(r.get("ema_21"), r.get("sma_50"))
+                and _gt(r.get("sma_50"), r.get("sma_200")))
+    if level == "power":
+        return (_gt(close, r.get("ema_10")) and _gt(r.get("ema_10"), r.get("ema_21"))
+                and _gt(r.get("ema_21"), r.get("sma_50"))
+                and _gt(r.get("sma_50"), r.get("sma_200")))
+    return True
 
 
 _PCT_MAP = {
@@ -80,6 +109,15 @@ def _row_matches(r: dict, f: dict, include_insufficient: bool) -> bool:
 
     mt = f.get("minTurnoverCr")
     if mt is not None and (r.get("turnover_1m_avg_cr") is None or r["turnover_1m_avg_cr"] < mt):
+        return False
+
+    # Primary tier (2026-07 redesign)
+    if f.get("excludeSme", True) and r.get("is_sme"):
+        return False
+    mp = f.get("minPrice")
+    if mp is not None and (r.get("close") is None or r["close"] < mp):
+        return False
+    if not _trend_ladder_ok(r, f.get("trendLadder")):
         return False
 
     for direction_key, dist_col, ma_col in (
