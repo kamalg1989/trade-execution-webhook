@@ -12,6 +12,8 @@ class AnalyzeRequest(BaseModel):
     indicatorDate: Optional[date] = None
     gateMode: Optional[Literal["hard", "soft"]] = None
     ifpThreshold: Optional[float] = Field(None, ge=0, le=1)
+    aiMode: Optional[Literal["haiku", "hybrid", "sonnet"]] = None
+    chartScope: Optional[Literal["daily", "both"]] = None
     force: bool = False
 
 

@@ -12,8 +12,11 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 AI_GATE_MODE = os.getenv("AI_GATE_MODE", "hard")            # hard | soft
 IFP_GATE_THRESHOLD = float(os.getenv("IFP_GATE_THRESHOLD", "0.30"))
 
-# AI
-AI_MODEL = os.getenv("AI_MODEL", "claude-haiku-4-5-20251001")
+# AI — engine per mode (UI-selectable per request; AI_MODE is the default)
+AI_MODE = os.getenv("AI_MODE", "haiku")                  # haiku | hybrid | sonnet
+HAIKU_MODEL = os.getenv("AI_HAIKU_MODEL", "claude-haiku-4-5-20251001")
+SONNET_MODEL = os.getenv("AI_SONNET_MODEL", "claude-sonnet-4-5")
+AI_MODEL = os.getenv("AI_MODEL", HAIKU_MODEL)            # legacy fallback
 MAX_CONCURRENT_AI = int(os.getenv("MAX_CONCURRENT_AI", "5"))
 AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "900"))   # output is 5x input price; schema fits in ~600
 PROMPT_VERSION = os.getenv("AI_PROMPT_VERSION", "v2")    # v2: compact features + brevity rules

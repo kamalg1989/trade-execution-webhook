@@ -39,19 +39,28 @@ def _img(png_bytes: bytes) -> dict:
 async def analyze_symbol_charts(
     symbol: str,
     daily_png: bytes,
-    weekly_png: bytes,
+    weekly_png: bytes | None,
     daily_feats: dict,
-    weekly_feats: dict,
+    weekly_feats: dict | None,
+    model: str | None = None,
 ) -> dict:
-    """One call per symbol: both charts + feature block → schema-valid dict.
+    """One call per symbol: chart(s) + feature block → schema-valid dict.
 
-    Returns {"analysis": {...}, "processing_ms": int} or raises.
+    weekly_png/weekly_feats may be None (daily-only scope, ~40% cheaper).
+    Returns {"analysis": {...}, "processing_ms": int, "model": str} or raises.
     """
     client = _get_client()
     t0 = time.monotonic()
+    model = model or config.AI_MODEL
+
+    content = [_img(daily_png)]
+    if weekly_png is not None:
+        content.append(_img(weekly_png))
+    content.append({"type": "text",
+                    "text": feature_block(symbol, daily_feats, weekly_feats)})
 
     msg = await client.messages.create(
-        model=config.AI_MODEL,
+        model=model,
         max_tokens=config.AI_MAX_TOKENS,
         # cache_control: tools + system form a stable prefix, cached across
         # calls (90% discount on cached reads when above the model's minimum).
@@ -59,14 +68,7 @@ async def analyze_symbol_charts(
                  "cache_control": {"type": "ephemeral"}}],
         tools=[ANALYSIS_TOOL],
         tool_choice={"type": "tool", "name": ANALYSIS_TOOL["name"]},
-        messages=[{
-            "role": "user",
-            "content": [
-                _img(daily_png),
-                _img(weekly_png),
-                {"type": "text", "text": feature_block(symbol, daily_feats, weekly_feats)},
-            ],
-        }],
+        messages=[{"role": "user", "content": content}],
     )
 
     analysis = None
@@ -80,5 +82,5 @@ async def analyze_symbol_charts(
     return {
         "analysis": analysis,
         "processing_ms": int((time.monotonic() - t0) * 1000),
-        "model": config.AI_MODEL,
+        "model": model,
     }

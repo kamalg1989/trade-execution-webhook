@@ -39,6 +39,8 @@ async def ai_analyze(req: AnalyzeRequest, request: Request):
             gate_mode=req.gateMode,
             ifp_threshold=req.ifpThreshold,
             force=req.force,
+            ai_mode=req.aiMode,
+            chart_scope=req.chartScope,
         )
     except pipeline.BudgetExceeded as e:
         raise HTTPException(429, str(e))

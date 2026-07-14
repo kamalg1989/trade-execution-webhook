@@ -49,8 +49,16 @@ def _compact(feats: dict) -> dict:
     return f
 
 
-def feature_block(symbol: str, daily_feats: dict, weekly_feats: dict) -> str:
+def feature_block(symbol: str, daily_feats: dict, weekly_feats: dict | None) -> str:
     dumps = lambda d: json.dumps(_compact(d), separators=(",", ":"), default=str)  # noqa: E731
+    if weekly_feats is None:
+        return (
+            f"Stock: {symbol}\n"
+            f"FEATURES daily: {dumps(daily_feats)}\n"
+            "Only the daily chart is provided (no weekly). Base your base_count on daily "
+            "structure and set weekly_context to 'not analysed'. "
+            "Analyse base structure, IFP, patterns and buy point per your instructions."
+        )
     return (
         f"Stock: {symbol}\n"
         f"FEATURES daily: {dumps(daily_feats)}\n"

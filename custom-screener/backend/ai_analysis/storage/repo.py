@@ -40,7 +40,9 @@ class AiRepo:
     async def save_result(self, *, symbol: str, analysis_date: date, gate_mode: str,
                           ifp_score: float | None, features: dict, analysis: dict,
                           verification: dict, recommendation: str, confidence: float,
-                          chart_paths: dict, processing_ms: int) -> None:
+                          chart_paths: dict, processing_ms: int,
+                          model: str | None = None,
+                          prompt_version: str | None = None) -> None:
         await self.pool.execute(
             """
             INSERT INTO ai_analysis_results
@@ -52,7 +54,9 @@ class AiRepo:
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'regular',$16)
             ON CONFLICT (symbol, analysis_date, prompt_version, model) DO NOTHING
             """,
-            symbol, analysis_date, config.PROMPT_VERSION, config.AI_MODEL,
+            symbol, analysis_date,
+            prompt_version or config.PROMPT_VERSION,
+            model or config.AI_MODEL,
             gate_mode, ifp_score,
             json.dumps(features, default=str), json.dumps(analysis, default=str),
             json.dumps(verification, default=str),
