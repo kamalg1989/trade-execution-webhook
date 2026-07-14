@@ -71,6 +71,13 @@ async def analyze_symbol_charts(
         messages=[{"role": "user", "content": content}],
     )
 
+    u = msg.usage
+    logger.info(
+        "AI usage %s [%s]: in=%d out=%d cache_write=%s cache_read=%s",
+        symbol, model, u.input_tokens, u.output_tokens,
+        getattr(u, "cache_creation_input_tokens", None),
+        getattr(u, "cache_read_input_tokens", None))
+
     analysis = None
     for block in msg.content:
         if block.type == "tool_use" and block.name == ANALYSIS_TOOL["name"]:
