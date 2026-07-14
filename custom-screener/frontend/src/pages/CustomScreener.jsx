@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { getSnapshot, runFilter, computeDate, computeStatus, scoreIfp } from '../api/client.js';
-import FilterPanel from '../components/FilterPanel.jsx';
+import FilterPanel, { Tip } from '../components/FilterPanel.jsx';
 import MarketSnapshot from '../components/MarketSnapshot.jsx';
 import ResultsTable from '../components/ResultsTable.jsx';
 import ChartModal from '../components/ChartModal.jsx';
@@ -175,18 +175,18 @@ export default function CustomScreener() {
       {rows.length > 0 && (
         <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-3">
           <div className="flex flex-wrap items-end gap-3">
-            <div className="text-[11px] uppercase tracking-wide text-slate-500 w-full sm:w-auto">Tune IFP on these {rows.length} stocks</div>
-            <label className="flex flex-col text-xs text-slate-300 gap-1">IFP days
+            <div className="text-[11px] uppercase tracking-wide text-slate-500 w-full sm:w-auto flex items-center gap-1.5">Tune IFP on these {rows.length} stocks <Tip text="The IFP column comes from the nightly compute with default parameters (100-day lookback, 1.5x volume surge, close in top 40% of range). This recomputes IFP live with YOUR parameters on just the filtered stocks above - e.g. lookback 50 to catch recent accumulation that a 100-day window dilutes. Updates the IFP column (marked *), nothing is stored. Note: the AI gate uses the stored nightly score, not these tuned values." /></div>
+            <label className="flex flex-col text-xs text-slate-300 gap-1"><span className="flex items-center gap-1.5">IFP days <Tip text="Lookback window (trading days) to count accumulation signatures over. Shorter (50) = recent institutional activity only; longer (100+) = sustained accumulation." /></span>
               <input type="number" min="10" max="300" value={ifp.lookback}
                 onChange={(e) => setIfp({ ...ifp, lookback: e.target.value })}
                 className="bg-slate-800 border border-slate-600 rounded px-2 py-1 w-24 text-slate-100" />
             </label>
-            <label className="flex flex-col text-xs text-slate-300 gap-1">Vol surge ×
+            <label className="flex flex-col text-xs text-slate-300 gap-1"><span className="flex items-center gap-1.5">Vol surge × <Tip text="How much above the 20-day average volume a day must be to count as an accumulation day. Higher (2x) = only unmistakable institutional buying; lower (1.25x) = more sensitive." /></span>
               <input type="number" step="0.1" min="1" value={ifp.volMult}
                 onChange={(e) => setIfp({ ...ifp, volMult: e.target.value })}
                 className="bg-slate-800 border border-slate-600 rounded px-2 py-1 w-24 text-slate-100" />
             </label>
-            <label className="flex flex-col text-xs text-slate-300 gap-1">Close pos (0–1)
+            <label className="flex flex-col text-xs text-slate-300 gap-1"><span className="flex items-center gap-1.5">Close pos (0–1) <Tip text="Where the close must sit within the day's range for an accumulation day. 0.6 = top 40% (buyers won the day). Higher = stricter - demands strong closes." /></span>
               <input type="number" step="0.05" min="0" max="1" value={ifp.closePos}
                 onChange={(e) => setIfp({ ...ifp, closePos: e.target.value })}
                 className="bg-slate-800 border border-slate-600 rounded px-2 py-1 w-24 text-slate-100" />

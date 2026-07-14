@@ -71,7 +71,7 @@ const TIPS = {
   obv: 'On-balance volume slope (50d). Positive = net accumulation. Component of IFP.',
 };
 
-function Tip({ text }) {
+export function Tip({ text }) {
   const [open, setOpen] = useState(false);
   if (!text) return null;
   return (

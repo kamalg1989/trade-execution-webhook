@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { aiAnalyze } from '../api/client.js';
 import AiResultModal from './AiResultModal.jsx';
+import { Tip } from './FilterPanel.jsx';
 
 // AI filter stage: runs on the current screener results (max 50 symbols).
 // Shows ranked AI-analyzed list; row click opens the analysis popup.
@@ -51,14 +52,16 @@ export default function AiAnalysisPanel({ symbols, date }) {
         <div className="text-[11px] uppercase tracking-wide text-purple-400 w-full sm:w-auto">
           AI analysis — IFP · base · patterns
         </div>
-        <label className="flex flex-col text-xs text-slate-300 gap-1">Gate
+        <label className="flex flex-col text-xs text-slate-300 gap-1">
+          <span className="flex items-center gap-1.5">Gate <Tip text="Pre-AI cost filter. Hard: stocks below the IFP threshold are dropped BEFORE calling the AI - zero cost for them, listed under 'gated out'. Soft: every stock goes to the AI regardless (higher cost; use when you want a second opinion on weak-IFP names). Uses the stored nightly IFP score." /></span>
           <select value={gateMode} onChange={(e) => setGateMode(e.target.value)}
             className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 w-28">
             <option value="hard">Hard (cheap)</option>
             <option value="soft">Soft (all)</option>
           </select>
         </label>
-        <label className="flex flex-col text-xs text-slate-300 gap-1">IFP threshold
+        <label className="flex flex-col text-xs text-slate-300 gap-1">
+          <span className="flex items-center gap-1.5">IFP threshold <Tip text="Minimum nightly IFP score to pass the hard gate and reach the AI. 0.30 = balanced default; raise to 0.40 to analyze only strong-footprint stocks (cheapest); lower to widen the net." /></span>
           <input type="number" step="0.05" min="0" max="1" value={threshold}
             onChange={(e) => setThreshold(e.target.value)} disabled={gateMode === 'soft'}
             className="bg-slate-800 border border-slate-600 rounded px-2 py-1 w-24 text-slate-100 disabled:opacity-40" />
