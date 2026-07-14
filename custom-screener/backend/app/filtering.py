@@ -114,6 +114,15 @@ def _row_matches(r: dict, f: dict, include_insufficient: bool) -> bool:
     # Primary tier (2026-07 redesign)
     if f.get("excludeSme", True) and r.get("is_sme"):
         return False
+    uni = f.get("universe")
+    if uni and uni not in (r.get("indices") or ()):
+        return False
+    secs = f.get("sectors")
+    if secs and (r.get("sector") or "") not in secs:
+        return False
+    buckets = f.get("mcapBuckets")
+    if buckets and (r.get("mcap_bucket") or "") not in buckets:
+        return False
     mp = f.get("minPrice")
     if mp is not None and (r.get("close") is None or r["close"] < mp):
         return False

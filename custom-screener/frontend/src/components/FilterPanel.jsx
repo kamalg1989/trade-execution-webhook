@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { getSectors } from '../api/client.js';
 
 // Dropdown option sets. "All" (value null) is default.
 const TURNOVER = [['All', null], ['> ₹1 Cr', 1], ['> ₹5 Cr', 5], ['> ₹10 Cr', 10], ['> ₹25 Cr', 25], ['> ₹50 Cr', 50], ['> ₹100 Cr', 100], ['> ₹250 Cr', 250]];
@@ -11,6 +12,13 @@ const TREND = [
   ['Power — C>10>21>50>200', 'power'],
 ];
 const DIR = [['All', 'any'], ['Above', 'above'], ['Below', 'below']];
+const UNIVERSE = [
+  ['All NSE', null],
+  ['Nifty 50', 'NIFTY50'], ['Nifty 100', 'NIFTY100'], ['Nifty 200', 'NIFTY200'],
+  ['Nifty 500', 'NIFTY500'], ['Midcap 150', 'MIDCAP150'],
+  ['Smallcap 250', 'SMALLCAP250'], ['Microcap 250', 'MICROCAP250'],
+];
+const MCAPS = [['large', 'Large'], ['mid', 'Mid'], ['small', 'Small'], ['micro', 'Micro']];
 const PCT = [['All', null], ['> +4.5%', { min: 4.5 }], ['> +10%', { min: 10 }], ['> +20%', { min: 20 }],
   ['> +50%', { min: 50 }], ['< -5%', { max: -5 }], ['< -10%', { max: -10 }]];
 
@@ -44,6 +52,9 @@ const TIPS = {
   trend: 'One control for the full MA stack; each level includes the previous. Uptrend = above 200SMA (long-term OK). Confirmed = 50>200 (institutions committed). Momentum = riding EMA21 (swing zone). Power = perfect stack, strongest names.',
   high52: 'Bases that matter form near highs. Within 10–15% = basing zone for breakout entries. Deep below the high = broken structure — not our setup.',
   sme: 'NSE EMERGE (SME) stocks trade in fixed lots with thin order books — position sizing is constrained and stop-losses are unreliable. Keep ON unless you specifically trade SME.',
+  universe: 'Restrict the scan to an NSE index. Nifty 500 = the investable universe most funds track; Midcap 150 / Smallcap 250 are the sweet spot for swing moves — enough liquidity, more room to run. Membership refreshes weekly from niftyindices.com.',
+  mcap: 'Size bucket derived from index membership (Nifty 100 = Large, Midcap 150 = Mid, Smallcap 250 = Small, Microcap 250 = Micro — SEBI-aligned). Mid + Small is where base-and-bounce works best: institutional interest exists but positions are still being built. Unclassified names fall outside all buckets.',
+  sector: 'Trade with the sector tailwind (deck: theme development — infra, EV, AI...). Pick sectors showing leadership; a strong base in a leading sector has much better odds than the same base in a lagging one. Sector = NSE industry classification.',
   align: 'Legacy alignment check (Close>EMA50>SMA200). Superseded by the Trend ladder — use that instead.',
   dir: 'Fine-grained above/below vs a single MA. Only needed when the Trend ladder is too coarse.',
   low52: 'Distance from the 52W low. Bottom-fishing filter — rarely useful for base-and-bounce.',
@@ -96,6 +107,10 @@ function Sel({ label, tip, options, value, onChange }) {
 
 export default function FilterPanel({ filters, setFilters, includeInsufficient, setIncludeInsufficient, onApply, onReset, loading }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [sectors, setSectors] = useState([]);
+  useEffect(() => {
+    getSectors().then((d) => setSectors(d.sectors || [])).catch(() => setSectors([]));
+  }, []);
   const set = (k, v) => setFilters((f) => ({ ...f, [k]: v }));
   const set52w = (pair, keys) => setFilters((f) => {
     const next = { ...f };
@@ -124,13 +139,55 @@ export default function FilterPanel({ filters, setFilters, includeInsufficient, 
             value={cur52w(['within52wHighPct', 'below52wHighPct'])}
             onChange={(v) => set52w(v, ['within52wHighPct', 'below52wHighPct'])} />
         </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mt-3">
+          <Sel label="Universe (index)" tip={TIPS.universe} options={UNIVERSE}
+            value={filters.universe ?? null} onChange={(v) => set('universe', v)} />
+          <div className="flex flex-col text-xs text-slate-300 gap-1">
+            <span className="flex items-center gap-1.5">Market cap <Tip text={TIPS.mcap} /></span>
+            <div className="flex gap-1.5 flex-wrap pt-1">
+              {MCAPS.map(([val, lbl]) => {
+                const on = (filters.mcapBuckets || []).includes(val);
+                return (
+                  <button key={val} type="button"
+                    onClick={() => {
+                      const cur = filters.mcapBuckets || [];
+                      const next = on ? cur.filter((x) => x !== val) : [...cur, val];
+                      set('mcapBuckets', next.length ? next : null);
+                    }}
+                    className={`px-2.5 py-1 rounded-full text-[11px] border ${on ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-600 text-slate-400'}`}>
+                    {lbl}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="flex flex-col text-xs text-slate-300 gap-1 col-span-2">
+            <span className="flex items-center gap-1.5">Sectors ({(filters.sectors || []).length ? (filters.sectors || []).length + ' selected' : 'all'}) <Tip text={TIPS.sector} /></span>
+            <div className="flex gap-1.5 flex-wrap pt-1 max-h-20 overflow-y-auto">
+              {sectors.map((sec) => {
+                const on = (filters.sectors || []).includes(sec.name);
+                return (
+                  <button key={sec.name} type="button"
+                    onClick={() => {
+                      const cur = filters.sectors || [];
+                      const next = on ? cur.filter((x) => x !== sec.name) : [...cur, sec.name];
+                      set('sectors', next.length ? next : null);
+                    }}
+                    className={`px-2 py-0.5 rounded-full text-[11px] border ${on ? 'bg-purple-600 border-purple-500 text-white' : 'bg-slate-800 border-slate-600 text-slate-400'}`}>
+                    {sec.name} <span className="opacity-60">{sec.count}</span>
+                  </button>
+                );
+              })}
+              {!sectors.length && <span className="text-slate-600 text-[11px]">sector data loading / not yet imported</span>}
+            </div>
+          </div>
+        </div>
         <div className="flex flex-wrap items-center gap-4 mt-3">
           <label className="flex items-center gap-2 text-xs text-slate-300">
             <input type="checkbox" checked={filters.excludeSme !== false}
               onChange={(e) => set('excludeSme', e.target.checked)} />
             Exclude SME / lot-traded <Tip text={TIPS.sme} />
           </label>
-          <span className="text-[11px] text-slate-600">Universe · Sector · Market cap filters coming next (index membership feed)</span>
         </div>
       </div>
 

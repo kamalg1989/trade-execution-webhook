@@ -55,7 +55,9 @@ class PgRepo:
         cols = ", ".join(f"si.{c.strip()}" for c in _ROW_COLS.replace("\n", "").split(",") if c.strip())
         async with self.pool.acquire() as con:
             rows = await con.fetch(
-                f"""SELECT {cols}, sm.is_sme, sm.lot_size, sm.series, sm.sector
+                f"""SELECT {cols}, sm.is_sme, sm.lot_size, sm.series, sm.sector, sm.mcap_bucket,
+                           (SELECT array_agg(im.index_name) FROM index_membership im
+                            WHERE im.symbol = si.symbol) AS indices
                     FROM stock_indicators si
                     LEFT JOIN symbols_meta sm ON sm.symbol = si.symbol
                     WHERE si.indicator_date = $1""", d

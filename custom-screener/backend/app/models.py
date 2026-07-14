@@ -18,6 +18,10 @@ class Filters(BaseModel):
     minPrice: Optional[float] = None                 # close >= X (penny-stock excluder)
     trendLadder: Optional[Literal["any", "uptrend", "confirmed", "momentum", "power"]] = "any"
     excludeSme: Optional[bool] = True                # drop NSE EMERGE / lot-traded symbols
+    universe: Optional[Literal["NIFTY50", "NIFTY100", "NIFTY200", "NIFTY500",
+                               "MIDCAP150", "SMALLCAP250", "MICROCAP250"]] = None
+    sectors: Optional[list[str]] = None              # match symbols_meta.sector (any of)
+    mcapBuckets: Optional[list[Literal["large", "mid", "small", "micro"]]] = None
     sma200: Optional[Literal["any", "above", "below"]] = "any"
     sma50: Optional[Literal["any", "above", "below"]] = "any"
     ema50: Optional[Literal["any", "above", "below"]] = "any"

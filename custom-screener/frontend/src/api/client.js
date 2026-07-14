@@ -45,6 +45,9 @@ export const chartUrl = (symbol, type = 'daily', theme = 'dark', fromDate, toDat
     `&to_date=${toDate || today}`;
 };
 
+// Sector / index metadata for the universe filters.
+export const getSectors = () => req('/meta/sectors');
+
 // --- AI visual analysis (ai_analysis module) ---
 export const aiAnalyze = (payload) =>
   req('/ai-analyze', {

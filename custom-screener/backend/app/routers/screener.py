@@ -29,6 +29,21 @@ def get_repo(request: Request):
     return repo
 
 
+@router.get("/meta/sectors")
+async def list_sectors(repo=Depends(get_repo)):
+    """Distinct sectors + index counts for the filter UI."""
+    async with repo.pool.acquire() as con:
+        secs = await con.fetch(
+            "SELECT sector, count(*) AS n FROM symbols_meta "
+            "WHERE sector IS NOT NULL AND sector <> '' GROUP BY 1 ORDER BY 2 DESC")
+        idx = await con.fetch(
+            "SELECT index_name, count(*) AS n FROM index_membership GROUP BY 1")
+    return {
+        "sectors": [{"name": r["sector"], "count": r["n"]} for r in secs],
+        "indices": {r["index_name"]: r["n"] for r in idx},
+    }
+
+
 async def _resolve_date(repo, requested: date | None) -> date:
     if requested is not None:
         return requested
@@ -59,6 +74,8 @@ def _project(r: dict) -> dict:
         "pctChg6m": r.get("pct_chg_6m"), "pctChg1y": r.get("pct_chg_1y"),
         "turnover1mAvgCr": r.get("turnover_1m_avg_cr"), "volume1mAvg": r.get("volume_1m_avg"),
         "barsAvailable": r.get("bars_available"),
+        "sector": r.get("sector"), "mcapBucket": r.get("mcap_bucket"),
+        "isSme": r.get("is_sme"),
     }
 
 
