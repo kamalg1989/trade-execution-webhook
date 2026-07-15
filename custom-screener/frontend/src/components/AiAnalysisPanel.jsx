@@ -21,20 +21,21 @@ const AI_ICON = <span title="AI-generated value" className="text-purple-400 text
 const CHIP = { strong: 'bg-emerald-900/60 text-emerald-300', moderate: 'bg-amber-900/60 text-amber-300', weak: 'bg-red-900/60 text-red-300' };
 export function IfpChips({ ifp }) {
   return (
-    <span className="inline-flex gap-1">
-      {[['V', ifp.volume_pattern, 'Volume pattern'], ['S', ifp.base_structure, 'Base structure'], ['P', ifp.pullback_depth, 'Pullback depth']].map(([l, v, t]) => (
-        <span key={l} title={`${t}: ${v}`} className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${CHIP[v] || 'bg-slate-800 text-slate-400'}`}>{l}</span>
+    <span className="inline-flex gap-1.5">
+      {[['Vol', ifp.volume_pattern, 'Volume pattern'], ['Str', ifp.base_structure, 'Base structure'], ['Pull', ifp.pullback_depth, 'Pullback depth']].map(([l, v, t]) => (
+        <span key={l} title={`${t}: ${v}`}
+          className={`px-2 py-0.5 rounded-md text-[10px] font-semibold tracking-wide ${CHIP[v] || 'bg-slate-800 text-slate-400'}`}>{l}</span>
       ))}
     </span>
   );
 }
 
+const conf = (v) => (v == null ? '—' : Number(v) > 1 ? (Number(v) / 10).toFixed(2) : Number(v).toFixed(2));
+
 export default function AiAnalysisPanel({ symbols, date }) {
-  const [gateMode, setGateMode] = useState('hard');
   const [aiMode, setAiMode] = useState('gemini');
   const [chartScope, setChartScope] = useState('daily');
   const [promptVersion, setPromptVersion] = useState('v3');
-  const [threshold, setThreshold] = useState(0.3);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
   const [data, setData] = useState(null);
@@ -56,8 +57,7 @@ export default function AiAnalysisPanel({ symbols, date }) {
       const res = await aiAnalyze({
         symbols: symbols.slice(0, 50),
         indicatorDate: date || null,
-        gateMode,
-        ifpThreshold: Number(threshold),
+        gateMode: 'soft',
         aiMode,
         chartScope,
         promptVersion,
@@ -108,20 +108,6 @@ export default function AiAnalysisPanel({ symbols, date }) {
           </select>
         </label>
         )}
-        <label className="flex flex-col text-xs text-slate-300 gap-1">
-          <span className="flex items-center gap-1.5">Gate <Tip text="Pre-AI cost filter. Hard: stocks below the IFP threshold are dropped BEFORE calling the AI - zero cost for them, listed under 'gated out'. Soft: every stock goes to the AI regardless (higher cost; use when you want a second opinion on weak-IFP names). Uses the stored nightly IFP score." /></span>
-          <select value={gateMode} onChange={(e) => setGateMode(e.target.value)}
-            className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 w-28">
-            <option value="hard">Hard (cheap)</option>
-            <option value="soft">Soft (all)</option>
-          </select>
-        </label>
-        <label className="flex flex-col text-xs text-slate-300 gap-1">
-          <span className="flex items-center gap-1.5">IFP threshold <Tip text="Minimum nightly IFP score to pass the hard gate and reach the AI. 0.30 = balanced default; raise to 0.40 to analyze only strong-footprint stocks (cheapest); lower to widen the net." /></span>
-          <input type="number" step="0.05" min="0" max="1" value={threshold}
-            onChange={(e) => setThreshold(e.target.value)} disabled={gateMode === 'soft'}
-            className="bg-slate-800 border border-slate-600 rounded px-2 py-1 w-24 text-slate-100 disabled:opacity-40" />
-        </label>
         <button onClick={run} disabled={running}
           className="px-4 py-1.5 text-sm rounded bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-semibold">
           {running ? 'Analyzing… (~30s)' : `AI analyze ${Math.min(symbols.length, 50)} stocks`}
@@ -139,15 +125,15 @@ export default function AiAnalysisPanel({ symbols, date }) {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-xs text-slate-500 uppercase tracking-wide">
-                <th className="py-1.5 pr-2">Symbol</th>
-                <th className="pr-2"><span className="inline-flex items-center gap-1">IFP <Tip text="Computed nightly IFP score (0-1) from our own volume math - NOT from the AI. Used by the hard gate. Fraction of recent days showing the institutional accumulation signature." /></span></th>
-                <th className="pr-2"><span className="inline-flex items-center gap-1">Base type{AI_ICON} <Tip text="AI-read base classification. TYPE A = base after uptrend: a strong prior move up, then a pullback/consolidation base, now breaking out (e.g. COHANCE). TYPE B = accumulation after distribution: long downtrend or sideways period, institutions quietly accumulating at lows, base formed at the bottom, now breaking out. Both are valid trades - type is context, not a filter. (v2 results show market-cycle phase here instead.)" /></span></th>
-                <th className="pr-2"><span className="inline-flex items-center gap-1">Vol(V)·Struct(S)·Pull(P){AI_ICON} <Tip text="The AI's three IFP quality ratings, each strong (green) / moderate (amber) / weak (red). V = VOLUME PATTERN (most important): spike on the move up, then dry-up in the base. S = BASE STRUCTURE: tight orderly consolidation vs wide messy chop. P = PULLBACK DEPTH: shallow pullback with a clear floor vs giving back most of the move. Hover each chip for its rating." /></span></th>
-                <th className="pr-2"><span className="inline-flex items-center gap-1">Ext{AI_ICON} <Tip text="Extended flag (AI): the stock has already moved far from its base without consolidating. Extended = lower priority even with good IFP - prefer stocks just starting to move off a fresh base." /></span></th>
-                <th className="pr-2"><span className="inline-flex items-center gap-1">BO / Stop{AI_ICON} <Tip text="Breakout and stop levels the AI read visually off the chart: breakout = top of the coil/base, stop = below the inside-bar low. Cross-checked against our computed levels in the popup (green tick = both methods agree within 2%)." /></span></th>
-                <th className="pr-2"><span className="inline-flex items-center gap-1">Conf{AI_ICON} <Tip text="AI's own confidence in its verdict (0-1)." /></span></th>
-                <th className="pr-2"><span className="inline-flex items-center gap-1">Verdict{AI_ICON} <Tip text="AI recommendation: SETUP_READY (2-3 strong criteria, near clean breakout, not extended) / EARLY_STAGE (base forming) / NOT_READY (weak or unreadable) / AVOID (distribution signs or broken base)." /></span></th>
+              <tr className="text-left text-[11px] text-slate-500 uppercase tracking-wider border-b border-slate-700">
+                <th className="py-2 pr-3 font-medium">Symbol</th>
+                <th className="pr-3 font-medium cursor-help" title="Computed nightly IFP score (0-1) from our own volume math — NOT from the AI. Fraction of recent days showing the institutional accumulation signature.">IFP ⓘ</th>
+                <th className="pr-3 font-medium cursor-help" title="AI-read base classification. Type A = base after uptrend: strong move up, then a consolidation base, now breaking out (e.g. COHANCE). Type B = accumulation after distribution: downtrend/long sideways, institutions accumulating at lows, base at the bottom. Both are valid — type is context, not a filter.">Base type ✦</th>
+                <th className="pr-3 font-medium cursor-help" title="AI's three IFP quality ratings — green strong / amber moderate / red weak. Vol = volume pattern (most important): spike on the move, dry-up in the base. Str = base structure: tight orderly vs messy chop. Pull = pullback depth: shallow with clear floor vs deep giveback.">IFP quality ✦</th>
+                <th className="pr-3 font-medium cursor-help" title="Extended (AI): stock already moved far from its base without consolidating — lower priority even with good IFP.">Ext ✦</th>
+                <th className="pr-3 font-medium cursor-help" title="Breakout / stop levels the AI read visually off the chart (breakout = top of coil/base, stop = below inside-bar low). Cross-checked against computed levels in the popup.">BO / Stop ✦</th>
+                <th className="pr-3 font-medium cursor-help" title="AI's own confidence in its verdict (0-1).">Conf ✦</th>
+                <th className="pr-3 font-medium cursor-help" title="SETUP_READY = strong criteria, near clean breakout, not extended · EARLY_STAGE = base forming · NOT_READY = weak/unreadable · AVOID = distribution or broken base.">Verdict ✦</th>
                 <th></th>
               </tr>
             </thead>
@@ -159,17 +145,17 @@ export default function AiAnalysisPanel({ symbols, date }) {
                 return (
                   <tr key={r.symbol} onClick={() => !r.error && setPicked(r)}
                     className={`border-t border-slate-800 ${r.error ? 'opacity-50' : 'cursor-pointer hover:bg-slate-800/60'}`}>
-                    <td className="py-2 pr-2 font-semibold text-slate-100">{r.symbol}</td>
+                    <td className="py-2.5 pr-3 font-semibold text-slate-100">{r.symbol}</td>
                     {r.error ? (
                       <td colSpan="7" className="text-xs text-red-300">{r.error}</td>
                     ) : (
                       <>
-                        <td className="pr-2 text-slate-300">{fmt(r.ifpScore)}</td>
-                        <td className="pr-2 text-slate-300 capitalize" title={a.base_type === 'A' ? 'Type A — base after uptrend (strong move up, then consolidation base)' : a.base_type === 'B' ? 'Type B — accumulation after distribution (base at the bottom after downtrend/sideways)' : 'Market cycle phase (v2 result)'}>{a.base_type ? `Type ${a.base_type}` : (a.market_cycle_phase || '—')}</td>
+                        <td className="pr-3 text-slate-400">{fmt(r.ifpScore)}</td>
+                        <td className="pr-3 text-slate-300 capitalize" title={a.base_type === 'A' ? 'Type A — base after uptrend (strong move up, then consolidation base)' : a.base_type === 'B' ? 'Type B — accumulation after distribution (base at the bottom after downtrend/sideways)' : 'Market cycle phase (v2 result)'}>{a.base_type ? `Type ${a.base_type}` : (a.market_cycle_phase || '—')}</td>
                         <td className="pr-2">{a.ifp ? <IfpChips ifp={a.ifp} /> : <span className="text-slate-300">{top ? top.type.replace(/_/g, ' ') : (a.base_count ? `base ${a.base_count}` : '—')}</span>}</td>
                         <td className="pr-2">{a.extended ? <span className="text-amber-400" title="Extended from base — lower priority">⚠</span> : <span className="text-slate-600">—</span>}</td>
-                        <td className="pr-2 text-slate-300 text-xs">{a.buy_point?.breakout_level ? `${a.buy_point.breakout_level} / ${a.buy_point.stop_level ?? '—'}` : '—'}</td>
-                        <td className="pr-2 text-slate-300">{fmt(a.confidence)}</td>
+                        <td className="pr-3 text-slate-300 text-xs">{a.buy_point?.breakout_level ? <span className="whitespace-nowrap"><span className="text-emerald-400">{a.buy_point.breakout_level}</span><span className="text-slate-600"> / </span><span className="text-red-400">{a.buy_point.stop_level ?? '—'}</span></span> : '—'}</td>
+                        <td className="pr-3 text-slate-300">{conf(a.confidence)}</td>
                         <td className="pr-2">
                           <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${REC_BADGE[a.recommendation] || REC_BADGE.NOT_READY}`}>
                             {a.recommendation || '—'}
