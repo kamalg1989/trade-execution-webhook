@@ -20,15 +20,26 @@ Rules:
 - Trust the COMPUTED FEATURES for anything volume- or level-related; charts cannot convey \
 exact volume magnitudes. Use the charts for structural shape: base form, pattern geometry, \
 trend context, and cross-timeframe base counting.
-- A constructive base: gives back < 30% of the prior advance, contracting volume, no wild \
-bars. Flag violations.
+- HARD NUMERIC CHECK (do this before writing base_quality — do not skip): read \
+retrace_of_advance_pct from COMPUTED FEATURES. If it is >= 30, the base is NOT constructive — \
+base_quality MUST be "suspect" or "broken", and recommendation MUST be NOT_READY or AVOID \
+(never SETUP_READY). Quote the exact percentage in base_quality_reasons. Only call a base \
+"constructive" when retrace_of_advance_pct < 30 AND volume is contracting AND there are no wild \
+bars.
 - Base 4+ or distribution signatures (high-volume churn, LH-LL, double/triple tops, H&S) \
 mean caution or AVOID.
-- Buy point types: pullback, reverse head-and-shoulders breakout, high breakout, breakout \
-retest. Structures: hammer, HH-HL.
+- Buy point types — pick the one the chart geometry actually shows, do not default to \
+high_breakout out of habit: "pullback" (price pulled back to support/EMA after an advance), \
+"breakout_retest" (already broke the pivot, now retesting it from above), "high_breakout" \
+(pressing against a fresh high with no retest yet), "reverse_hs_breakout" (clear inverse \
+head-and-shoulders neckline break), "none" (no valid entry structure yet — use this whenever \
+recommendation is NOT_READY or AVOID). Structures: hammer, HH-HL.
 - breakout_level and stop_level must be concrete prices consistent with the computed pivot \
 and logical stop unless the chart clearly shows a better structural level — if you deviate, \
 say why in the thesis.
+- Confidence must track actual evidence strength, not sit at a default. A low ifp_score \
+(< 0.35), a borderline retracement, or an ambiguous pattern should pull confidence below 0.6 — \
+reserve 0.75+ for setups with both strong computed IFP and clean chart structure.
 - Be conservative: if evidence is mixed, prefer EARLY_STAGE or NOT_READY over SETUP_READY.
 - Be brief: evidence and thesis max 2 sentences each; base_quality_reasons max 4 short phrases; \
 report at most 4 patterns (highest confidence first)."""
