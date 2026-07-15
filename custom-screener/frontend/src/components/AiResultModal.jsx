@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { aiChartSrc, aiFeedback, aiAftermath } from '../api/client.js';
+import { IfpChips } from './AiAnalysisPanel.jsx';
 
 // Popup per approved wireframe: annotated daily/weekly chart tabs + full AI
 // report (phase, base, patterns, IFP verdict, levels vs computed, thesis,
@@ -165,7 +166,23 @@ export default function AiResultModal({ result, date, open, onClose }) {
           </div>
           )}
 
-          {/* Metric row */}
+          {/* v3: IFP quality chips + type + extended */}
+          {a.ifp && (
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-xs text-slate-400">IFP quality:</span>
+              <IfpChips ifp={a.ifp} />
+              <span className="text-xs text-slate-300">Type {a.base_type || '—'}</span>
+              {a.extended && <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-900/60 text-amber-300">EXTENDED</span>}
+            </div>
+          )}
+          {a.verdict && (
+            <p className="text-sm text-slate-200 leading-relaxed border border-slate-700 rounded-lg px-3 py-2">
+              {a.verdict}
+            </p>
+          )}
+
+          {/* Metric row (v2 results) */}
+          {!a.ifp && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
             {[['Phase', a.market_cycle_phase], ['Base count', a.base_count && `Base ${a.base_count}`],
               ['Base quality', a.base_quality], ['Buy point', bp.type]].map(([k, val]) => (
@@ -175,8 +192,10 @@ export default function AiResultModal({ result, date, open, onClose }) {
               </div>
             ))}
           </div>
+          )}
 
-          {/* IFP verdict */}
+          {/* IFP verdict (v2) */}
+          {a.ifp_verdict && (
           <div className="border border-slate-700 rounded-lg px-3 py-2">
             <div className="text-xs font-semibold text-slate-400 mb-1">
               IFP verdict — {a.ifp_verdict?.present ? 'footprint present' : 'no footprint'} ({fmt(a.ifp_verdict?.confidence)})
@@ -184,6 +203,7 @@ export default function AiResultModal({ result, date, open, onClose }) {
             </div>
             <p className="text-sm text-slate-200 leading-relaxed">{a.ifp_verdict?.evidence || '—'}</p>
           </div>
+          )}
 
           {/* Patterns */}
           {(a.patterns || []).length > 0 && (
@@ -222,9 +242,11 @@ export default function AiResultModal({ result, date, open, onClose }) {
           {a.weekly_context && (
             <p className="text-xs text-slate-400">Weekly: {a.weekly_context}</p>
           )}
+          {a.thesis && (
           <p className="text-sm text-slate-200 leading-relaxed border-t border-slate-800 pt-3">
-            <span className="font-semibold text-slate-100">AI thesis: </span>{a.thesis || '—'}
+            <span className="font-semibold text-slate-100">AI thesis: </span>{a.thesis}
           </p>
+          )}
 
           {/* Feedback */}
           <div className="flex items-center gap-2 border-t border-slate-800 pt-3">

@@ -9,7 +9,7 @@ import anthropic
 
 from .. import config
 from .prompts import SYSTEM_PROMPT, feature_block
-from .schema import ANALYSIS_TOOL
+from .schema import ANALYSIS_TOOL, ANALYSIS_TOOL_V3
 
 logger = logging.getLogger(__name__)
 
@@ -43,31 +43,59 @@ async def analyze_symbol_charts(
     daily_feats: dict,
     weekly_feats: dict | None,
     model: str | None = None,
+    prompt_version: str = "v2",
 ) -> dict:
-    """One call per symbol: chart(s) + feature block → schema-valid dict.
+    """One call per symbol → schema-valid dict.
 
-    weekly_png/weekly_feats may be None (daily-only scope, ~40% cheaper).
+    v2: chart(s) + computed feature block (grounded).
+    v3: pure visual — daily chart only, few-shot example charts in a cached
+        prefix, slim schema, no computed features.
     Returns {"analysis": {...}, "processing_ms": int, "model": str} or raises.
     """
     client = _get_client()
     t0 = time.monotonic()
     model = model or config.AI_MODEL
 
-    content = [_img(daily_png)]
-    if weekly_png is not None:
-        content.append(_img(weekly_png))
-    content.append({"type": "text",
-                    "text": feature_block(symbol, daily_feats, weekly_feats)})
+    if prompt_version.startswith("v3"):
+        from .examples import example_png
+        from .prompts_v3 import (EXAMPLE_COHANCE_TEXT, EXAMPLE_TNPETRO_TEXT,
+                                 SYSTEM_PROMPT_V3, candidate_text_v3)
+        system = SYSTEM_PROMPT_V3
+        tool = ANALYSIS_TOOL_V3
+        max_tokens = config.AI_MAX_TOKENS_V3
+        content = [
+            _img(example_png("cohance")),
+            {"type": "text", "text": EXAMPLE_COHANCE_TEXT},
+            _img(example_png("tnpetro")),
+            # cache breakpoint: everything up to here (tools + system +
+            # examples) is identical across calls
+            {"type": "text", "text": EXAMPLE_TNPETRO_TEXT,
+             "cache_control": {"type": "ephemeral"}},
+            _img(daily_png),
+            {"type": "text", "text": candidate_text_v3(symbol)},
+        ]
+    else:
+        system = SYSTEM_PROMPT
+        tool = ANALYSIS_TOOL
+        max_tokens = config.AI_MAX_TOKENS
+        content = [_img(daily_png)]
+        if weekly_png is not None:
+            content.append(_img(weekly_png))
+        content.append({"type": "text",
+                        "text": feature_block(symbol, daily_feats, weekly_feats)})
 
     msg = await client.messages.create(
         model=model,
-        max_tokens=config.AI_MAX_TOKENS,
-        # cache_control: tools + system form a stable prefix, cached across
-        # calls (90% discount on cached reads when above the model's minimum).
-        system=[{"type": "text", "text": SYSTEM_PROMPT,
+        max_tokens=max_tokens,
+        # cache_control: for v2 the breakpoint is on the system block; for v3
+        # it sits after the example images inside the user content, covering
+        # tools + system + examples in one cached prefix.
+        system=[{"type": "text", "text": system}
+                if prompt_version.startswith("v3") else
+                {"type": "text", "text": system,
                  "cache_control": {"type": "ephemeral"}}],
-        tools=[ANALYSIS_TOOL],
-        tool_choice={"type": "tool", "name": ANALYSIS_TOOL["name"]},
+        tools=[tool],
+        tool_choice={"type": "tool", "name": tool["name"]},
         messages=[{"role": "user", "content": content}],
     )
 
@@ -80,7 +108,7 @@ async def analyze_symbol_charts(
 
     analysis = None
     for block in msg.content:
-        if block.type == "tool_use" and block.name == ANALYSIS_TOOL["name"]:
+        if block.type == "tool_use" and block.name == tool["name"]:
             analysis = block.input
             break
     if analysis is None:

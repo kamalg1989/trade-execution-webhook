@@ -51,3 +51,30 @@ class ChartAnalysis(BaseModel):
     recommendation: Literal["SETUP_READY", "EARLY_STAGE", "NOT_READY", "AVOID"]
     confidence: float = Field(..., ge=0, le=1)
     thesis: str
+
+
+# --- v3 slim visual schema ---
+from typing import Literal, Optional  # noqa: E402
+
+Strength = Literal["strong", "moderate", "weak"]
+
+
+class GeminiIfpV3(BaseModel):
+    volume_pattern: Strength
+    base_structure: Strength
+    pullback_depth: Strength
+
+
+class GeminiBuyPointV3(BaseModel):
+    breakout_level: Optional[float] = None
+    stop_level: Optional[float] = None
+
+
+class ChartAnalysisV3(BaseModel):
+    base_type: Literal["A", "B"]
+    ifp: GeminiIfpV3
+    extended: bool
+    buy_point: GeminiBuyPointV3
+    recommendation: Literal["SETUP_READY", "EARLY_STAGE", "NOT_READY", "AVOID"]
+    confidence: float
+    verdict: str

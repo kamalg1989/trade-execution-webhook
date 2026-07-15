@@ -15,10 +15,22 @@ const REC_BADGE = {
 
 const fmt = (v, d = 2) => (v == null ? '—' : Number(v).toFixed(d));
 
+const CHIP = { strong: 'bg-emerald-900/60 text-emerald-300', moderate: 'bg-amber-900/60 text-amber-300', weak: 'bg-red-900/60 text-red-300' };
+export function IfpChips({ ifp }) {
+  return (
+    <span className="inline-flex gap-1">
+      {[['V', ifp.volume_pattern, 'Volume pattern'], ['S', ifp.base_structure, 'Base structure'], ['P', ifp.pullback_depth, 'Pullback depth']].map(([l, v, t]) => (
+        <span key={l} title={`${t}: ${v}`} className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${CHIP[v] || 'bg-slate-800 text-slate-400'}`}>{l}</span>
+      ))}
+    </span>
+  );
+}
+
 export default function AiAnalysisPanel({ symbols, date }) {
   const [gateMode, setGateMode] = useState('hard');
   const [aiMode, setAiMode] = useState('gemini');
   const [chartScope, setChartScope] = useState('daily');
+  const [promptVersion, setPromptVersion] = useState('v3');
   const [threshold, setThreshold] = useState(0.3);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
@@ -45,6 +57,7 @@ export default function AiAnalysisPanel({ symbols, date }) {
         ifpThreshold: Number(threshold),
         aiMode,
         chartScope,
+        promptVersion,
       });
       setData(res);
     } catch (e) {
@@ -65,6 +78,14 @@ export default function AiAnalysisPanel({ symbols, date }) {
           AI analysis — IFP · base · patterns
         </div>
         <label className="flex flex-col text-xs text-slate-300 gap-1">
+          <span className="flex items-center gap-1.5">Prompt <Tip text="Which analysis prompt the AI runs. V3 VISUAL (new default): pure chart-reading - the AI sees ONLY the chart image plus two calibration examples from your own trades (COHANCE = strong IFP, TNPETRO = weak), rates volume pattern / base structure / pullback depth, flags extended stocks, and gives a crisp 2-sentence verdict. No computed numbers are fed in - our math is used only afterwards as an independent cross-check. Daily chart only, cheapest (~60-70% fewer tokens than v2). V2 GROUNDED: the earlier prompt - AI gets the chart plus computed IFP/level numbers and reports phase, base count and patterns. Results are stored per prompt version, so the AI performance table compares v2 vs v3 win rates directly." /></span>
+          <select value={promptVersion} onChange={(e) => setPromptVersion(e.target.value)}
+            className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 w-36">
+            <option value="v3">v3 — Visual (new)</option>
+            <option value="v2">v2 — Grounded</option>
+          </select>
+        </label>
+        <label className="flex flex-col text-xs text-slate-300 gap-1">
           <span className="flex items-center gap-1.5">AI engine <Tip text="Which model analyzes the charts. GEMINI (~Rs 0.15/stock, daily-only): Google's Gemini 3.1 Flash-Lite - cheapest option and now the default, but it's a 'Lite' tier model so chart-reading/reasoning quality is unproven here - not yet A/B tested against Sonnet, so treat any recommendation loosely until you've compared a few. HAIKU (~Rs 0.5/stock): fast cheap scan - in our head-to-head test it was too optimistic on weak charts (called setups where Sonnet said AVOID), so treat its SETUP_READY loosely too. SONNET (~Rs 2/stock): best judgment, most reliable AVOID calls - use before putting real money on a setup. HYBRID (~Rs 0.9/stock): Haiku scans everything, Sonnet automatically re-checks anything Haiku rates SETUP_READY or EARLY_STAGE - Gemini is not part of this chain. Results are stored per model, so switching engines re-analyzes only if that model has not seen the stock/date." /></span>
           <select value={aiMode} onChange={(e) => setAiMode(e.target.value)}
             className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 w-40">
@@ -74,6 +95,7 @@ export default function AiAnalysisPanel({ symbols, date }) {
             <option value="sonnet">Sonnet (best)</option>
           </select>
         </label>
+        {promptVersion !== 'v3' && (
         <label className="flex flex-col text-xs text-slate-300 gap-1">
           <span className="flex items-center gap-1.5">Charts <Tip text="Daily only (default): one chart image, ~40% cheaper and faster than daily+weekly (e.g. Gemini ~Rs 0.15, Haiku ~Rs 0.4, Sonnet ~Rs 1.6 per stock) - fine for quick pattern/IFP scans, but base_count and phase lean on daily structure alone. Daily + weekly: the model also sees weekly context - base counting and market-cycle phase are much more reliable with it (your deck counts bases on weekly structure), at higher cost." /></span>
           <select value={chartScope} onChange={(e) => setChartScope(e.target.value)}
@@ -82,6 +104,7 @@ export default function AiAnalysisPanel({ symbols, date }) {
             <option value="both">Daily + weekly</option>
           </select>
         </label>
+        )}
         <label className="flex flex-col text-xs text-slate-300 gap-1">
           <span className="flex items-center gap-1.5">Gate <Tip text="Pre-AI cost filter. Hard: stocks below the IFP threshold are dropped BEFORE calling the AI - zero cost for them, listed under 'gated out'. Soft: every stock goes to the AI regardless (higher cost; use when you want a second opinion on weak-IFP names). Uses the stored nightly IFP score." /></span>
           <select value={gateMode} onChange={(e) => setGateMode(e.target.value)}
@@ -116,10 +139,10 @@ export default function AiAnalysisPanel({ symbols, date }) {
               <tr className="text-left text-xs text-slate-500 uppercase tracking-wide">
                 <th className="py-1.5 pr-2">Symbol</th>
                 <th className="pr-2">IFP</th>
-                <th className="pr-2">Phase</th>
-                <th className="pr-2">Base</th>
-                <th className="pr-2">Pattern</th>
-                <th className="pr-2">Buy point</th>
+                <th className="pr-2">Type/Phase</th>
+                <th className="pr-2">V·S·P</th>
+                <th className="pr-2">Ext</th>
+                <th className="pr-2">BO / Stop</th>
                 <th className="pr-2">Conf</th>
                 <th className="pr-2">Verdict</th>
                 <th></th>
@@ -139,10 +162,10 @@ export default function AiAnalysisPanel({ symbols, date }) {
                     ) : (
                       <>
                         <td className="pr-2 text-slate-300">{fmt(r.ifpScore)}</td>
-                        <td className="pr-2 text-slate-300 capitalize">{a.market_cycle_phase || '—'}</td>
-                        <td className="pr-2 text-slate-300">{a.base_count || '—'}</td>
-                        <td className="pr-2 text-slate-300">{top ? top.type.replace(/_/g, ' ') : '—'}</td>
-                        <td className="pr-2 text-slate-300 capitalize">{(a.buy_point?.type || '—').replace(/_/g, ' ')}</td>
+                        <td className="pr-2 text-slate-300 capitalize">{a.base_type ? `Type ${a.base_type}` : (a.market_cycle_phase || '—')}</td>
+                        <td className="pr-2">{a.ifp ? <IfpChips ifp={a.ifp} /> : <span className="text-slate-300">{top ? top.type.replace(/_/g, ' ') : (a.base_count ? `base ${a.base_count}` : '—')}</span>}</td>
+                        <td className="pr-2">{a.extended ? <span className="text-amber-400" title="Extended from base — lower priority">⚠</span> : <span className="text-slate-600">—</span>}</td>
+                        <td className="pr-2 text-slate-300 text-xs">{a.buy_point?.breakout_level ? `${a.buy_point.breakout_level} / ${a.buy_point.stop_level ?? '—'}` : '—'}</td>
                         <td className="pr-2 text-slate-300">{fmt(a.confidence)}</td>
                         <td className="pr-2">
                           <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${REC_BADGE[a.recommendation] || REC_BADGE.NOT_READY}`}>

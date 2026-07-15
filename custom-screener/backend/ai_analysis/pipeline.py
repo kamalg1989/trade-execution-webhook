@@ -41,8 +41,12 @@ def _to_df(rows: list[dict]) -> pd.DataFrame:
     return df.set_index("time").sort_index()
 
 
-def _prompt_version(scope: str) -> str:
-    return config.PROMPT_VERSION if scope == "both" else f"{config.PROMPT_VERSION}-d"
+def _resolve_pv(prompt_version: str | None, scope: str) -> tuple[str, str]:
+    """Returns (pv_key_for_store, effective_scope). v3 is always daily-only."""
+    pv = (prompt_version or config.PROMPT_VERSION).lower()
+    if pv.startswith("v3"):
+        return "v3", "daily"
+    return ("v2" if scope == "both" else "v2-d"), scope
 
 
 async def analyze_symbols(
@@ -55,6 +59,7 @@ async def analyze_symbols(
     force: bool = False,
     ai_mode: str | None = None,
     chart_scope: str | None = None,
+    prompt_version: str | None = None,
 ) -> dict:
     if indicator_date is None:
         indicator_date = await screener_repo.latest_complete_date()
@@ -62,7 +67,7 @@ async def analyze_symbols(
     symbols = [s.upper() for s in symbols]
     mode = (ai_mode or config.AI_MODE).lower()
     scope = (chart_scope or "both").lower()
-    pv = _prompt_version(scope)
+    pv, scope = _resolve_pv(prompt_version, scope)
 
     # 0. Store-first: reuse existing rows (same date + prompt_version + model)
     stored: dict[str, dict] = {}
@@ -125,6 +130,7 @@ async def analyze_symbols(
             "threshold": ifp_threshold if ifp_threshold is not None else config.IFP_GATE_THRESHOLD,
             "in": len(symbols), "passed": len(passed) + len(stored), "gatedOut": len(gated),
         },
+        "promptVersion": pv,
         "fromStore": len(stored),
         "analyzed": len([r for r in analyzed if not r.get("error")]),
         "gated": gated,
@@ -162,11 +168,13 @@ async def _analyze_one(sym: str, indicator_date: date, frames: dict, daily_feats
     if mode == "gemini":
         out = await analyze_symbol_charts_gemini(sym, daily_png, weekly_png,
                                                  daily_feats, weekly_feats,
-                                                 model=config.GEMINI_MODEL)
+                                                 model=config.GEMINI_MODEL,
+                                                 prompt_version=pv)
     else:
         first_model = config.SONNET_MODEL if mode == "sonnet" else config.HAIKU_MODEL
         out = await analyze_symbol_charts(sym, daily_png, weekly_png,
-                                          daily_feats, weekly_feats, model=first_model)
+                                          daily_feats, weekly_feats,
+                                          model=first_model, prompt_version=pv)
     result = await _finalize(sym, indicator_date, ddf, wdf, daily_png, weekly_png,
                              daily_feats, weekly_feats, out, ai_repo, gate_mode, pv)
     result["stage"] = ("gemini" if mode == "gemini"
@@ -177,7 +185,8 @@ async def _analyze_one(sym: str, indicator_date: date, frames: dict, daily_feats
         if await ai_repo.try_consume_budget(1):
             out2 = await analyze_symbol_charts(sym, daily_png, weekly_png,
                                                daily_feats, weekly_feats,
-                                               model=config.SONNET_MODEL)
+                                               model=config.SONNET_MODEL,
+                                               prompt_version=pv)
             haiku_rec = out["analysis"].get("recommendation")
             result = await _finalize(sym, indicator_date, ddf, wdf, daily_png, weekly_png,
                                      daily_feats, weekly_feats, out2, ai_repo, gate_mode, pv)

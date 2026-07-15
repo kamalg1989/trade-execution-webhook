@@ -14,6 +14,7 @@ class AnalyzeRequest(BaseModel):
     ifpThreshold: Optional[float] = Field(None, ge=0, le=1)
     aiMode: Optional[Literal["gemini", "haiku", "hybrid", "sonnet"]] = None
     chartScope: Optional[Literal["daily", "both"]] = None
+    promptVersion: Optional[Literal["v2", "v3"]] = None
     force: bool = False
 
 

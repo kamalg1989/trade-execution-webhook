@@ -37,6 +37,7 @@ async def analyze_symbol_charts_gemini(
     daily_feats: dict,
     weekly_feats: dict | None,
     model: str | None = None,
+    prompt_version: str = "v2",
 ) -> dict:
     """Same contract as ai.client.analyze_symbol_charts, Gemini backend."""
     from google.genai import types
@@ -45,19 +46,35 @@ async def analyze_symbol_charts_gemini(
     t0 = time.monotonic()
     model = model or config.GEMINI_MODEL
 
-    parts = [types.Part.from_bytes(data=daily_png, mime_type="image/png")]
-    if weekly_png is not None:
-        parts.append(types.Part.from_bytes(data=weekly_png, mime_type="image/png"))
-    parts.append(feature_block(symbol, daily_feats, weekly_feats))
+    if prompt_version.startswith("v3"):
+        from .examples import example_png
+        from .gemini_schema import ChartAnalysisV3
+        from .prompts_v3 import (EXAMPLE_COHANCE_TEXT, EXAMPLE_TNPETRO_TEXT,
+                                 SYSTEM_PROMPT_V3, candidate_text_v3)
+        system, resp_schema, max_out = SYSTEM_PROMPT_V3, ChartAnalysisV3, config.AI_MAX_TOKENS_V3
+        parts = [
+            types.Part.from_bytes(data=example_png("cohance"), mime_type="image/png"),
+            EXAMPLE_COHANCE_TEXT,
+            types.Part.from_bytes(data=example_png("tnpetro"), mime_type="image/png"),
+            EXAMPLE_TNPETRO_TEXT,
+            types.Part.from_bytes(data=daily_png, mime_type="image/png"),
+            candidate_text_v3(symbol),
+        ]
+    else:
+        system, resp_schema, max_out = SYSTEM_PROMPT_CORE, ChartAnalysis, config.AI_MAX_TOKENS
+        parts = [types.Part.from_bytes(data=daily_png, mime_type="image/png")]
+        if weekly_png is not None:
+            parts.append(types.Part.from_bytes(data=weekly_png, mime_type="image/png"))
+        parts.append(feature_block(symbol, daily_feats, weekly_feats))
 
     resp = await client.aio.models.generate_content(
         model=model,
         contents=parts,
         config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT_CORE,
+            system_instruction=system,
             response_mime_type="application/json",
-            response_schema=ChartAnalysis,
-            max_output_tokens=config.AI_MAX_TOKENS,
+            response_schema=resp_schema,
+            max_output_tokens=max_out,
         ),
     )
 

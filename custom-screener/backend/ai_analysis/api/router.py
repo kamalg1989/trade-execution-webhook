@@ -46,6 +46,7 @@ async def ai_analyze(req: AnalyzeRequest, request: Request):
             force=req.force,
             ai_mode=req.aiMode,
             chart_scope=req.chartScope,
+            prompt_version=req.promptVersion,
         )
         # Auto-score outcomes in the background — for historical dates the
         # forward data already exists, so returns fill in immediately.

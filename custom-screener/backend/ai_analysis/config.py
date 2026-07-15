@@ -33,6 +33,14 @@ AI_DAILY_CALL_CAP = int(os.getenv("AI_DAILY_CALL_CAP", "500"))
 CHART_DIR = Path(os.getenv("AI_CHART_DIR", "/tmp/ai_analysis_charts"))
 CHART_DIR.mkdir(parents=True, exist_ok=True)
 
+# v3 few-shot example charts (persistent — rendered once by
+# scripts/render_v3_examples.py; NOT in /tmp so they survive reboots)
+EXAMPLES_DIR = Path(os.getenv("AI_EXAMPLES_DIR",
+                              str(Path(__file__).parent / "examples")))
+
+# v3 output cap (slim schema, ~250 typical)
+AI_MAX_TOKENS_V3 = int(os.getenv("AI_MAX_TOKENS_V3", "400"))
+
 # Verification tolerance (fraction)
 LEVEL_TOLERANCE = float(os.getenv("AI_LEVEL_TOLERANCE", "0.02"))
 
