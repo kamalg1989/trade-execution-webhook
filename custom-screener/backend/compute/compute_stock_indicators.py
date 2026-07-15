@@ -5,10 +5,21 @@ Reads ohlcv_data (read-only), computes indicators per symbol (vectorized over th
 whole series in one pass), upserts stock_indicators, then aggregates market_snapshot.
 
 Usage:
-    python -m compute.compute_stock_indicators                 # incremental: latest bar date
+    python -m compute.compute_stock_indicators                 # incremental: self-healing trailing window
     python -m compute.compute_stock_indicators --date 2026-07-08
     python -m compute.compute_stock_indicators --backfill-years 15
     python -m compute.compute_stock_indicators --from 2011-01-01 --to 2026-07-08
+
+Self-healing note: the default (no-args) run recomputes the last
+SELF_HEAL_DAYS calendar days, not just "today". Dhan's historical EOD API
+only publishes a trading day's candle the next morning, so a run on day D
+almost always finds 0 OHLCV rows for D itself — the previous single-day
+default meant that day could never complete automatically once D's data did
+arrive (a day or more later), even though update_missing_data.py's nightly
+gap-fill did eventually backfill it. Recomputing a trailing window each run
+is nearly free (compute_indicators already vectorizes over each symbol's
+full history in one pass; only the upsert row count grows) and means any
+day that was missed or delayed self-corrects on the very next run.
 """
 from __future__ import annotations
 
@@ -27,6 +38,10 @@ from compute.snapshot import compute_snapshot
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("compute")
+
+# Trailing window for the default incremental run. 10 days comfortably covers
+# weekends/holidays plus a couple of missed runs before a gap would go unnoticed.
+SELF_HEAL_DAYS = 10
 
 
 def _clean(v):
@@ -164,6 +179,7 @@ async def run(frm: date, to: date, lookback_bars: int | None = None,
                 except Exception as e:
                     log.warning("  %s failed: %s", sym, str(e)[:120])
             # snapshot per date in range
+            stuck = []
             d = frm
             while d <= to:
                 snap = await _aggregate_snapshot(con, d)
@@ -171,7 +187,17 @@ async def run(frm: date, to: date, lookback_bars: int | None = None,
                     log.info("Snapshot %s: regime=%s trend=%.2f complete=%s (%d stocks)",
                              d, snap["regime"], snap["trend_score"],
                              snap["is_complete"], snap["total_stocks"])
+                elif d.weekday() < 5 and d != to:
+                    # A weekday with zero rows that ISN'T the most recent day (which
+                    # legitimately has no OHLCV yet most of the time) means OHLCV
+                    # never arrived for it even after a full trailing window - a
+                    # real problem worth surfacing, not silently retrying forever.
+                    stuck.append(d)
                 d += timedelta(days=1)
+            if stuck:
+                log.warning("⚠️  %d weekday(s) still have NO OHLCV after the self-heal "
+                           "window: %s - check update_ohlcv.py / Dhan API for these dates",
+                           len(stuck), ", ".join(str(x) for x in stuck))
         log.info("Done. Symbols processed: %d", processed)
     finally:
         await pool.close()
@@ -187,6 +213,8 @@ def _parse_args():
                    help="load only the last N bars per symbol (fast single-date/narrow computes; needs >=260)")
     p.add_argument("--reaggregate-only", action="store_true",
                    help="rebuild market_snapshot from existing stock_indicators (no OHLCV reload)")
+    p.add_argument("--self-heal-days", type=int, default=SELF_HEAL_DAYS,
+                   help=f"incremental (no-args) trailing window size in days (default {SELF_HEAL_DAYS})")
     return p.parse_args()
 
 
@@ -201,7 +229,10 @@ def main():
     elif a.frm and a.to:
         frm, to = a.frm, a.to
     else:
-        frm = to = today  # incremental (compute writes only dates that have bars)
+        # Self-healing incremental: recompute a trailing window, not just today.
+        # See module docstring — "today" alone almost never has full OHLCV yet.
+        to = today
+        frm = today - timedelta(days=a.self_heal_days)
     lookback = a.lookback_bars
     if lookback is not None and lookback < 260:
         log.warning("lookback-bars %d too small for 252-day windows; bumping to 300", lookback)

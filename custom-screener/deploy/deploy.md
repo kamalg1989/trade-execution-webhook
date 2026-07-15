@@ -50,9 +50,12 @@ cd custom-screener/backend
 python3 -m compute.compute_stock_indicators --backfill-years 15
 # (is_new_52w_high/low are populated by this run. If the table was populated by an
 #  older build without those columns, just re-run the backfill to fill them in.)
-# schedule the nightly incremental at 18:30 IST (13:00 UTC)
+# schedule the daily pipeline (ohlcv gap-fill -> same-day -> compute) at 18:00 IST
 cp deploy/custom-screener-compute.{service,timer} /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now custom-screener-compute.timer
+# then remove the old standalone update_ohlcv.py root crontab entry (18:00) —
+# daily_pipeline.sh now runs it as step 1, so both would otherwise double-run it.
+crontab -l | grep -v update_ohlcv.py | crontab -
 ```
 
 ## 4. Frontend

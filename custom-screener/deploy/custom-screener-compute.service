@@ -1,12 +1,16 @@
 [Unit]
-Description=Custom Screener nightly indicator compute
+Description=Custom Screener daily data pipeline (OHLCV gap-fill + same-day + indicator compute)
 After=network.target postgresql.service
 
 [Service]
 Type=oneshot
 User=root
-WorkingDirectory=/root/trade-execution-webhook/custom-screener/backend
-# Reuse the existing platform .env (shared DB creds).
+WorkingDirectory=/root/trade-execution-webhook
+# Reuse the existing platform .env (shared DB + Dhan creds).
 EnvironmentFile=/root/trade-execution-webhook/.env
-# Incremental: computes the latest available bar date + snapshot.
-ExecStart=/root/trade-execution-webhook/venv/bin/python -m compute.compute_stock_indicators
+# Runs update_ohlcv.py -> update_today.py -> compute_stock_indicators.py in
+# sequence, each step only starting once the previous one has actually
+# finished. Replaces the old split cron(18:00 ohlcv)+timer(18:30 compute)
+# setup, which assumed 30 minutes was always enough for step 1 and had no
+# way to retry a day that simply wasn't ready yet.
+ExecStart=/bin/bash /root/trade-execution-webhook/market_data_setup/scripts/daily_pipeline.sh

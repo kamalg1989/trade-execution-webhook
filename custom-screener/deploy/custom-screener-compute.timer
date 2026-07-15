@@ -1,10 +1,12 @@
 [Unit]
-Description=Run Custom Screener compute daily at 18:30 IST (after 18:00 OHLCV update)
+Description=Run the Custom Screener daily data pipeline at 18:00 IST (after market close)
 
 [Timer]
-# Fires at 18:30 in the server's local timezone. The VPS is Asia/Kolkata (IST),
-# so this is 18:30 IST — after market close (15:30) and the 18:00 OHLCV update.
-OnCalendar=*-*-* 18:30:00
+# Fires at 18:00 in the server's local timezone. The VPS is Asia/Kolkata (IST),
+# so this is 18:00 IST, after market close (15:30). Replaces the separate
+# update_ohlcv.py root crontab entry (also at 18:00) - that cron entry should
+# be removed since daily_pipeline.sh now runs it as step 1.
+OnCalendar=*-*-* 18:00:00
 Persistent=true
 Unit=custom-screener-compute.service
 
