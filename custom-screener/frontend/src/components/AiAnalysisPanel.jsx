@@ -15,6 +15,9 @@ const REC_BADGE = {
 
 const fmt = (v, d = 2) => (v == null ? '—' : Number(v).toFixed(d));
 
+// Small marker for AI-generated columns (vs computed-by-our-math columns)
+const AI_ICON = <span title="AI-generated value" className="text-purple-400 text-[9px] align-super">✦</span>;
+
 const CHIP = { strong: 'bg-emerald-900/60 text-emerald-300', moderate: 'bg-amber-900/60 text-amber-300', weak: 'bg-red-900/60 text-red-300' };
 export function IfpChips({ ifp }) {
   return (
@@ -138,13 +141,13 @@ export default function AiAnalysisPanel({ symbols, date }) {
             <thead>
               <tr className="text-left text-xs text-slate-500 uppercase tracking-wide">
                 <th className="py-1.5 pr-2">Symbol</th>
-                <th className="pr-2">IFP</th>
-                <th className="pr-2">Type/Phase</th>
-                <th className="pr-2">V·S·P</th>
-                <th className="pr-2">Ext</th>
-                <th className="pr-2">BO / Stop</th>
-                <th className="pr-2">Conf</th>
-                <th className="pr-2">Verdict</th>
+                <th className="pr-2"><span className="inline-flex items-center gap-1">IFP <Tip text="Computed nightly IFP score (0-1) from our own volume math - NOT from the AI. Used by the hard gate. Fraction of recent days showing the institutional accumulation signature." /></span></th>
+                <th className="pr-2"><span className="inline-flex items-center gap-1">Base type{AI_ICON} <Tip text="AI-read base classification. TYPE A = base after uptrend: a strong prior move up, then a pullback/consolidation base, now breaking out (e.g. COHANCE). TYPE B = accumulation after distribution: long downtrend or sideways period, institutions quietly accumulating at lows, base formed at the bottom, now breaking out. Both are valid trades - type is context, not a filter. (v2 results show market-cycle phase here instead.)" /></span></th>
+                <th className="pr-2"><span className="inline-flex items-center gap-1">Vol(V)·Struct(S)·Pull(P){AI_ICON} <Tip text="The AI's three IFP quality ratings, each strong (green) / moderate (amber) / weak (red). V = VOLUME PATTERN (most important): spike on the move up, then dry-up in the base. S = BASE STRUCTURE: tight orderly consolidation vs wide messy chop. P = PULLBACK DEPTH: shallow pullback with a clear floor vs giving back most of the move. Hover each chip for its rating." /></span></th>
+                <th className="pr-2"><span className="inline-flex items-center gap-1">Ext{AI_ICON} <Tip text="Extended flag (AI): the stock has already moved far from its base without consolidating. Extended = lower priority even with good IFP - prefer stocks just starting to move off a fresh base." /></span></th>
+                <th className="pr-2"><span className="inline-flex items-center gap-1">BO / Stop{AI_ICON} <Tip text="Breakout and stop levels the AI read visually off the chart: breakout = top of the coil/base, stop = below the inside-bar low. Cross-checked against our computed levels in the popup (green tick = both methods agree within 2%)." /></span></th>
+                <th className="pr-2"><span className="inline-flex items-center gap-1">Conf{AI_ICON} <Tip text="AI's own confidence in its verdict (0-1)." /></span></th>
+                <th className="pr-2"><span className="inline-flex items-center gap-1">Verdict{AI_ICON} <Tip text="AI recommendation: SETUP_READY (2-3 strong criteria, near clean breakout, not extended) / EARLY_STAGE (base forming) / NOT_READY (weak or unreadable) / AVOID (distribution signs or broken base)." /></span></th>
                 <th></th>
               </tr>
             </thead>
@@ -162,7 +165,7 @@ export default function AiAnalysisPanel({ symbols, date }) {
                     ) : (
                       <>
                         <td className="pr-2 text-slate-300">{fmt(r.ifpScore)}</td>
-                        <td className="pr-2 text-slate-300 capitalize">{a.base_type ? `Type ${a.base_type}` : (a.market_cycle_phase || '—')}</td>
+                        <td className="pr-2 text-slate-300 capitalize" title={a.base_type === 'A' ? 'Type A — base after uptrend (strong move up, then consolidation base)' : a.base_type === 'B' ? 'Type B — accumulation after distribution (base at the bottom after downtrend/sideways)' : 'Market cycle phase (v2 result)'}>{a.base_type ? `Type ${a.base_type}` : (a.market_cycle_phase || '—')}</td>
                         <td className="pr-2">{a.ifp ? <IfpChips ifp={a.ifp} /> : <span className="text-slate-300">{top ? top.type.replace(/_/g, ' ') : (a.base_count ? `base ${a.base_count}` : '—')}</span>}</td>
                         <td className="pr-2">{a.extended ? <span className="text-amber-400" title="Extended from base — lower priority">⚠</span> : <span className="text-slate-600">—</span>}</td>
                         <td className="pr-2 text-slate-300 text-xs">{a.buy_point?.breakout_level ? `${a.buy_point.breakout_level} / ${a.buy_point.stop_level ?? '—'}` : '—'}</td>
