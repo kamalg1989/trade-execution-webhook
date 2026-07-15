@@ -157,6 +157,10 @@ export default function CustomScreener() {
         <ExportCsvButton rows={rows} date={date} />
       </div>
 
+      {rows.length > 0 && (
+        <AiAnalysisPanel symbols={rows.map((r) => r.symbol)} date={date} />
+      )}
+
       <ResultsTable rows={rows} onPick={setPicked} />
 
       <ChartModal symbol={picked?.symbol} open={!!picked} onClose={() => setPicked(null)} />
