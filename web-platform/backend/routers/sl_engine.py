@@ -314,6 +314,33 @@ async def get_sl_alerts():
         logger.error(f"SL data fetch failed: {e}")
         raise HTTPException(status_code=502, detail=f"Dhan/sheet error: {str(e)[:140]}")
 
+    # Merge today's LONG delivery positions not yet settled into holdings
+    # (stocks bought today live in the positions API until T+1 — without this
+    #  they'd be invisible to SL tracking)
+    try:
+        held_ids = {str(h.get("securityId")) for h in holdings}
+        for p in dhan_client.get_positions():
+            if str(p.get("positionType", "")).upper() != "LONG":
+                continue
+            if str(p.get("productType", "")).upper() not in ("CNC", "DELIVERY", "MARGIN"):
+                continue
+            sec = str(p.get("securityId", ""))
+            qty = int(p.get("netQty") or 0)
+            if not sec or sec in held_ids or qty <= 0:
+                continue
+            holdings.append({
+                "securityId": sec,
+                "tradingSymbol": p.get("tradingSymbol", ""),
+                "totalQty": qty,
+                "availableQty": qty,
+                "avgCostPrice": float(p.get("buyAvg") or p.get("costPrice") or 0),
+                "lastTradedPrice": float(p.get("lastTradedPrice") or p.get("ltp") or 0),
+                "_fromPositions": True,
+            })
+            held_ids.add(sec)
+    except Exception as e:
+        logger.warning(f"positions merge skipped: {e}")
+
     # Last daily close per symbol (for the close-confirmed danger check)
     hold_syms = [str(h.get("tradingSymbol", "")).replace(".NS", "").upper()
                  for h in holdings if int(h.get("totalQty") or h.get("availableQty") or 0) > 0]
@@ -401,6 +428,7 @@ async def get_sl_alerts():
             "symbol": symbol,
             "halfBooked": is_half_booked,
             "recommendation": reco,
+            "boughtToday": bool(h.get("_fromPositions")),
             "quantity": qty,
             "entry_price": round(entry, 2) if entry else round(avg, 2),
             "buyPrice": round(avg, 2),

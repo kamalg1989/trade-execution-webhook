@@ -226,7 +226,24 @@ export default function Dashboard() {
                     >
                       <div className="flex justify-between items-start gap-2">
                         <div>
-                          <p className="font-bold text-base lg:text-lg">{stock.symbol}</p>
+                          <p className="font-bold text-base lg:text-lg flex items-center gap-1.5 flex-wrap">
+                            {stock.symbol}
+                            {stock.heldQty > 0 && (
+                              <span className="text-[10px] font-semibold bg-purple-700 text-purple-100 px-1.5 py-0.5 rounded" title={`Already holding ${stock.heldQty} shares`}>
+                                HOLDING {stock.heldQty}
+                              </span>
+                            )}
+                            {!stock.heldQty && stock.positionQty > 0 && (
+                              <span className="text-[10px] font-semibold bg-purple-700 text-purple-100 px-1.5 py-0.5 rounded" title={`Bought today: ${stock.positionQty} shares`}>
+                                BOUGHT TODAY {stock.positionQty}
+                              </span>
+                            )}
+                            {stock.hasForeverBuy && (
+                              <span className="text-[10px] font-semibold bg-amber-700 text-amber-100 px-1.5 py-0.5 rounded" title="A BUY forever order is already resting on Dhan">
+                                ORDER RESTING
+                              </span>
+                            )}
+                          </p>
                           <p className="text-xs lg:text-sm text-slate-300 truncate">{stock.company}</p>
                         </div>
                         <div className="text-right flex-shrink-0">
@@ -360,13 +377,23 @@ export default function Dashboard() {
                 </div>
 
                 {/* Buy Button */}
-                <button
-                  onClick={() => handleBuy(selectedStock)}
-                  className="w-full bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-bold py-3 lg:py-4 px-4 lg:px-6 rounded-lg flex items-center justify-center gap-2 lg:gap-3 text-base lg:text-lg transition-all transform hover:scale-105"
-                >
-                  <ShoppingCart className="w-5 lg:w-6 h-5 lg:h-6" />
-                  Buy {selectedStock.symbol}
-                </button>
+                {selectedStock.owned ? (
+                  <div className="w-full bg-slate-700 border border-purple-600/50 text-purple-200 font-semibold py-3 lg:py-4 px-4 rounded-lg text-center text-sm lg:text-base">
+                    {selectedStock.heldQty > 0
+                      ? `Already holding ${selectedStock.heldQty} shares — manage from the SL tab`
+                      : selectedStock.positionQty > 0
+                        ? `Bought today (${selectedStock.positionQty} shares) — manage from the SL tab`
+                        : 'A BUY forever order is already resting on Dhan'}
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => handleBuy(selectedStock)}
+                    className="w-full bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-bold py-3 lg:py-4 px-4 lg:px-6 rounded-lg flex items-center justify-center gap-2 lg:gap-3 text-base lg:text-lg transition-all transform hover:scale-105"
+                  >
+                    <ShoppingCart className="w-5 lg:w-6 h-5 lg:h-6" />
+                    Buy {selectedStock.symbol}
+                  </button>
+                )}
               </div>
             )}
           </div>

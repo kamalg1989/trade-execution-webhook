@@ -151,7 +151,18 @@ export default function DashboardMobile() {
                 }`}
               >
                 <div className="flex-1">
-                  <p className="font-bold text-base">{stock.symbol}</p>
+                  <p className="font-bold text-base flex items-center gap-1.5 flex-wrap">
+                    {stock.symbol}
+                    {stock.heldQty > 0 && (
+                      <span className="text-[9px] font-semibold bg-purple-700 text-purple-100 px-1.5 py-0.5 rounded">HOLDING {stock.heldQty}</span>
+                    )}
+                    {!stock.heldQty && stock.positionQty > 0 && (
+                      <span className="text-[9px] font-semibold bg-purple-700 text-purple-100 px-1.5 py-0.5 rounded">TODAY {stock.positionQty}</span>
+                    )}
+                    {stock.hasForeverBuy && (
+                      <span className="text-[9px] font-semibold bg-amber-700 text-amber-100 px-1.5 py-0.5 rounded">ORDER RESTING</span>
+                    )}
+                  </p>
                   <div className="flex gap-2 mt-1">
                     <span className="text-xs bg-green-700 px-2 py-0.5 rounded">T: ₹{stock.target}</span>
                     <span className="text-xs bg-red-700 px-2 py-0.5 rounded">SL: ₹{stock.stopLoss}</span>
@@ -247,13 +258,23 @@ export default function DashboardMobile() {
           </button>
 
           {/* Buy Button */}
-          <button
-            onClick={() => handleBuy(selectedStock)}
-            className="w-full bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-all"
-          >
-            <ShoppingCart className="w-5 h-5" />
-            Buy {selectedStock.symbol}
-          </button>
+          {selectedStock.owned ? (
+            <div className="w-full bg-slate-700 border border-purple-600/50 text-purple-200 font-semibold py-3 px-4 rounded-lg text-center text-sm">
+              {selectedStock.heldQty > 0
+                ? `Already holding ${selectedStock.heldQty} shares — manage from SL tab`
+                : selectedStock.positionQty > 0
+                  ? `Bought today (${selectedStock.positionQty}) — manage from SL tab`
+                  : 'BUY forever order already resting on Dhan'}
+            </div>
+          ) : (
+            <button
+              onClick={() => handleBuy(selectedStock)}
+              className="w-full bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-all"
+            >
+              <ShoppingCart className="w-5 h-5" />
+              Buy {selectedStock.symbol}
+            </button>
+          )}
         </div>
       )}
 

@@ -165,6 +165,7 @@ export default function StopLossTracker() {
                 </span>
               )}
               {p.halfBooked && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/60 text-emerald-300">half booked</span>}
+              {p.boughtToday && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/60 text-blue-300">bought today</span>}
             </div>
             <p className="text-xs text-slate-400 mt-1.5">
               Buy ₹{p.buyPrice} · Now <span className="text-blue-400">₹{p.current_price}</span>

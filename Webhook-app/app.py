@@ -343,6 +343,18 @@ def check_existing_holding(symbol, token):
                 qty = int(h.get("totalQty") or h.get("availableQty") or 0)
                 if qty > 0:
                     return qty, float(h.get("avgCostPrice") or 0)
+        # Also check today's positions (bought today, not yet in holdings)
+        rp = session.get(
+            "https://api.dhan.co/v2/positions",
+            headers={"access-token": token, "Content-Type": "application/json"},
+            timeout=15,
+        )
+        if rp.status_code == 200:
+            for p in rp.json() if isinstance(rp.json(), list) else []:
+                if (str(p.get("tradingSymbol", "")).strip().upper() == sym
+                        and str(p.get("positionType", "")).upper() == "LONG"
+                        and int(p.get("netQty") or 0) > 0):
+                    return int(p.get("netQty")), float(p.get("buyAvg") or p.get("costPrice") or 0)
         return 0, 0.0
     except Exception as e:
         log(f"❌ Error checking holdings: {e}")

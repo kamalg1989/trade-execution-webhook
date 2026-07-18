@@ -60,6 +60,15 @@ async def place_buy_order(order: BuyOrderRequest):
                         status_code=409,
                         detail=f"Already holding {qty} shares of {order.symbol} @ ₹{avg} "
                                f"(~₹{round(qty * avg):,}). Buying again would stack a second position.")
+        # Also check today's positions (bought today, not yet settled into holdings)
+        for p in dhan_client.get_positions():
+            if (str(p.get("tradingSymbol", "")).strip().upper() == sym
+                    and str(p.get("positionType", "")).upper() == "LONG"
+                    and int(p.get("netQty") or 0) > 0):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Already bought {int(p.get('netQty'))} shares of {order.symbol} today "
+                           f"(in positions). Buying again would stack a second position.")
     except HTTPException:
         raise
     except Exception as e:

@@ -17,6 +17,43 @@ import os
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+try:
+    import dhan_client
+except Exception as e:  # pragma: no cover
+    dhan_client = None
+    logger.warning(f"dhan_client unavailable in recommendations: {e}")
+
+
+def _ownership_maps():
+    """Sets of symbols (no .NS) already owned / in positions / with resting forever BUYs.
+    Best-effort: any Dhan failure returns empty sets so recommendations still load."""
+    held, pos, resting = {}, {}, set()
+    if dhan_client is None:
+        return held, pos, resting
+    try:
+        for h in dhan_client.get_holdings():
+            qty = int(h.get("totalQty") or h.get("availableQty") or 0)
+            if qty > 0:
+                held[str(h.get("tradingSymbol", "")).replace(".NS", "").strip().upper()] = qty
+    except Exception as e:
+        logger.warning(f"holdings check failed: {e}")
+    try:
+        for p in dhan_client.get_positions():
+            if str(p.get("positionType", "")).upper() == "LONG":
+                qty = int(p.get("netQty") or 0)
+                if qty > 0:
+                    pos[str(p.get("tradingSymbol", "")).replace(".NS", "").strip().upper()] = qty
+    except Exception as e:
+        logger.warning(f"positions check failed: {e}")
+    try:
+        for o in dhan_client.get_forever_orders():
+            if (str(o.get("transactionType", "")).upper() == "BUY"
+                    and str(o.get("orderStatus", "")).upper() in ("PENDING", "CONFIRM", "TRIGGERED", "ACCEPTED")):
+                resting.add(str(o.get("tradingSymbol", "")).replace(".NS", "").strip().upper())
+    except Exception as e:
+        logger.warning(f"forever-order check failed: {e}")
+    return held, pos, resting
+
 BASE_DIR = '/root/trade-execution-webhook'
 RECS_FILE = os.path.join(BASE_DIR, 'latest_recommendations.json')
 SCREENER = os.path.join(BASE_DIR, 'screen_gpt.py')
@@ -70,11 +107,17 @@ async def get_recommendations():
         stale = True
 
     # Pass the full pick objects through (all screener fields), with safe defaults
+    held, pos, resting = _ownership_maps()
     stocks = []
     for s in data.get('stocks', []):
         s = dict(s)
         s.setdefault('company', s.get('symbol', ''))
         s.setdefault('recommendedQty', 1)
+        sym = str(s.get('symbol', '')).replace('.NS', '').strip().upper()
+        s['heldQty'] = held.get(sym, 0)
+        s['positionQty'] = pos.get(sym, 0)
+        s['hasForeverBuy'] = sym in resting
+        s['owned'] = bool(s['heldQty'] or s['positionQty'] or s['hasForeverBuy'])
         stocks.append(s)
 
     return RecommendationsListResponse(
