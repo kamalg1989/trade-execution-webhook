@@ -114,7 +114,8 @@ export default function Dashboard() {
     if (!stock) return;
     setChartData(null);
     try {
-      const response = await fetch(`/api/charts/${type}?symbol=${encodeURIComponent(stock.symbol)}&theme=dark`);
+      const chartTheme = localStorage.getItem('theme') === 'light' ? 'light' : 'dark';
+      const response = await fetch(`/api/charts/${type}?symbol=${encodeURIComponent(stock.symbol)}&theme=${chartTheme}`);
       setChartData(response.ok ? makeResponsive(await response.text()) : '');
     } catch (error) {
       console.error('Failed to fetch chart:', error);

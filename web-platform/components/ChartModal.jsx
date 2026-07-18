@@ -32,7 +32,8 @@ function fromDate(days) {
 export default function ChartModal({ symbol, open, onClose }) {
   const [chartType, setChartType] = useState('daily');
   const [range, setRange] = useState('6M');
-  const [theme, setTheme] = useState('dark');
+  // Follow the app's global light/dark mode by default (manual override still available)
+  const [theme, setTheme] = useState(localStorage.getItem('theme') === 'light' ? 'light' : 'dark');
   const [svg, setSvg] = useState(null);   // null=loading, ''=unavailable
   const [zoom, setZoom] = useState(1);     // 1 = fit width
 
@@ -49,7 +50,13 @@ export default function ChartModal({ symbol, open, onClose }) {
   }, [symbol]);
 
   useEffect(() => {
-    if (open) { setZoom(1); load(chartType, range, theme); }
+    if (open) {
+      // Re-sync with the app theme each time the modal opens
+      const appTheme = localStorage.getItem('theme') === 'light' ? 'light' : 'dark';
+      setTheme(appTheme);
+      setZoom(1);
+      load(chartType, range, appTheme);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -102,18 +109,23 @@ export default function ChartModal({ symbol, open, onClose }) {
         ))}
       </div>
 
-      {/* Chart area (scrollable both axes) */}
-      <div className="flex-1 overflow-auto p-2 flex items-start justify-center">
+      {/* Chart area: zoom 1 = fit entire chart (incl. volume) on one screen; zoom >1 = pan/scroll */}
+      <div className={`flex-1 min-h-0 p-2 ${zoom > 1 ? 'overflow-auto flex items-start justify-center' : 'overflow-hidden'}`}>
         {svg === null ? (
           <div className="h-full flex items-center justify-center text-slate-400 gap-2">
             <Loader className="w-5 h-5 animate-spin" /> Loading chart…
           </div>
         ) : svg === '' ? (
           <div className="h-full flex items-center justify-center text-slate-400">Chart unavailable for this symbol</div>
+        ) : zoom > 1 ? (
+          <div
+            style={{ width: `${zoom * 100}%`, minWidth: `${zoom * 100}%` }}
+            className="[&_svg]:w-full [&_svg]:h-auto"
+            dangerouslySetInnerHTML={{ __html: svg }}
+          />
         ) : (
           <div
-            style={{ width: `${zoom * 100}%`, minWidth: zoom > 1 ? `${zoom * 100}%` : undefined }}
-            className="[&_svg]:w-full [&_svg]:h-auto"
+            className="w-full h-full [&_svg]:w-full [&_svg]:h-full"
             dangerouslySetInnerHTML={{ __html: svg }}
           />
         )}
