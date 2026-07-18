@@ -302,7 +302,7 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2 lg:gap-4 mt-4 pt-4 border-t border-slate-600">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 lg:gap-4 mt-4 pt-4 border-t border-slate-600">
                     <div>
                       <p className="text-slate-400 text-xs lg:text-sm">Target Price</p>
                       <p className="text-lg lg:text-2xl font-bold text-green-400">₹{selectedStock.target}</p>
@@ -320,32 +320,25 @@ export default function Dashboard() {
                       <p className="text-lg lg:text-2xl font-bold text-purple-400">
                         {(((selectedStock.target - selectedStock.currentPrice) / selectedStock.currentPrice) * 100).toFixed(1)}%
                       </p>
+                      <p className="text-[10px] text-slate-500">current → target</p>
                     </div>
-                  </div>
-
-                  <p className="mt-3 lg:mt-4 text-slate-300 text-xs lg:text-sm">
-                    <strong>Reason:</strong> {fmtReason(selectedStock)}
-                  </p>
-
-                  {/* Allocation & Risk */}
-                  <div className="mt-3 lg:mt-4 bg-slate-800/70 border border-slate-600 rounded-lg p-3 grid grid-cols-3 gap-3 text-center">
                     <div>
-                      <p className="text-slate-400 text-[11px] lg:text-xs">Allocation</p>
-                      <p className="text-base lg:text-xl font-bold text-amber-300">
+                      <p className="text-slate-400 text-xs lg:text-sm">Allocation</p>
+                      <p className="text-lg lg:text-2xl font-bold text-amber-300">
                         {allocation(selectedStock) != null ? `₹${allocation(selectedStock).toLocaleString('en-IN')}` : '—'}
                       </p>
                       <p className="text-[10px] text-slate-500">{selectedStock.recommendedQty} × ₹{selectedStock.entry ?? selectedStock.currentPrice}</p>
                     </div>
                     <div>
-                      <p className="text-slate-400 text-[11px] lg:text-xs">Risk : Reward</p>
-                      <p className="text-base lg:text-xl font-bold text-blue-300">
+                      <p className="text-slate-400 text-xs lg:text-sm">Risk : Reward</p>
+                      <p className="text-lg lg:text-2xl font-bold text-blue-300">
                         {(() => { const rr = riskRewardPct(selectedStock); return rr ? `${rr.risk}% : ${rr.reward}%` : (selectedStock.rrRatio != null ? `1 : ${selectedStock.rrRatio}` : '—'); })()}
                       </p>
                       <p className="text-[10px] text-slate-500">of entry price</p>
                     </div>
                     <div>
-                      <p className="text-slate-400 text-[11px] lg:text-xs">Total Risk</p>
-                      <p className="text-base lg:text-xl font-bold text-red-300">
+                      <p className="text-slate-400 text-xs lg:text-sm">Total Risk</p>
+                      <p className="text-lg lg:text-2xl font-bold text-red-300">
                         {selectedStock.riskPerShare != null && selectedStock.recommendedQty
                           ? `₹${Math.round(selectedStock.riskPerShare * selectedStock.recommendedQty).toLocaleString('en-IN')}`
                           : '—'}
@@ -353,6 +346,10 @@ export default function Dashboard() {
                       <p className="text-[10px] text-slate-500">if SL hits</p>
                     </div>
                   </div>
+
+                  <p className="mt-3 lg:mt-4 text-slate-300 text-xs lg:text-sm">
+                    <strong>Reason:</strong> {fmtReason(selectedStock)}
+                  </p>
 
                   {/* Full screener detail (matches Telegram alert) */}
                   {selectedStock.entryType && (

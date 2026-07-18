@@ -229,35 +229,33 @@ export default function DashboardMobile() {
                   {(((selectedStock.target - selectedStock.currentPrice) / selectedStock.currentPrice) * 100).toFixed(1)}%
                 </p>
               </div>
+              <div>
+                <p className="text-xs text-slate-400">Allocation</p>
+                <p className="text-lg font-bold text-amber-300">
+                  {allocation(selectedStock) != null ? `₹${allocation(selectedStock).toLocaleString('en-IN')}` : '—'}
+                </p>
+                <p className="text-[9px] text-slate-500">{selectedStock.recommendedQty} × ₹{selectedStock.entry ?? selectedStock.currentPrice}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-400">Risk:Reward</p>
+                <p className="text-lg font-bold text-blue-300">
+                  {(() => { const rr = riskRewardPct(selectedStock); return rr ? `${rr.risk}%:${rr.reward}%` : (selectedStock.rrRatio != null ? `1:${selectedStock.rrRatio}` : '—'); })()}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-400">Total Risk</p>
+                <p className="text-lg font-bold text-red-300">
+                  {selectedStock.riskPerShare != null && selectedStock.recommendedQty
+                    ? `₹${Math.round(selectedStock.riskPerShare * selectedStock.recommendedQty).toLocaleString('en-IN')}`
+                    : '—'}
+                </p>
+                <p className="text-[9px] text-slate-500">if SL hits</p>
+              </div>
             </div>
 
             <p className="mt-3 text-xs text-slate-300">
               <strong>Reason:</strong> {fmtReason(selectedStock)}
             </p>
-
-            {/* Allocation & Risk */}
-            <div className="mt-3 bg-slate-800/70 border border-slate-600 rounded-lg p-2.5 grid grid-cols-3 gap-2 text-center">
-              <div>
-                <p className="text-slate-400 text-[10px]">Allocation</p>
-                <p className="text-sm font-bold text-amber-300">
-                  {allocation(selectedStock) != null ? `₹${allocation(selectedStock).toLocaleString('en-IN')}` : '—'}
-                </p>
-              </div>
-              <div>
-                <p className="text-slate-400 text-[10px]">Risk:Reward</p>
-                <p className="text-sm font-bold text-blue-300">
-                  {(() => { const rr = riskRewardPct(selectedStock); return rr ? `${rr.risk}%:${rr.reward}%` : (selectedStock.rrRatio != null ? `1:${selectedStock.rrRatio}` : '—'); })()}
-                </p>
-              </div>
-              <div>
-                <p className="text-slate-400 text-[10px]">Total Risk</p>
-                <p className="text-sm font-bold text-red-300">
-                  {selectedStock.riskPerShare != null && selectedStock.recommendedQty
-                    ? `₹${Math.round(selectedStock.riskPerShare * selectedStock.recommendedQty).toLocaleString('en-IN')}`
-                    : '—'}
-                </p>
-              </div>
-            </div>
 
             {/* Full screener detail */}
             {selectedStock.entryType && (
