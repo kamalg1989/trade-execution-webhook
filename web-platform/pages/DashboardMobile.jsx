@@ -104,10 +104,10 @@ export default function DashboardMobile() {
     if (!e || !sl || !t || sl >= e || t <= e) return null;
     return { risk: ((e - sl) / e * 100).toFixed(1), reward: ((t - e) / e * 100).toFixed(1) };
   };
-  const fmtReason = (s) => {
-    const rr = riskRewardPct(s);
-    if (!s.reason || !rr) return s.reason;
-    return s.reason.replace(/R:R\s*1:[\d.]+/i, `Risk:Reward ${rr.risk}%:${rr.reward}%`);
+  const fmtReason = (s) => s.reason ? s.reason.replace(/\s*\|\s*R:R\s*1:[\d.]+/i, '').replace(/R:R\s*1:[\d.]+\s*\|\s*/i, '') : s.reason;
+  const allocation = (s) => {
+    const e = s.entry || s.currentPrice, q = s.recommendedQty || 0;
+    return e && q ? Math.round(e * q) : null;
   };
 
   if (loading) return <div className="p-4 text-center text-slate-400">Loading...</div>;
@@ -235,6 +235,30 @@ export default function DashboardMobile() {
               <strong>Reason:</strong> {fmtReason(selectedStock)}
             </p>
 
+            {/* Allocation & Risk */}
+            <div className="mt-3 bg-slate-800/70 border border-slate-600 rounded-lg p-2.5 grid grid-cols-3 gap-2 text-center">
+              <div>
+                <p className="text-slate-400 text-[10px]">Allocation</p>
+                <p className="text-sm font-bold text-amber-300">
+                  {allocation(selectedStock) != null ? `₹${allocation(selectedStock).toLocaleString('en-IN')}` : '—'}
+                </p>
+              </div>
+              <div>
+                <p className="text-slate-400 text-[10px]">Risk:Reward</p>
+                <p className="text-sm font-bold text-blue-300">
+                  {(() => { const rr = riskRewardPct(selectedStock); return rr ? `${rr.risk}%:${rr.reward}%` : (selectedStock.rrRatio != null ? `1:${selectedStock.rrRatio}` : '—'); })()}
+                </p>
+              </div>
+              <div>
+                <p className="text-slate-400 text-[10px]">Total Risk</p>
+                <p className="text-sm font-bold text-red-300">
+                  {selectedStock.riskPerShare != null && selectedStock.recommendedQty
+                    ? `₹${Math.round(selectedStock.riskPerShare * selectedStock.recommendedQty).toLocaleString('en-IN')}`
+                    : '—'}
+                </p>
+              </div>
+            </div>
+
             {/* Full screener detail */}
             {selectedStock.entryType && (
               <div className="mt-3 pt-3 border-t border-slate-600">
@@ -248,7 +272,6 @@ export default function DashboardMobile() {
                   <D label="Target" v={`₹${selectedStock.target}`} />
                   <D label="Qty" v={`${selectedStock.recommendedQty}${selectedStock.baseStage != null ? ` (st${selectedStock.baseStage} x${selectedStock.stageMultiplier ?? 1})` : ''}`} />
                   <D label="Risk/Share" v={selectedStock.riskPerShare != null ? `₹${selectedStock.riskPerShare}` : '—'} />
-                  <D label="Risk:Reward" v={(() => { const rr = riskRewardPct(selectedStock); return rr ? `${rr.risk}%:${rr.reward}%` : (selectedStock.rrRatio != null ? `1:${selectedStock.rrRatio}` : '—'); })()} />
                   <D label="Tick" v={selectedStock.tickSize != null ? `₹${selectedStock.tickSize}` : '—'} />
                   <D label="Base Quality" v={selectedStock.baseQuality != null ? selectedStock.baseQuality.toFixed(2) : '—'} />
                   <D label="Liquidity" v={selectedStock.liquidityCr != null ? `₹${selectedStock.liquidityCr}cr` : '—'} />
