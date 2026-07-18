@@ -324,6 +324,31 @@ def get_dhan_forever_orders(token):
         return []
 
 
+def check_existing_holding(symbol, token):
+    """Return (qty, avg) if the symbol is already held in the portfolio, else (0, 0).
+    Prevents stacking a second full-size position when a stock re-alerts on a
+    later scan after the first forever-BUY has already filled."""
+    try:
+        r = session.get(
+            "https://api.dhan.co/v2/holdings",
+            headers={"access-token": token, "Content-Type": "application/json"},
+            timeout=15,
+        )
+        if r.status_code == 404:
+            return 0, 0.0
+        holdings = r.json() if r.status_code == 200 else []
+        sym = symbol.upper().replace(".NS", "")
+        for h in holdings if isinstance(holdings, list) else []:
+            if str(h.get("tradingSymbol", "")).strip().upper() == sym:
+                qty = int(h.get("totalQty") or h.get("availableQty") or 0)
+                if qty > 0:
+                    return qty, float(h.get("avgCostPrice") or 0)
+        return 0, 0.0
+    except Exception as e:
+        log(f"❌ Error checking holdings: {e}")
+        return 0, 0.0
+
+
 def check_for_existing_buy_order(symbol, token):
     """Check if symbol already has an open BUY order on Dhan."""
     try:
@@ -664,6 +689,16 @@ def webhook():
         if check_for_existing_buy_order(symbol, token):
             log(f"⚠️ {symbol} already has open BUY order on Dhan")
             send_telegram(f"⚠️ {symbol} already has open order on Dhan - skipping")
+            return "OK"
+
+        # ==== CHECK EXISTING HOLDING (prevent position stacking) ====
+        held_qty, held_avg = check_existing_holding(symbol, token)
+        if held_qty > 0:
+            log(f"⚠️ {symbol} already held: {held_qty} @ ₹{held_avg} — blocking duplicate entry")
+            send_telegram(
+                f"🚫 {symbol}: already holding {held_qty} shares @ ₹{held_avg} "
+                f"(~₹{round(held_qty * held_avg):,}). Confirming again would stack a second "
+                f"full position — skipping. Exit the current position first if you want to re-enter.")
             return "OK"
 
         log(f"✅ {symbol} is clear on Dhan\n")

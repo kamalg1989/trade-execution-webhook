@@ -48,6 +48,23 @@ async def place_buy_order(order: BuyOrderRequest):
     except Exception as e:
         logger.warning(f"duplicate-buy check skipped: {e}")
 
+    # Guard against stacking on an already-filled position (e.g. re-alerted on a later scan)
+    try:
+        sym = order.symbol.upper().replace(".NS", "")
+        for h in dhan_client.get_holdings():
+            if str(h.get("tradingSymbol", "")).strip().upper() == sym:
+                qty = int(h.get("totalQty") or h.get("availableQty") or 0)
+                if qty > 0:
+                    avg = float(h.get("avgCostPrice") or 0)
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Already holding {qty} shares of {order.symbol} @ ₹{avg} "
+                               f"(~₹{round(qty * avg):,}). Buying again would stack a second position.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"holding-check skipped: {e}")
+
     logger.info(f"Placing forever BUY {order.symbol} x{order.quantity} @ trigger ₹{entry}")
     buy = dhan_client.place_forever_buy(security_id, order.quantity, entry, order.symbol)
     if not buy.get("success"):
