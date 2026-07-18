@@ -55,6 +55,22 @@ const RLadder = ({ p }) => {
   );
 };
 
+// Structural (−1R) and target (+2R) prices with % from buy
+const RMeta = ({ p }) => {
+  const rStop = p.structuralSL || p.safetySL;
+  if (!rStop || !p.buyPrice || p.buyPrice <= rStop) return null;
+  const rUnit = p.buyPrice - rStop;
+  const t2 = p.buyPrice + 2 * rUnit;
+  const riskPct = ((rUnit / p.buyPrice) * 100).toFixed(1);
+  const rewPct = ((2 * rUnit / p.buyPrice) * 100).toFixed(1);
+  return (
+    <p className="text-[11px] text-slate-400 mt-1">
+      Struct −1R: <span className="text-red-300">₹{rStop.toFixed(1)} (−{riskPct}%)</span>
+      {' · '}Target +2R: <span className="text-green-300">₹{t2.toFixed(1)} (+{rewPct}%)</span>
+    </p>
+  );
+};
+
 export default function StopLossTracker() {
   const [positions, setPositions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -173,8 +189,9 @@ export default function StopLossTracker() {
               {p.structuralSL && <> · Struct ₹{p.structuralSL}</>}
               {p.pnl != null && <> · <span className={p.pnl >= 0 ? 'text-green-400' : 'text-red-400'}>{p.pnl >= 0 ? '+' : ''}₹{p.pnl?.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span></>}
             </p>
+            <RMeta p={p} />
             <p className="text-xs text-slate-300 mt-1">{r.reason}</p>
-            {['SELL_HALF', 'TRAIL'].includes(r.action) && <RLadder p={p} />}
+            <RLadder p={p} />
           </div>
           <div className="flex items-center gap-2 flex-shrink-0 flex-wrap" onClick={e => e.stopPropagation()}>
             {r.action !== 'NONE' && (
@@ -322,17 +339,22 @@ export default function StopLossTracker() {
             <h2 className="text-[11px] font-bold tracking-widest mb-2 text-slate-500">NOTHING TO DO ({done.length})</h2>
             <div className="space-y-1.5">
               {(showDone ? done : done.slice(0, 4)).map(p => (
-                <div key={p.id} className="flex items-center justify-between px-4 py-2.5 rounded-lg bg-slate-800/40 border border-slate-700/40">
-                  <div className="text-sm min-w-0 flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold">{p.symbol}</span>
-                    {p.rMultiple != null && (
-                      <span className={`text-xs font-bold ${p.rMultiple < 0 ? 'text-red-400' : 'text-green-400'}`}>
-                        {p.rMultiple >= 0 ? '+' : ''}{p.rMultiple}R
+                <div key={p.id} className="px-4 py-2.5 rounded-lg bg-slate-800/40 border border-slate-700/40 flex items-start justify-between gap-2">
+                  <div className="text-sm min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-semibold">{p.symbol}</span>
+                      {p.rMultiple != null && (
+                        <span className={`text-xs font-bold ${p.rMultiple < 0 ? 'text-red-400' : 'text-green-400'}`}>
+                          {p.rMultiple >= 0 ? '+' : ''}{p.rMultiple}R
+                        </span>
+                      )}
+                      {p.boughtToday && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/60 text-blue-300">bought today</span>}
+                      <span className="text-xs text-slate-400">
+                        Buy ₹{p.buyPrice} · Now <span className="text-blue-400">₹{p.current_price}</span> · SL ₹{p.stop_loss}{p.slBasis ? ` (${p.slBasis})` : ''} · {reco(p).reason}
                       </span>
-                    )}
-                    <span className="text-xs text-slate-400">
-                      SL ₹{p.stop_loss}{p.slBasis ? ` (${p.slBasis})` : ''} · {reco(p).reason}
-                    </span>
+                    </div>
+                    <RMeta p={p} />
+                    <RLadder p={p} />
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0" onClick={e => e.stopPropagation()}>
                     <span className="text-[10px] px-2 py-0.5 rounded bg-slate-700/60 text-slate-400 font-semibold">SL OK</span>

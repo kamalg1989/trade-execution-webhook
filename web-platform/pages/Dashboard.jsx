@@ -152,6 +152,18 @@ export default function Dashboard() {
     }
   };
 
+  // Risk% : Reward% from entry/SL/target — replaces the abstract "R:R 1:2" in the reason line
+  const riskRewardPct = (s) => {
+    const e = s.entry || s.currentPrice, sl = s.stopLoss, t = s.target;
+    if (!e || !sl || !t || sl >= e || t <= e) return null;
+    return { risk: ((e - sl) / e * 100).toFixed(1), reward: ((t - e) / e * 100).toFixed(1) };
+  };
+  const fmtReason = (s) => {
+    const rr = riskRewardPct(s);
+    if (!s.reason || !rr) return s.reason;
+    return s.reason.replace(/R:R\s*1:[\d.]+/i, `Risk:Reward ${rr.risk}%:${rr.reward}%`);
+  };
+
   if (loading) return <div className="p-4 lg:p-8">Loading recommendations...</div>;
 
   return (
@@ -311,7 +323,7 @@ export default function Dashboard() {
                   </div>
 
                   <p className="mt-3 lg:mt-4 text-slate-300 text-xs lg:text-sm">
-                    <strong>Reason:</strong> {selectedStock.reason}
+                    <strong>Reason:</strong> {fmtReason(selectedStock)}
                   </p>
 
                   {/* Full screener detail (matches Telegram alert) */}
@@ -328,7 +340,7 @@ export default function Dashboard() {
                         <Detail label={`Target (${selectedStock.targetStrategy || 'FIXED_R'})`} value={`₹${selectedStock.target}`} />
                         <Detail label="Qty" value={`${selectedStock.recommendedQty}${selectedStock.baseStage != null ? ` (stage ${selectedStock.baseStage}, x${selectedStock.stageMultiplier ?? 1})` : ''}`} />
                         <Detail label="Risk / Share" value={selectedStock.riskPerShare != null ? `₹${selectedStock.riskPerShare}` : '—'} />
-                        <Detail label="R : R" value={selectedStock.rrRatio != null ? `1 : ${selectedStock.rrRatio}` : '—'} />
+                        <Detail label="Risk : Reward" value={(() => { const rr = riskRewardPct(selectedStock); return rr ? `${rr.risk}% : ${rr.reward}%` : (selectedStock.rrRatio != null ? `1 : ${selectedStock.rrRatio}` : '—'); })()} />
                         <Detail label="Tick" value={selectedStock.tickSize != null ? `₹${selectedStock.tickSize}` : '—'} />
                         <Detail label="Base Stage" value={selectedStock.baseStage ?? '—'} />
                         <Detail label="Base Quality" value={selectedStock.baseQuality != null ? selectedStock.baseQuality.toFixed(2) : '—'} />

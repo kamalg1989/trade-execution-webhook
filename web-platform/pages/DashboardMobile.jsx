@@ -99,6 +99,17 @@ export default function DashboardMobile() {
     }
   };
 
+  const riskRewardPct = (s) => {
+    const e = s.entry || s.currentPrice, sl = s.stopLoss, t = s.target;
+    if (!e || !sl || !t || sl >= e || t <= e) return null;
+    return { risk: ((e - sl) / e * 100).toFixed(1), reward: ((t - e) / e * 100).toFixed(1) };
+  };
+  const fmtReason = (s) => {
+    const rr = riskRewardPct(s);
+    if (!s.reason || !rr) return s.reason;
+    return s.reason.replace(/R:R\s*1:[\d.]+/i, `Risk:Reward ${rr.risk}%:${rr.reward}%`);
+  };
+
   if (loading) return <div className="p-4 text-center text-slate-400">Loading...</div>;
 
   const fmtD = (s) => { if (!s) return '—'; try { return new Date(s).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }); } catch { return s; } };
@@ -221,7 +232,7 @@ export default function DashboardMobile() {
             </div>
 
             <p className="mt-3 text-xs text-slate-300">
-              <strong>Reason:</strong> {selectedStock.reason}
+              <strong>Reason:</strong> {fmtReason(selectedStock)}
             </p>
 
             {/* Full screener detail */}
@@ -237,7 +248,7 @@ export default function DashboardMobile() {
                   <D label="Target" v={`₹${selectedStock.target}`} />
                   <D label="Qty" v={`${selectedStock.recommendedQty}${selectedStock.baseStage != null ? ` (st${selectedStock.baseStage} x${selectedStock.stageMultiplier ?? 1})` : ''}`} />
                   <D label="Risk/Share" v={selectedStock.riskPerShare != null ? `₹${selectedStock.riskPerShare}` : '—'} />
-                  <D label="R:R" v={selectedStock.rrRatio != null ? `1:${selectedStock.rrRatio}` : '—'} />
+                  <D label="Risk:Reward" v={(() => { const rr = riskRewardPct(selectedStock); return rr ? `${rr.risk}%:${rr.reward}%` : (selectedStock.rrRatio != null ? `1:${selectedStock.rrRatio}` : '—'); })()} />
                   <D label="Tick" v={selectedStock.tickSize != null ? `₹${selectedStock.tickSize}` : '—'} />
                   <D label="Base Quality" v={selectedStock.baseQuality != null ? selectedStock.baseQuality.toFixed(2) : '—'} />
                   <D label="Liquidity" v={selectedStock.liquidityCr != null ? `₹${selectedStock.liquidityCr}cr` : '—'} />
