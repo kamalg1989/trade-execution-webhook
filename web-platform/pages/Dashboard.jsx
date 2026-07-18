@@ -46,7 +46,7 @@ export default function Dashboard() {
   };
 
   const runScan = async () => {
-    if (!window.confirm('Run the screener now? This scans the NIFTY-500 and takes a few minutes.')) return;
+    if (!window.confirm('Run the screener now? This scans all NSE stocks (EQ series, ~2000) and may take several minutes.')) return;
     setScanning(true);
     try {
       const r = await fetch('/api/recommendations/refresh', { method: 'POST' });

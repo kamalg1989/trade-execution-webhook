@@ -545,67 +545,78 @@ def send_document(path, caption=None):
         print(f"❌ Document send failed: {e}")
 
 
+_NSE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/csv,*/*",
+    "Referer": "https://www.nseindia.com/"
+}
+
+
 def get_stocks():
     """
-
-    Load NIFTY 500 stocks from NSE.
-
-    Handles NSE 403 by using browser headers.
-
-    Returns ~500 stocks.
-
+    Load ALL NSE equities in the EQ series (~2000 stocks).
+    EQ-only filtering excludes SME (SM/ST), trade-to-trade (BE/BZ) and other
+    lot-restricted / illiquid series. Falls back to NIFTY 500 if the full
+    list can't be fetched.
     """
-
     try:
-
-        print("📥 Loading NIFTY 500 from NSE...")
-
-        url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
-
-        headers = {
-
-            "User-Agent": (
-
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-
-                "Chrome/124.0.0.0 Safari/537.36"
-
-            ),
-
-            "Accept": "text/csv,*/*",
-
-            "Referer": "https://www.nseindia.com/"
-
-        }
-
-        response = requests.get(url, headers=headers, timeout=20)
-
+        print("📥 Loading all NSE equities (EQ series only)...")
+        url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+        response = requests.get(url, headers=_NSE_HEADERS, timeout=20)
         response.raise_for_status()
-
         df = pd.read_csv(StringIO(response.text))
-
-        print("Columns:", df.columns.tolist())
-
-        stocks = sorted([
-
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        eq = df[df["SERIES"].astype(str).str.strip().str.upper() == "EQ"]
+        stocks = sorted({
             str(s).strip().upper() + ".NS"
-
-            for s in df["Symbol"].dropna()
-
+            for s in eq["SYMBOL"].dropna()
             if str(s).strip().upper().isalpha()
-
-        ])
-
-        print(f"✅ Loaded {len(stocks)} NIFTY 500 stocks")
-
-        return stocks
-
+        })
+        if len(stocks) > 500:
+            print(f"✅ Loaded {len(stocks)} NSE EQ-series stocks (SME/T2T excluded)")
+            return stocks
+        print(f"⚠️ EQ list unexpectedly small ({len(stocks)}) — falling back to NIFTY 500")
     except Exception as e:
+        print(f"⚠️ NSE EQUITY_L fetch failed: {e} — falling back to NIFTY 500")
 
+    # ---- Fallback: NIFTY 500 ----
+    try:
+        print("📥 Loading NIFTY 500 from NSE...")
+        url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+        response = requests.get(url, headers=_NSE_HEADERS, timeout=20)
+        response.raise_for_status()
+        df = pd.read_csv(StringIO(response.text))
+        stocks = sorted([
+            str(s).strip().upper() + ".NS"
+            for s in df["Symbol"].dropna()
+            if str(s).strip().upper().isalpha()
+        ])
+        print(f"✅ Loaded {len(stocks)} NIFTY 500 stocks")
+        return stocks
+    except Exception as e:
         print(f"⚠️ NSE fetch failed: {e}")
 
+    # ---- Final fallback: local Dhan scrip master (works offline / NSE 503) ----
+    try:
+        print("📥 Loading universe from local Dhan scrip master...")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api-scrip-master.csv")
+        df = pd.read_csv(path, low_memory=False)
+        eq = df[(df["SEM_EXM_EXCH_ID"].astype(str).str.upper() == "NSE")
+                & (df["SEM_INSTRUMENT_NAME"].astype(str).str.upper() == "EQUITY")
+                & (df["SEM_SERIES"].astype(str).str.strip().str.upper() == "EQ")]
+        stocks = sorted({
+            str(s).strip().upper() + ".NS"
+            for s in eq["SEM_TRADING_SYMBOL"].dropna()
+            if str(s).strip().upper().isalpha()
+        })
+        print(f"✅ Loaded {len(stocks)} NSE EQ stocks from local scrip master")
+        return stocks
+    except Exception as e:
+        print(f"❌ Local scrip master fallback failed: {e}")
         return []
 
 # ==========================
