@@ -54,9 +54,26 @@ export default function Dashboard() {
       alert(d.message || 'Scan started');
     } catch {
       alert('Failed to start scan');
+      setScanning(false);
+      return;
     }
-    setScanning(false);
-    setTimeout(fetchStatus, 2000);
+    // Poll until the background scan finishes, then reload picks automatically
+    let polls = 0;
+    const poll = setInterval(async () => {
+      polls += 1;
+      try {
+        const s = await (await fetch('/api/data-status')).json();
+        if (!s.scanRunning || polls > 60) {   // 60 × 15s = 15 min safety cap
+          clearInterval(poll);
+          setScanning(false);
+          await fetchRecommendations();
+          fetchStatus();
+        }
+      } catch {
+        clearInterval(poll);
+        setScanning(false);
+      }
+    }, 15000);
   };
 
   const fmtDate = (s) => {

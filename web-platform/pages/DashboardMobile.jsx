@@ -19,14 +19,34 @@ export default function DashboardMobile() {
   }, []);
 
   const runScan = async () => {
-    if (!window.confirm('Run the screener now? Takes a few minutes.')) return;
+    if (!window.confirm('Run the screener now? Scans all NSE stocks — takes several minutes.')) return;
     setScanning(true);
     try {
       const r = await fetch('/api/recommendations/refresh', { method: 'POST' });
       const d = await r.json();
       alert(d.message || 'Scan started');
-    } catch { alert('Failed to start scan'); }
-    setScanning(false);
+    } catch {
+      alert('Failed to start scan');
+      setScanning(false);
+      return;
+    }
+    // Poll until the scan finishes, then reload picks automatically
+    let polls = 0;
+    const poll = setInterval(async () => {
+      polls += 1;
+      try {
+        const s = await (await fetch('/api/data-status')).json();
+        if (!s.scanRunning || polls > 60) {
+          clearInterval(poll);
+          setScanning(false);
+          await fetchRecommendations();
+          refreshStatus();
+        }
+      } catch {
+        clearInterval(poll);
+        setScanning(false);
+      }
+    }, 15000);
   };
 
   const updateData = async () => {
