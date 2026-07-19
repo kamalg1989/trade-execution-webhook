@@ -4,6 +4,9 @@ import ChartModal, { makeResponsive } from '../components/ChartModal';
 
 export default function Dashboard() {
   const [recommendations, setRecommendations] = useState([]);
+  const [aiPicks, setAiPicks] = useState([]);
+  const [aiStatus, setAiStatus] = useState(null);
+  const [aiMessage, setAiMessage] = useState(null);
   const [selectedStock, setSelectedStock] = useState(null);
   const [chartData, setChartData] = useState([]);
   const [chartType, setChartType] = useState('daily'); // 'daily' | 'weekly'
@@ -100,6 +103,9 @@ export default function Dashboard() {
 
       const data = await response.json();
       setRecommendations(data.stocks || []);
+      setAiPicks(data.aiPicks || []);
+      setAiStatus(data.aiStatus || null);
+      setAiMessage(data.aiMessage || null);
       if (data.stocks?.length > 0) {
         selectStock(data.stocks[0]);
       }
@@ -183,6 +189,67 @@ export default function Dashboard() {
     return e && q ? Math.round(e * q) : null;
   };
 
+  const StockCard = ({ stock, isAi = false }) => (
+    <button
+      onClick={() => selectStock(stock)}
+      className={`w-full text-left p-3 lg:p-4 rounded-lg transition-all ${
+        selectedStock?.symbol === stock.symbol
+          ? 'bg-blue-600 border-2 border-blue-400'
+          : 'bg-slate-600 hover:bg-slate-500 border-2 border-transparent'
+      }`}
+    >
+      <div className="flex justify-between items-start gap-2">
+        <div>
+          <p className="font-bold text-base lg:text-lg flex items-center gap-1.5 flex-wrap">
+            {stock.symbol}
+            {(stock.alsoAiPick || stock.alsoQuantPick) && (
+              <span className="text-[10px] font-semibold bg-emerald-700 text-emerald-100 px-1.5 py-0.5 rounded" title="Chosen by BOTH the quant ranking and the AI chart analysis — highest conviction">
+                QUANT + AI
+              </span>
+            )}
+            {stock.heldQty > 0 && (
+              <span className="text-[10px] font-semibold bg-purple-700 text-purple-100 px-1.5 py-0.5 rounded" title={`Already holding ${stock.heldQty} shares`}>
+                HOLDING {stock.heldQty}
+              </span>
+            )}
+            {!stock.heldQty && stock.positionQty > 0 && (
+              <span className="text-[10px] font-semibold bg-purple-700 text-purple-100 px-1.5 py-0.5 rounded" title={`Bought today: ${stock.positionQty} shares`}>
+                BOUGHT TODAY {stock.positionQty}
+              </span>
+            )}
+            {stock.hasForeverBuy && (
+              <span className="text-[10px] font-semibold bg-amber-700 text-amber-100 px-1.5 py-0.5 rounded" title="A BUY forever order is already resting on Dhan">
+                ORDER RESTING
+              </span>
+            )}
+          </p>
+          <p className="text-xs lg:text-sm text-slate-300 truncate">{stock.company}</p>
+        </div>
+        <div className="text-right flex-shrink-0">
+          <p className="font-bold text-sm lg:text-base">₹{stock.currentPrice}</p>
+          <p className={`text-xs lg:text-sm ${stock.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            {stock.change >= 0 ? '+' : ''}{stock.change?.toFixed(2)}%
+          </p>
+        </div>
+      </div>
+      <div className="mt-2 pt-2 border-t border-slate-500">
+        <p className="text-xs text-slate-300">
+          <span className="inline-block bg-green-700 px-1.5 py-0.5 rounded mr-1 text-xs">T: ₹{stock.target}</span>
+          <span className="inline-block bg-red-700 px-1.5 py-0.5 rounded text-xs">SL: ₹{stock.stopLoss}</span>
+        </p>
+        {isAi && stock.aiRatings && (
+          <p className="text-[10px] text-emerald-200 mt-1.5">
+            Vol: {stock.aiRatings.volumePattern} · Base: {stock.aiRatings.baseStructure} · Pullback: {stock.aiRatings.pullbackDepth}
+            {stock.aiExtended ? ' · ⚠️ extended' : ''} · Type {stock.aiBaseType}
+          </p>
+        )}
+        {isAi && stock.aiVerdict && (
+          <p className="text-[10px] text-slate-400 mt-0.5 italic">{stock.aiVerdict}</p>
+        )}
+      </div>
+    </button>
+  );
+
   if (loading) return <div className="p-4 lg:p-8">Loading recommendations...</div>;
 
   return (
@@ -238,6 +305,8 @@ export default function Dashboard() {
                 Today's Recommendations
               </h2>
 
+              {/* QUANT PICKS */}
+              <p className="text-[11px] font-bold tracking-widest text-blue-300 mb-2">📐 QUANT PICKS</p>
               <div className="space-y-2 lg:space-y-3">
                 {recommendations.length === 0 ? (
                   <div className="text-slate-400 text-center py-8">
@@ -245,57 +314,21 @@ export default function Dashboard() {
                     <p className="text-xs lg:text-sm">No recommendations available</p>
                   </div>
                 ) : (
-                  recommendations.map((stock) => (
-                    <button
-                      key={stock.symbol}
-                      onClick={() => selectStock(stock)}
-                      className={`w-full text-left p-3 lg:p-4 rounded-lg transition-all ${
-                        selectedStock?.symbol === stock.symbol
-                          ? 'bg-blue-600 border-2 border-blue-400'
-                          : 'bg-slate-600 hover:bg-slate-500 border-2 border-transparent'
-                      }`}
-                    >
-                      <div className="flex justify-between items-start gap-2">
-                        <div>
-                          <p className="font-bold text-base lg:text-lg flex items-center gap-1.5 flex-wrap">
-                            {stock.symbol}
-                            {stock.heldQty > 0 && (
-                              <span className="text-[10px] font-semibold bg-purple-700 text-purple-100 px-1.5 py-0.5 rounded" title={`Already holding ${stock.heldQty} shares`}>
-                                HOLDING {stock.heldQty}
-                              </span>
-                            )}
-                            {!stock.heldQty && stock.positionQty > 0 && (
-                              <span className="text-[10px] font-semibold bg-purple-700 text-purple-100 px-1.5 py-0.5 rounded" title={`Bought today: ${stock.positionQty} shares`}>
-                                BOUGHT TODAY {stock.positionQty}
-                              </span>
-                            )}
-                            {stock.hasForeverBuy && (
-                              <span className="text-[10px] font-semibold bg-amber-700 text-amber-100 px-1.5 py-0.5 rounded" title="A BUY forever order is already resting on Dhan">
-                                ORDER RESTING
-                              </span>
-                            )}
-                          </p>
-                          <p className="text-xs lg:text-sm text-slate-300 truncate">{stock.company}</p>
-                        </div>
-                        <div className="text-right flex-shrink-0">
-                          <p className="font-bold text-sm lg:text-base">₹{stock.currentPrice}</p>
-                          <p className={`text-xs lg:text-sm ${stock.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {stock.change >= 0 ? '+' : ''}{stock.change.toFixed(2)}%
-                          </p>
-                        </div>
-                      </div>
-                      <div className="mt-2 pt-2 border-t border-slate-500">
-                        <p className="text-xs text-slate-300 space-y-1">
-                          <span className="inline-block bg-green-700 px-1.5 py-0.5 rounded mr-1 text-xs">
-                            T: ₹{stock.target}
-                          </span>
-                          <span className="inline-block bg-red-700 px-1.5 py-0.5 rounded text-xs">
-                            SL: ₹{stock.stopLoss}
-                          </span>
-                        </p>
-                      </div>
-                    </button>
-                  ))
+                  recommendations.map((stock) => <StockCard key={`q-${stock.symbol}`} stock={stock} />)
+                )}
+              </div>
+
+              {/* AI CHART PICKS */}
+              <p className="text-[11px] font-bold tracking-widest text-emerald-300 mt-4 mb-2">🤖 AI CHART PICKS <span className="text-slate-500 font-normal normal-case">(Gemini v3 · same sizing)</span></p>
+              <div className="space-y-2 lg:space-y-3">
+                {aiPicks.length > 0 ? (
+                  aiPicks.map((stock) => <StockCard key={`ai-${stock.symbol}`} stock={stock} isAi />)
+                ) : (
+                  <p className="text-xs text-slate-500 py-2">
+                    {aiStatus === 'pending' ? '⏳ AI analysis running… refresh shortly.'
+                      : aiStatus === 'error' ? `⚠️ AI analysis unavailable: ${aiMessage || 'error'}`
+                      : 'AI picks appear here after the next scan.'}
+                  </p>
                 )}
               </div>
             </div>

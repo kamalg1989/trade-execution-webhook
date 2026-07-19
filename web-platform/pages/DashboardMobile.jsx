@@ -4,6 +4,8 @@ import ChartModal from '../components/ChartModal';
 
 export default function DashboardMobile() {
   const [recommendations, setRecommendations] = useState([]);
+  const [aiPicks, setAiPicks] = useState([]);
+  const [aiStatus, setAiStatus] = useState(null);
   const [selectedStock, setSelectedStock] = useState(null);
   const [loading, setLoading] = useState(true);
   const [chartOpen, setChartOpen] = useState(false);
@@ -73,6 +75,8 @@ export default function DashboardMobile() {
       });
       const data = await response.json();
       setRecommendations(data.stocks || []);
+      setAiPicks(data.aiPicks || []);
+      setAiStatus(data.aiStatus || null);
       if (data.stocks?.length > 0) {
         selectStock(data.stocks[0]);
       }
@@ -164,6 +168,7 @@ export default function DashboardMobile() {
           Today's Picks
         </h2>
 
+        <p className="text-[10px] font-bold tracking-widest text-blue-300 mb-2">📐 QUANT PICKS</p>
         <div className="space-y-2">
           {recommendations.length === 0 ? (
             <div className="text-center py-8">
@@ -207,6 +212,57 @@ export default function DashboardMobile() {
                 </div>
               </button>
             ))
+          )}
+        </div>
+
+        <p className="text-[10px] font-bold tracking-widest text-emerald-300 mt-4 mb-2">🤖 AI CHART PICKS</p>
+        <div className="space-y-2">
+          {aiPicks.length > 0 ? (
+            aiPicks.map((stock) => (
+              <button
+                key={`ai-${stock.symbol}`}
+                onClick={() => selectStock(stock)}
+                className={`w-full text-left p-3 rounded-lg transition-all ${
+                  selectedStock?.symbol === stock.symbol
+                    ? 'bg-blue-600 border border-blue-400'
+                    : 'bg-slate-700 border border-emerald-800/60'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <p className="font-bold text-base flex items-center gap-1.5 flex-wrap">
+                      {stock.symbol}
+                      {stock.alsoQuantPick && (
+                        <span className="text-[9px] font-semibold bg-emerald-700 text-emerald-100 px-1.5 py-0.5 rounded">QUANT + AI</span>
+                      )}
+                      {stock.heldQty > 0 && (
+                        <span className="text-[9px] font-semibold bg-purple-700 text-purple-100 px-1.5 py-0.5 rounded">HOLDING {stock.heldQty}</span>
+                      )}
+                    </p>
+                    <div className="flex gap-2 mt-1">
+                      <span className="text-xs bg-green-700 px-2 py-0.5 rounded">T: ₹{stock.target}</span>
+                      <span className="text-xs bg-red-700 px-2 py-0.5 rounded">SL: ₹{stock.stopLoss}</span>
+                    </div>
+                  </div>
+                  <div className="text-right ml-2">
+                    <p className="font-bold text-sm">₹{stock.currentPrice}</p>
+                    <p className={`text-xs ${stock.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {stock.change >= 0 ? '+' : ''}{stock.change?.toFixed(2)}%
+                    </p>
+                  </div>
+                </div>
+                {stock.aiRatings && (
+                  <p className="text-[9px] text-emerald-200 mt-1.5">
+                    Vol: {stock.aiRatings.volumePattern} · Base: {stock.aiRatings.baseStructure} · PB: {stock.aiRatings.pullbackDepth}
+                    {stock.aiExtended ? ' · ⚠️ extended' : ''}
+                  </p>
+                )}
+              </button>
+            ))
+          ) : (
+            <p className="text-[11px] text-slate-500 py-1">
+              {aiStatus === 'pending' ? '⏳ AI analysis running…' : aiStatus === 'error' ? '⚠️ AI analysis unavailable' : 'AI picks appear after the next scan.'}
+            </p>
           )}
         </div>
       </div>

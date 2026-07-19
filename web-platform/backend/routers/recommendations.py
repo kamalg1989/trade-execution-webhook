@@ -56,6 +56,7 @@ def _ownership_maps():
 
 BASE_DIR = '/root/trade-execution-webhook'
 RECS_FILE = os.path.join(BASE_DIR, 'latest_recommendations.json')
+AI_PICKS_FILE = os.path.join(BASE_DIR, 'latest_ai_picks.json')
 SCREENER = os.path.join(BASE_DIR, 'screen_gpt.py')
 SCAN_LOG = os.path.join(BASE_DIR, 'screener_scan.log')
 UPDATER = os.path.join(BASE_DIR, 'market_data_setup/scripts/update_ohlcv.py')
@@ -64,7 +65,10 @@ UPDATE_LOG = os.path.join(BASE_DIR, 'market_data_setup/scripts/update.log')
 
 
 class RecommendationsListResponse(BaseModel):
-    stocks: List[dict]          # full pick objects (all screener fields passed through)
+    stocks: List[dict]          # quant top picks (all screener fields passed through)
+    aiPicks: List[dict] = []    # AI (Gemini v3) top picks from the same candidate pool
+    aiStatus: Optional[str] = None   # ok | pending | error | none
+    aiMessage: Optional[str] = None
     generatedAt: str
     count: int
     stale: bool = False
@@ -120,8 +124,48 @@ async def get_recommendations():
         s['owned'] = bool(s['heldQty'] or s['positionQty'] or s['hasForeverBuy'])
         stocks.append(s)
 
+    # ---- AI (Gemini v3) picks from the same candidate pool ----
+    ai_picks, ai_status, ai_message = [], "none", None
+    quant_syms = {str(s.get('symbol', '')).replace('.NS', '').strip().upper() for s in stocks}
+    try:
+        if os.path.exists(AI_PICKS_FILE):
+            with open(AI_PICKS_FILE) as f:
+                ai_data = json.load(f)
+            ai_status = ai_data.get("status", "error")
+            ai_message = ai_data.get("message")
+            # Only show AI picks that belong to the CURRENT scan
+            ai_gen = ai_data.get("generatedAt", "")
+            if ai_status == "ok" and ai_gen >= generated_at:
+                top_n = ai_data.get("picks", [])[:3]
+                for p in top_n:
+                    p = dict(p)
+                    sym = str(p.get('symbol', '')).replace('.NS', '').strip().upper()
+                    p['heldQty'] = held.get(sym, 0)
+                    p['positionQty'] = pos.get(sym, 0)
+                    p['hasForeverBuy'] = sym in resting
+                    p['owned'] = bool(p['heldQty'] or p['positionQty'] or p['hasForeverBuy'])
+                    p['alsoQuantPick'] = sym in quant_syms
+                    ai_picks.append(p)
+            elif ai_status == "ok":
+                ai_status = "pending"
+                ai_message = "AI analysis for the latest scan is still running"
+        elif data.get('candidates'):
+            ai_status = "pending"
+            ai_message = "AI analysis not yet available"
+    except Exception as e:
+        ai_status, ai_message = "error", str(e)[:120]
+        logger.warning(f"AI picks read failed: {e}")
+
+    # Flag quant picks that AI also chose
+    ai_syms = {str(p.get('symbol', '')).replace('.NS', '').strip().upper() for p in ai_picks}
+    for s in stocks:
+        s['alsoAiPick'] = str(s.get('symbol', '')).replace('.NS', '').strip().upper() in ai_syms
+
     return RecommendationsListResponse(
         stocks=stocks,
+        aiPicks=ai_picks,
+        aiStatus=ai_status,
+        aiMessage=ai_message,
         generatedAt=generated_at,
         count=len(stocks),
         stale=stale,
