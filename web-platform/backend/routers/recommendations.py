@@ -156,10 +156,27 @@ async def get_recommendations():
         ai_status, ai_message = "error", str(e)[:120]
         logger.warning(f"AI picks read failed: {e}")
 
-    # Flag quant picks that AI also chose
+    # Flag quant picks that AI also chose, and attach AI analysis to ANY stock
+    # that was analyzed (so the detail panel can show it for quant picks too)
     ai_syms = {str(p.get('symbol', '')).replace('.NS', '').strip().upper() for p in ai_picks}
+    ai_map = {}
+    try:
+        if os.path.exists(AI_PICKS_FILE):
+            with open(AI_PICKS_FILE) as f:
+                _ai_all = json.load(f)
+            if _ai_all.get("status") == "ok" and _ai_all.get("generatedAt", "") >= generated_at:
+                for p in _ai_all.get("picks", []):
+                    ai_map[str(p.get('symbol', '')).replace('.NS', '').strip().upper()] = p
+    except Exception:
+        pass
+    AI_FIELDS = ('aiRank', 'aiRatings', 'aiBaseType', 'aiExtended',
+                 'aiRecommendation', 'aiConfidence', 'aiVerdict')
     for s in stocks:
-        s['alsoAiPick'] = str(s.get('symbol', '')).replace('.NS', '').strip().upper() in ai_syms
+        sym = str(s.get('symbol', '')).replace('.NS', '').strip().upper()
+        s['alsoAiPick'] = sym in ai_syms
+        if sym in ai_map:
+            for k in AI_FIELDS:
+                s[k] = ai_map[sym].get(k)
 
     return RecommendationsListResponse(
         stocks=stocks,

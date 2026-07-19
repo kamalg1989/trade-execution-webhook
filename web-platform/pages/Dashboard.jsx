@@ -402,6 +402,29 @@ export default function Dashboard() {
                     <strong>Reason:</strong> {fmtReason(selectedStock)}
                   </p>
 
+                  {/* AI chart analysis (Gemini v3) — shown for any analyzed stock */}
+                  {selectedStock.aiRatings && (
+                    <div className="mt-3 lg:mt-4 bg-emerald-900/15 border border-emerald-800/40 rounded-lg p-3">
+                      <p className="text-[11px] font-bold tracking-widest text-emerald-300 mb-2">
+                        🤖 AI CHART ANALYSIS <span className="text-slate-500 font-normal">(Gemini v3 · rank #{selectedStock.aiRank ?? '—'})</span>
+                      </p>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2 text-xs lg:text-sm">
+                        <Detail label="Volume Pattern (IFP)" value={selectedStock.aiRatings.volumePattern ?? '—'} />
+                        <Detail label="Base Structure" value={selectedStock.aiRatings.baseStructure ?? '—'} />
+                        <Detail label="Pullback Depth" value={selectedStock.aiRatings.pullbackDepth ?? '—'} />
+                        <Detail label="Base Type" value={selectedStock.aiBaseType === 'A' ? 'A (base after uptrend)' : selectedStock.aiBaseType === 'B' ? 'B (accumulation at lows)' : '—'} />
+                        <Detail label="Extended?" value={selectedStock.aiExtended ? '⚠️ Yes — far from base' : 'No — fresh base'} />
+                        <Detail label="AI Recommendation" value={selectedStock.aiRecommendation ?? '—'} />
+                        <Detail label="AI Confidence" value={selectedStock.aiConfidence != null ? `${Math.round(selectedStock.aiConfidence * 100)}%` : '—'} />
+                        <Detail label="Quant IFP Score" value={selectedStock.ifp ?? '—'} />
+                        <Detail label="Quant Base Quality" value={selectedStock.baseQuality ?? '—'} />
+                      </div>
+                      {selectedStock.aiVerdict && (
+                        <p className="text-xs text-emerald-200/90 mt-2 italic">"{selectedStock.aiVerdict}"</p>
+                      )}
+                    </div>
+                  )}
+
                   {/* Full screener detail (matches Telegram alert) */}
                   {selectedStock.entryType && (
                     <div className="mt-4 pt-4 border-t border-slate-600">

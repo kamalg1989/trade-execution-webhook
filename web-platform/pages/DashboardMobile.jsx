@@ -333,6 +333,28 @@ export default function DashboardMobile() {
               <strong>Reason:</strong> {fmtReason(selectedStock)}
             </p>
 
+            {/* AI chart analysis (Gemini v3) */}
+            {selectedStock.aiRatings && (
+              <div className="mt-3 bg-emerald-900/15 border border-emerald-800/40 rounded-lg p-2.5">
+                <p className="text-[10px] font-bold tracking-widest text-emerald-300 mb-1.5">
+                  🤖 AI CHART ANALYSIS <span className="text-slate-500 font-normal">(rank #{selectedStock.aiRank ?? '—'})</span>
+                </p>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
+                  <D label="Volume Pattern" v={selectedStock.aiRatings.volumePattern ?? '—'} />
+                  <D label="Base Structure" v={selectedStock.aiRatings.baseStructure ?? '—'} />
+                  <D label="Pullback Depth" v={selectedStock.aiRatings.pullbackDepth ?? '—'} />
+                  <D label="Base Type" v={selectedStock.aiBaseType ?? '—'} />
+                  <D label="Extended?" v={selectedStock.aiExtended ? '⚠️ Yes' : 'No'} />
+                  <D label="AI Reco" v={selectedStock.aiRecommendation ?? '—'} />
+                  <D label="AI Confidence" v={selectedStock.aiConfidence != null ? `${Math.round(selectedStock.aiConfidence * 100)}%` : '—'} />
+                  <D label="Quant IFP" v={selectedStock.ifp ?? '—'} />
+                </div>
+                {selectedStock.aiVerdict && (
+                  <p className="text-[10px] text-emerald-200/90 mt-1.5 italic">"{selectedStock.aiVerdict}"</p>
+                )}
+              </div>
+            )}
+
             {/* Full screener detail */}
             {selectedStock.entryType && (
               <div className="mt-3 pt-3 border-t border-slate-600">

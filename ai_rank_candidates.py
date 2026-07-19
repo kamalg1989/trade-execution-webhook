@@ -34,6 +34,19 @@ TIMEOUT = 600       # Gemini pass over ~35 charts can take a few minutes
 STRENGTH_SCORE = {"strong": 2, "moderate": 1, "weak": 0}
 
 
+def norm_confidence(c):
+    """Model sometimes replies 0.65, 7 (of 10) or 70 (of 100) — normalise to 0–1."""
+    try:
+        c = float(c)
+    except (TypeError, ValueError):
+        return None
+    if c <= 1:
+        return round(c, 2)
+    if c <= 10:
+        return round(c / 10, 2)
+    return round(min(c, 100) / 100, 2)
+
+
 def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
@@ -109,7 +122,7 @@ def main():
             "aiBaseType": a.get("base_type"),
             "aiExtended": bool(a.get("extended")),
             "aiRecommendation": a.get("recommendation"),
-            "aiConfidence": a.get("confidence"),
+            "aiConfidence": norm_confidence(a.get("confidence")),
             "aiVerdict": a.get("verdict"),
             "_strong": strong_count,
             "_score": score,
