@@ -4,6 +4,9 @@ import ChartModal, { makeResponsive } from '../components/ChartModal';
 
 export default function Dashboard() {
   const [recommendations, setRecommendations] = useState([]);
+  const [aiPicks, setAiPicks] = useState([]);
+  const [aiStatus, setAiStatus] = useState(null);
+  const [aiMessage, setAiMessage] = useState(null);
   const [selectedStock, setSelectedStock] = useState(null);
   const [chartData, setChartData] = useState([]);
   const [chartType, setChartType] = useState('daily'); // 'daily' | 'weekly'
@@ -46,7 +49,7 @@ export default function Dashboard() {
   };
 
   const runScan = async () => {
-    if (!window.confirm('Run the screener now? This scans the NIFTY-500 and takes a few minutes.')) return;
+    if (!window.confirm('Run the screener now? This scans all NSE stocks (EQ series, ~2000) and may take several minutes.')) return;
     setScanning(true);
     try {
       const r = await fetch('/api/recommendations/refresh', { method: 'POST' });
@@ -54,9 +57,26 @@ export default function Dashboard() {
       alert(d.message || 'Scan started');
     } catch {
       alert('Failed to start scan');
+      setScanning(false);
+      return;
     }
-    setScanning(false);
-    setTimeout(fetchStatus, 2000);
+    // Poll until the background scan finishes, then reload picks automatically
+    let polls = 0;
+    const poll = setInterval(async () => {
+      polls += 1;
+      try {
+        const s = await (await fetch('/api/data-status')).json();
+        if (!s.scanRunning || polls > 60) {   // 60 × 15s = 15 min safety cap
+          clearInterval(poll);
+          setScanning(false);
+          await fetchRecommendations();
+          fetchStatus();
+        }
+      } catch {
+        clearInterval(poll);
+        setScanning(false);
+      }
+    }, 15000);
   };
 
   const fmtDate = (s) => {
@@ -83,6 +103,9 @@ export default function Dashboard() {
 
       const data = await response.json();
       setRecommendations(data.stocks || []);
+      setAiPicks(data.aiPicks || []);
+      setAiStatus(data.aiStatus || null);
+      setAiMessage(data.aiMessage || null);
       if (data.stocks?.length > 0) {
         selectStock(data.stocks[0]);
       }
@@ -97,7 +120,8 @@ export default function Dashboard() {
     if (!stock) return;
     setChartData(null);
     try {
-      const response = await fetch(`/api/charts/${type}?symbol=${encodeURIComponent(stock.symbol)}&theme=dark`);
+      const chartTheme = localStorage.getItem('theme') === 'light' ? 'light' : 'dark';
+      const response = await fetch(`/api/charts/${type}?symbol=${encodeURIComponent(stock.symbol)}&theme=${chartTheme}`);
       setChartData(response.ok ? makeResponsive(await response.text()) : '');
     } catch (error) {
       console.error('Failed to fetch chart:', error);
@@ -135,7 +159,7 @@ export default function Dashboard() {
           'Content-Type': 'application/json',
           'X-API-Key': apiKey
         },
-        body: JSON.stringify({ symbol: stock.symbol, quantity: qty, price: entry, stopLoss: sl })
+        body: JSON.stringify({ symbol: stock.symbol, quantity: qty, price: entry, stopLoss: sl, recommendation: stock })
       });
       const result = await response.json();
       if (response.ok && result.success) {
@@ -151,6 +175,80 @@ export default function Dashboard() {
       alert('❌ Order placement failed (network error)');
     }
   };
+
+  // Risk% : Reward% from entry/SL/target — replaces the abstract "R:R 1:2" in the reason line
+  const riskRewardPct = (s) => {
+    const e = s.entry || s.currentPrice, sl = s.stopLoss, t = s.target;
+    if (!e || !sl || !t || sl >= e || t <= e) return null;
+    return { risk: ((e - sl) / e * 100).toFixed(1), reward: ((t - e) / e * 100).toFixed(1) };
+  };
+  // Strip R:R from the reason line — it lives in the Allocation & Risk section now
+  const fmtReason = (s) => s.reason ? s.reason.replace(/\s*\|\s*R:R\s*1:[\d.]+/i, '').replace(/R:R\s*1:[\d.]+\s*\|\s*/i, '') : s.reason;
+  const allocation = (s) => {
+    const e = s.entry || s.currentPrice, q = s.recommendedQty || 0;
+    return e && q ? Math.round(e * q) : null;
+  };
+
+  const StockCard = ({ stock, isAi = false }) => (
+    <button
+      onClick={() => selectStock(stock)}
+      className={`w-full text-left p-3 lg:p-4 rounded-lg transition-all ${
+        selectedStock?.symbol === stock.symbol
+          ? 'bg-blue-600 border-2 border-blue-400'
+          : 'bg-slate-600 hover:bg-slate-500 border-2 border-transparent'
+      }`}
+    >
+      <div className="flex justify-between items-start gap-2">
+        <div>
+          <p className="font-bold text-base lg:text-lg flex items-center gap-1.5 flex-wrap">
+            {stock.symbol}
+            {(stock.alsoAiPick || stock.alsoQuantPick) && (
+              <span className="text-[10px] font-semibold bg-emerald-700 text-emerald-100 px-1.5 py-0.5 rounded" title="Chosen by BOTH the quant ranking and the AI chart analysis — highest conviction">
+                QUANT + AI
+              </span>
+            )}
+            {stock.heldQty > 0 && (
+              <span className="text-[10px] font-semibold bg-purple-700 text-purple-100 px-1.5 py-0.5 rounded" title={`Already holding ${stock.heldQty} shares`}>
+                HOLDING {stock.heldQty}
+              </span>
+            )}
+            {!stock.heldQty && stock.positionQty > 0 && (
+              <span className="text-[10px] font-semibold bg-purple-700 text-purple-100 px-1.5 py-0.5 rounded" title={`Bought today: ${stock.positionQty} shares`}>
+                BOUGHT TODAY {stock.positionQty}
+              </span>
+            )}
+            {stock.hasForeverBuy && (
+              <span className="text-[10px] font-semibold bg-amber-700 text-amber-100 px-1.5 py-0.5 rounded" title="A BUY forever order is already resting on Dhan">
+                ORDER RESTING
+              </span>
+            )}
+          </p>
+          <p className="text-xs lg:text-sm text-slate-300 truncate">{stock.company}</p>
+        </div>
+        <div className="text-right flex-shrink-0">
+          <p className="font-bold text-sm lg:text-base">₹{stock.currentPrice}</p>
+          <p className={`text-xs lg:text-sm ${stock.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            {stock.change >= 0 ? '+' : ''}{stock.change?.toFixed(2)}%
+          </p>
+        </div>
+      </div>
+      <div className="mt-2 pt-2 border-t border-slate-500">
+        <p className="text-xs text-slate-300">
+          <span className="inline-block bg-green-700 px-1.5 py-0.5 rounded mr-1 text-xs">T: ₹{stock.target}</span>
+          <span className="inline-block bg-red-700 px-1.5 py-0.5 rounded text-xs">SL: ₹{stock.stopLoss}</span>
+        </p>
+        {isAi && stock.aiRatings && (
+          <p className="text-[10px] text-emerald-200 mt-1.5">
+            Vol: {stock.aiRatings.volumePattern} · Base: {stock.aiRatings.baseStructure} · Pullback: {stock.aiRatings.pullbackDepth}
+            {stock.aiExtended ? ' · ⚠️ extended' : ''} · Type {stock.aiBaseType}
+          </p>
+        )}
+        {isAi && stock.aiVerdict && (
+          <p className="text-[10px] text-slate-400 mt-0.5 italic">{stock.aiVerdict}</p>
+        )}
+      </div>
+    </button>
+  );
 
   if (loading) return <div className="p-4 lg:p-8">Loading recommendations...</div>;
 
@@ -207,6 +305,8 @@ export default function Dashboard() {
                 Today's Recommendations
               </h2>
 
+              {/* QUANT PICKS */}
+              <p className="text-[11px] font-bold tracking-widest text-blue-300 mb-2">📐 QUANT PICKS</p>
               <div className="space-y-2 lg:space-y-3">
                 {recommendations.length === 0 ? (
                   <div className="text-slate-400 text-center py-8">
@@ -214,40 +314,21 @@ export default function Dashboard() {
                     <p className="text-xs lg:text-sm">No recommendations available</p>
                   </div>
                 ) : (
-                  recommendations.map((stock) => (
-                    <button
-                      key={stock.symbol}
-                      onClick={() => selectStock(stock)}
-                      className={`w-full text-left p-3 lg:p-4 rounded-lg transition-all ${
-                        selectedStock?.symbol === stock.symbol
-                          ? 'bg-blue-600 border-2 border-blue-400'
-                          : 'bg-slate-600 hover:bg-slate-500 border-2 border-transparent'
-                      }`}
-                    >
-                      <div className="flex justify-between items-start gap-2">
-                        <div>
-                          <p className="font-bold text-base lg:text-lg">{stock.symbol}</p>
-                          <p className="text-xs lg:text-sm text-slate-300 truncate">{stock.company}</p>
-                        </div>
-                        <div className="text-right flex-shrink-0">
-                          <p className="font-bold text-sm lg:text-base">₹{stock.currentPrice}</p>
-                          <p className={`text-xs lg:text-sm ${stock.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {stock.change >= 0 ? '+' : ''}{stock.change.toFixed(2)}%
-                          </p>
-                        </div>
-                      </div>
-                      <div className="mt-2 pt-2 border-t border-slate-500">
-                        <p className="text-xs text-slate-300 space-y-1">
-                          <span className="inline-block bg-green-700 px-1.5 py-0.5 rounded mr-1 text-xs">
-                            T: ₹{stock.target}
-                          </span>
-                          <span className="inline-block bg-red-700 px-1.5 py-0.5 rounded text-xs">
-                            SL: ₹{stock.stopLoss}
-                          </span>
-                        </p>
-                      </div>
-                    </button>
-                  ))
+                  recommendations.map((stock) => <StockCard key={`q-${stock.symbol}`} stock={stock} />)
+                )}
+              </div>
+
+              {/* AI CHART PICKS */}
+              <p className="text-[11px] font-bold tracking-widest text-emerald-300 mt-4 mb-2">🤖 AI CHART PICKS <span className="text-slate-500 font-normal normal-case">(Gemini v3 · same sizing)</span></p>
+              <div className="space-y-2 lg:space-y-3">
+                {aiPicks.length > 0 ? (
+                  aiPicks.map((stock) => <StockCard key={`ai-${stock.symbol}`} stock={stock} isAi />)
+                ) : (
+                  <p className="text-xs text-slate-500 py-2">
+                    {aiStatus === 'pending' ? '⏳ AI analysis running… refresh shortly.'
+                      : aiStatus === 'error' ? `⚠️ AI analysis unavailable: ${aiMessage || 'error'}`
+                      : 'AI picks appear here after the next scan.'}
+                  </p>
                 )}
               </div>
             </div>
@@ -272,7 +353,7 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2 lg:gap-4 mt-4 pt-4 border-t border-slate-600">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 lg:gap-4 mt-4 pt-4 border-t border-slate-600">
                     <div>
                       <p className="text-slate-400 text-xs lg:text-sm">Target Price</p>
                       <p className="text-lg lg:text-2xl font-bold text-green-400">₹{selectedStock.target}</p>
@@ -290,12 +371,59 @@ export default function Dashboard() {
                       <p className="text-lg lg:text-2xl font-bold text-purple-400">
                         {(((selectedStock.target - selectedStock.currentPrice) / selectedStock.currentPrice) * 100).toFixed(1)}%
                       </p>
+                      <p className="text-[10px] text-slate-500">current → target</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400 text-xs lg:text-sm">Allocation</p>
+                      <p className="text-lg lg:text-2xl font-bold text-amber-300">
+                        {allocation(selectedStock) != null ? `₹${allocation(selectedStock).toLocaleString('en-IN')}` : '—'}
+                      </p>
+                      <p className="text-[10px] text-slate-500">{selectedStock.recommendedQty} × ₹{selectedStock.entry ?? selectedStock.currentPrice}</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400 text-xs lg:text-sm">Risk : Reward</p>
+                      <p className="text-lg lg:text-2xl font-bold text-blue-300">
+                        {(() => { const rr = riskRewardPct(selectedStock); return rr ? `${rr.risk}% : ${rr.reward}%` : (selectedStock.rrRatio != null ? `1 : ${selectedStock.rrRatio}` : '—'); })()}
+                      </p>
+                      <p className="text-[10px] text-slate-500">of entry price</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400 text-xs lg:text-sm">Total Risk</p>
+                      <p className="text-lg lg:text-2xl font-bold text-red-300">
+                        {selectedStock.riskPerShare != null && selectedStock.recommendedQty
+                          ? `₹${Math.round(selectedStock.riskPerShare * selectedStock.recommendedQty).toLocaleString('en-IN')}`
+                          : '—'}
+                      </p>
+                      <p className="text-[10px] text-slate-500">if SL hits</p>
                     </div>
                   </div>
 
                   <p className="mt-3 lg:mt-4 text-slate-300 text-xs lg:text-sm">
-                    <strong>Reason:</strong> {selectedStock.reason}
+                    <strong>Reason:</strong> {fmtReason(selectedStock)}
                   </p>
+
+                  {/* AI chart analysis (Gemini v3) — shown for any analyzed stock */}
+                  {selectedStock.aiRatings && (
+                    <div className="mt-3 lg:mt-4 bg-emerald-900/15 border border-emerald-800/40 rounded-lg p-3">
+                      <p className="text-[11px] font-bold tracking-widest text-emerald-300 mb-2">
+                        🤖 AI CHART ANALYSIS <span className="text-slate-500 font-normal">(Gemini v3 · rank #{selectedStock.aiRank ?? '—'})</span>
+                      </p>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2 text-xs lg:text-sm">
+                        <Detail label="Volume Pattern (IFP)" value={selectedStock.aiRatings.volumePattern ?? '—'} />
+                        <Detail label="Base Structure" value={selectedStock.aiRatings.baseStructure ?? '—'} />
+                        <Detail label="Pullback Depth" value={selectedStock.aiRatings.pullbackDepth ?? '—'} />
+                        <Detail label="Base Type" value={selectedStock.aiBaseType === 'A' ? 'A (base after uptrend)' : selectedStock.aiBaseType === 'B' ? 'B (accumulation at lows)' : '—'} />
+                        <Detail label="Extended?" value={selectedStock.aiExtended ? '⚠️ Yes — far from base' : 'No — fresh base'} />
+                        <Detail label="AI Recommendation" value={selectedStock.aiRecommendation ?? '—'} />
+                        <Detail label="AI Confidence" value={selectedStock.aiConfidence != null ? `${Math.round(selectedStock.aiConfidence * 100)}%` : '—'} />
+                        <Detail label="Quant IFP Score" value={selectedStock.ifp ?? '—'} />
+                        <Detail label="Quant Base Quality" value={selectedStock.baseQuality ?? '—'} />
+                      </div>
+                      {selectedStock.aiVerdict && (
+                        <p className="text-xs text-emerald-200/90 mt-2 italic">"{selectedStock.aiVerdict}"</p>
+                      )}
+                    </div>
+                  )}
 
                   {/* Full screener detail (matches Telegram alert) */}
                   {selectedStock.entryType && (
@@ -311,7 +439,6 @@ export default function Dashboard() {
                         <Detail label={`Target (${selectedStock.targetStrategy || 'FIXED_R'})`} value={`₹${selectedStock.target}`} />
                         <Detail label="Qty" value={`${selectedStock.recommendedQty}${selectedStock.baseStage != null ? ` (stage ${selectedStock.baseStage}, x${selectedStock.stageMultiplier ?? 1})` : ''}`} />
                         <Detail label="Risk / Share" value={selectedStock.riskPerShare != null ? `₹${selectedStock.riskPerShare}` : '—'} />
-                        <Detail label="R : R" value={selectedStock.rrRatio != null ? `1 : ${selectedStock.rrRatio}` : '—'} />
                         <Detail label="Tick" value={selectedStock.tickSize != null ? `₹${selectedStock.tickSize}` : '—'} />
                         <Detail label="Base Stage" value={selectedStock.baseStage ?? '—'} />
                         <Detail label="Base Quality" value={selectedStock.baseQuality != null ? selectedStock.baseQuality.toFixed(2) : '—'} />
@@ -360,13 +487,23 @@ export default function Dashboard() {
                 </div>
 
                 {/* Buy Button */}
-                <button
-                  onClick={() => handleBuy(selectedStock)}
-                  className="w-full bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-bold py-3 lg:py-4 px-4 lg:px-6 rounded-lg flex items-center justify-center gap-2 lg:gap-3 text-base lg:text-lg transition-all transform hover:scale-105"
-                >
-                  <ShoppingCart className="w-5 lg:w-6 h-5 lg:h-6" />
-                  Buy {selectedStock.symbol}
-                </button>
+                {selectedStock.owned ? (
+                  <div className="w-full bg-slate-700 border border-purple-600/50 text-purple-200 font-semibold py-3 lg:py-4 px-4 rounded-lg text-center text-sm lg:text-base">
+                    {selectedStock.heldQty > 0
+                      ? `Already holding ${selectedStock.heldQty} shares — manage from the SL tab`
+                      : selectedStock.positionQty > 0
+                        ? `Bought today (${selectedStock.positionQty} shares) — manage from the SL tab`
+                        : 'A BUY forever order is already resting on Dhan'}
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => handleBuy(selectedStock)}
+                    className="w-full bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-bold py-3 lg:py-4 px-4 lg:px-6 rounded-lg flex items-center justify-center gap-2 lg:gap-3 text-base lg:text-lg transition-all transform hover:scale-105"
+                  >
+                    <ShoppingCart className="w-5 lg:w-6 h-5 lg:h-6" />
+                    Buy {selectedStock.symbol}
+                  </button>
+                )}
               </div>
             )}
           </div>

@@ -201,11 +201,16 @@ export default function StopLossTrackerMobile() {
               <div key={p.id} className={`rounded-lg p-3 ${rowTint(p)}`}>
                 <div className="flex justify-between items-start mb-1.5">
                   <div className="flex items-center gap-2"><p className="font-bold text-sm">{p.symbol}</p>{rBadge(p.rMultiple)}</div>
-                  <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${p.danger ? zoneColor('DANGER') : zoneColor(p.riskZone)}`}>
-                    {p.danger ? 'DANGER' : (p.slBasis || p.riskZone)}
+                  <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${p.pendingExit ? 'bg-blue-900/60 text-blue-300' : p.danger ? zoneColor('DANGER') : zoneColor(p.riskZone)}`}>
+                    {p.pendingExit ? 'EXIT PENDING' : p.danger ? 'DANGER' : (p.slBasis || p.riskZone)}
                   </span>
                 </div>
-                {(p.danger || p.watch) && (
+                {p.pendingExit ? (
+                  <div className="mb-2 text-[11px] font-semibold flex items-start gap-1 text-blue-300">
+                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />
+                    ⏳ Exit order already placed — resting at broker, fills at next open
+                  </div>
+                ) : (p.danger || p.watch) && (
                   <div className={`mb-2 text-[11px] font-semibold flex items-start gap-1 ${p.danger ? 'text-red-300' : 'text-amber-300'}`}>
                     <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />
                     {p.danger ? `Closed ₹${p.lastClose} below structural ₹${p.structuralSL} — EXIT next open`
@@ -234,8 +239,8 @@ export default function StopLossTrackerMobile() {
                     title="Move SL up" className={`${iconBtn} max-w-[46px] bg-green-700 active:bg-green-600`}>
                     {busy[`move-${p.id}`] ? <Loader className="w-4 h-4 animate-spin" /> : <TrendingUp className="w-4 h-4" />}
                   </button>
-                  <button onClick={() => structuralExit(p)} disabled={busy[`exit-${p.id}`]}
-                    title="Exit now" className={`${iconBtn} max-w-[46px] bg-amber-700 active:bg-amber-600`}>
+                  <button onClick={() => structuralExit(p)} disabled={busy[`exit-${p.id}`] || p.pendingExit}
+                    title={p.pendingExit ? "Exit already pending" : "Exit now"} className={`${iconBtn} max-w-[46px] ${p.pendingExit ? 'bg-slate-600' : 'bg-amber-700 active:bg-amber-600'}`}>
                     {busy[`exit-${p.id}`] ? <Loader className="w-4 h-4 animate-spin" /> : <LogOut className="w-4 h-4" />}
                   </button>
                   {p.slOrders?.slice(0, 1).map(o => (

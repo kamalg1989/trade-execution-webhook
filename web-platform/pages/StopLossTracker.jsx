@@ -24,34 +24,61 @@ const api = async (path, body) => {
 
 // ---------- R-ladder progress bar ----------
 const RLadder = ({ p }) => {
-  const rStop = p.structuralSL || p.safetySL;
+  const hasProtection = p.stop_loss > 0;
+  const rStop = hasProtection ? (p.structuralSL || p.safetySL) : (p.safetySL || p.structuralSL);
   if (!rStop || !p.buyPrice || p.buyPrice <= rStop) return null;
   const rUnit = p.buyPrice - rStop;
   const maxR = Math.max(3, Math.ceil(p.rMultiple ?? 0) + 1);
-  const toPct = (price) => Math.min(97, Math.max(0, ((price - p.buyPrice) / (rUnit * maxR)) * 100));
+  // Extend the scale below Buy so an underwater position (negative R, e.g.
+  // IKS at -1.41R) doesn't get clamped/pinned at the Buy tick — previously
+  // Math.max(0, ...) floored every sub-Buy price to the same 0% position.
+  const minR = Math.min(-1, Math.floor(p.rMultiple ?? 0));
+  const span = maxR - minR;
+  const toPct = (price) => Math.min(100, Math.max(0, (((price - p.buyPrice) / rUnit) - minR) / span * 100));
   const ticks = [];
-  for (let i = 0; i <= maxR; i++) ticks.push(i);
+  for (let i = minR; i <= maxR; i++) ticks.push(i);
+  const buyPct = toPct(p.buyPrice);
+  const curPct = toPct(p.current_price);
+  const underwater = p.current_price < p.buyPrice;
   return (
     <div className="mt-3 mb-1">
       <div className="relative h-7">
         <div className="absolute top-2.5 left-0 right-0 h-1 rounded bg-slate-600/40" />
-        <div className="absolute top-2.5 left-0 h-1 rounded bg-green-400"
-          style={{ width: `${toPct(p.current_price)}%` }} />
+        <div className={`absolute top-2.5 h-1 rounded ${underwater ? 'bg-red-400' : 'bg-green-400'}`}
+          style={{ left: `${Math.min(buyPct, curPct)}%`, width: `${Math.abs(curPct - buyPct)}%` }} />
         {ticks.map(i => (
           <React.Fragment key={i}>
-            <div className="absolute top-1 w-0.5 h-4 bg-slate-500" style={{ left: `${(i / maxR) * 100}%` }} />
+            <div className="absolute top-1 w-0.5 h-4 bg-slate-500" style={{ left: `${((i - minR) / span) * 100}%` }} />
             <div className="absolute top-6 text-[9px] text-slate-400 -translate-x-1/2"
-              style={{ left: `${(i / maxR) * 100}%` }}>{i === 0 ? 'Buy' : `${i}R`}</div>
+              style={{ left: `${((i - minR) / span) * 100}%` }}>{i === 0 ? 'Buy' : `${i}R`}</div>
           </React.Fragment>
         ))}
         {p.stop_loss > 0 && (
           <div className="absolute top-0.5 w-1 h-5 bg-red-400 rounded -translate-x-1/2"
             title={`SL ₹${p.stop_loss}`} style={{ left: `${toPct(p.stop_loss)}%` }} />
         )}
-        <div className="absolute top-1.5 w-3 h-3 rounded-full bg-green-400 border-2 border-slate-900 -translate-x-1/2"
-          title={`Now ₹${p.current_price}`} style={{ left: `${toPct(p.current_price)}%` }} />
+        <div className={`absolute top-1.5 w-3 h-3 rounded-full border-2 border-slate-900 -translate-x-1/2 ${underwater ? 'bg-red-400' : 'bg-green-400'}`}
+          title={`Now ₹${p.current_price}`} style={{ left: `${curPct}%` }} />
       </div>
     </div>
+  );
+};
+
+// Structural (−1R) and target (+2R) prices with % from buy
+const RMeta = ({ p }) => {
+  const rStop = p.structuralSL || p.safetySL;
+  if (!rStop || !p.buyPrice || p.buyPrice <= rStop) return null;
+  const isStruct = !!p.structuralSL;
+  const rUnit = p.buyPrice - rStop;
+  const t2 = p.buyPrice + 2 * rUnit;
+  const riskPct = ((rUnit / p.buyPrice) * 100).toFixed(1);
+  const rewPct = ((2 * rUnit / p.buyPrice) * 100).toFixed(1);
+  return (
+    <p className="text-[11px] text-slate-400 mt-1">
+      {isStruct ? 'Struct −1R: ' : 'Safety −1R (no structural set): '}
+      <span className="text-red-300">₹{rStop.toFixed(1)} (−{riskPct}%)</span>
+      {' · '}Target +2R: <span className="text-green-300">₹{t2.toFixed(1)} (+{rewPct}%)</span>
+    </p>
   );
 };
 
@@ -128,7 +155,8 @@ export default function StopLossTracker() {
   };
 
   const saveStructural = (p) => {
-    const v = Number(structIn[p.id]);
+    const raw = structIn[p.id];
+    const v = (raw === undefined || raw === '') ? Number(p.structuralSL) : Number(raw);
     if (!v || v <= 0) return setMessage({ type: 'error', text: 'Enter a valid structural SL' });
     run(`struct-${p.id}`, null, '/api/sl/set-structural',
       { symbol: p.symbol, structuralSL: v }, () => `✅ ${p.symbol}: structural SL ₹${v}`);
@@ -141,6 +169,7 @@ export default function StopLossTracker() {
   const unprotected = positions.filter(p => reco(p).action === 'SET_SL');
   const trailDue = positions.filter(p => ['SELL_HALF', 'TRAIL'].includes(reco(p).action));
   const done = positions.filter(p => reco(p).action === 'NONE');
+  const exitPending = positions.filter(p => ['EXIT_PENDING', 'HALF_EXIT_PENDING'].includes(reco(p).action));
   const pending = exits.length + unprotected.length + trailDue.length;
 
   const btnStyle = {
@@ -165,6 +194,7 @@ export default function StopLossTracker() {
                 </span>
               )}
               {p.halfBooked && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/60 text-emerald-300">half booked</span>}
+              {p.boughtToday && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/60 text-blue-300">bought today</span>}
             </div>
             <p className="text-xs text-slate-400 mt-1.5">
               Buy ₹{p.buyPrice} · Now <span className="text-blue-400">₹{p.current_price}</span>
@@ -172,11 +202,16 @@ export default function StopLossTracker() {
               {p.structuralSL && <> · Struct ₹{p.structuralSL}</>}
               {p.pnl != null && <> · <span className={p.pnl >= 0 ? 'text-green-400' : 'text-red-400'}>{p.pnl >= 0 ? '+' : ''}₹{p.pnl?.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span></>}
             </p>
+            <RMeta p={p} />
             <p className="text-xs text-slate-300 mt-1">{r.reason}</p>
-            {['SELL_HALF', 'TRAIL'].includes(r.action) && <RLadder p={p} />}
+            <RLadder p={p} />
           </div>
           <div className="flex items-center gap-2 flex-shrink-0 flex-wrap" onClick={e => e.stopPropagation()}>
-            {r.action !== 'NONE' && (
+            {['EXIT_PENDING', 'HALF_EXIT_PENDING'].includes(r.action) ? (
+              <span className="bg-blue-900/50 text-blue-300 font-semibold text-sm px-4 py-2.5 rounded-lg whitespace-nowrap flex items-center gap-2">
+                ⏳ {r.label}
+              </span>
+            ) : r.action !== 'NONE' && (
               <button onClick={() => executeReco(p)} disabled={isBusy || (!r.trigger && r.action !== 'EXIT')}
                 className={`${btnStyle[r.action]} disabled:opacity-50 text-white font-semibold text-sm px-4 py-2.5 rounded-lg whitespace-nowrap flex items-center gap-2`}>
                 {isBusy ? <Loader className="w-4 h-4 animate-spin" /> : null}
@@ -289,6 +324,7 @@ export default function StopLossTracker() {
             {exits.length > 0 && <span className="text-[11px] px-2.5 py-1 rounded-full bg-red-900/60 text-red-300 font-semibold">{exits.length} exit</span>}
             {unprotected.length > 0 && <span className="text-[11px] px-2.5 py-1 rounded-full bg-amber-900/60 text-amber-300 font-semibold">{unprotected.length} unprotected</span>}
             {trailDue.length > 0 && <span className="text-[11px] px-2.5 py-1 rounded-full bg-green-900/60 text-green-300 font-semibold">{trailDue.length} trail due</span>}
+            {exitPending.length > 0 && <span className="text-[11px] px-2.5 py-1 rounded-full bg-blue-900/60 text-blue-300 font-semibold">{exitPending.length} resting</span>}
             <button onClick={() => { setRefreshing(true); fetchData().finally(() => setRefreshing(false)); }}
               disabled={refreshing} className="p-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 disabled:opacity-50">
               <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
@@ -312,6 +348,7 @@ export default function StopLossTracker() {
         )}
 
         <Section title="STEP 1 — EXIT REQUIRED" color="text-red-400" items={exits} accent="border-l-red-500" />
+        <Section title="RESTING — ORDER PLACED, AWAITING FILL AT OPEN" color="text-blue-400" items={exitPending} accent="border-l-blue-500" />
         <Section title="STEP 2 — PLACE INITIAL SL" color="text-amber-400" items={unprotected} accent="border-l-amber-500" />
         <Section title="STEP 3 — BOOK PROFIT / TRAIL (R-LADDER)" color="text-green-400" items={trailDue} accent="border-l-green-500" />
 
@@ -321,17 +358,22 @@ export default function StopLossTracker() {
             <h2 className="text-[11px] font-bold tracking-widest mb-2 text-slate-500">NOTHING TO DO ({done.length})</h2>
             <div className="space-y-1.5">
               {(showDone ? done : done.slice(0, 4)).map(p => (
-                <div key={p.id} className="flex items-center justify-between px-4 py-2.5 rounded-lg bg-slate-800/40 border border-slate-700/40">
-                  <div className="text-sm min-w-0 flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold">{p.symbol}</span>
-                    {p.rMultiple != null && (
-                      <span className={`text-xs font-bold ${p.rMultiple < 0 ? 'text-red-400' : 'text-green-400'}`}>
-                        {p.rMultiple >= 0 ? '+' : ''}{p.rMultiple}R
+                <div key={p.id} className="px-4 py-2.5 rounded-lg bg-slate-800/40 border border-slate-700/40 flex items-start justify-between gap-2">
+                  <div className="text-sm min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-semibold">{p.symbol}</span>
+                      {p.rMultiple != null && (
+                        <span className={`text-xs font-bold ${p.rMultiple < 0 ? 'text-red-400' : 'text-green-400'}`}>
+                          {p.rMultiple >= 0 ? '+' : ''}{p.rMultiple}R
+                        </span>
+                      )}
+                      {p.boughtToday && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/60 text-blue-300">bought today</span>}
+                      <span className="text-xs text-slate-400">
+                        Buy ₹{p.buyPrice} · Now <span className="text-blue-400">₹{p.current_price}</span> · SL ₹{p.stop_loss}{p.slBasis ? ` (${p.slBasis})` : ''} · {reco(p).reason}
                       </span>
-                    )}
-                    <span className="text-xs text-slate-400">
-                      SL ₹{p.stop_loss}{p.slBasis ? ` (${p.slBasis})` : ''} · {reco(p).reason}
-                    </span>
+                    </div>
+                    <RMeta p={p} />
+                    <RLadder p={p} />
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0" onClick={e => e.stopPropagation()}>
                     <span className="text-[10px] px-2 py-0.5 rounded bg-slate-700/60 text-slate-400 font-semibold">SL OK</span>

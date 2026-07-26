@@ -4,6 +4,8 @@ import ChartModal from '../components/ChartModal';
 
 export default function DashboardMobile() {
   const [recommendations, setRecommendations] = useState([]);
+  const [aiPicks, setAiPicks] = useState([]);
+  const [aiStatus, setAiStatus] = useState(null);
   const [selectedStock, setSelectedStock] = useState(null);
   const [loading, setLoading] = useState(true);
   const [chartOpen, setChartOpen] = useState(false);
@@ -19,14 +21,34 @@ export default function DashboardMobile() {
   }, []);
 
   const runScan = async () => {
-    if (!window.confirm('Run the screener now? Takes a few minutes.')) return;
+    if (!window.confirm('Run the screener now? Scans all NSE stocks — takes several minutes.')) return;
     setScanning(true);
     try {
       const r = await fetch('/api/recommendations/refresh', { method: 'POST' });
       const d = await r.json();
       alert(d.message || 'Scan started');
-    } catch { alert('Failed to start scan'); }
-    setScanning(false);
+    } catch {
+      alert('Failed to start scan');
+      setScanning(false);
+      return;
+    }
+    // Poll until the scan finishes, then reload picks automatically
+    let polls = 0;
+    const poll = setInterval(async () => {
+      polls += 1;
+      try {
+        const s = await (await fetch('/api/data-status')).json();
+        if (!s.scanRunning || polls > 60) {
+          clearInterval(poll);
+          setScanning(false);
+          await fetchRecommendations();
+          refreshStatus();
+        }
+      } catch {
+        clearInterval(poll);
+        setScanning(false);
+      }
+    }, 15000);
   };
 
   const updateData = async () => {
@@ -53,6 +75,8 @@ export default function DashboardMobile() {
       });
       const data = await response.json();
       setRecommendations(data.stocks || []);
+      setAiPicks(data.aiPicks || []);
+      setAiStatus(data.aiStatus || null);
       if (data.stocks?.length > 0) {
         selectStock(data.stocks[0]);
       }
@@ -82,7 +106,7 @@ export default function DashboardMobile() {
       const response = await fetch('/api/buy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
-        body: JSON.stringify({ symbol: stock.symbol, quantity: qty, price: entry, stopLoss: sl })
+        body: JSON.stringify({ symbol: stock.symbol, quantity: qty, price: entry, stopLoss: sl, recommendation: stock })
       });
       const result = await response.json();
       if (response.ok && result.success) {
@@ -97,6 +121,17 @@ export default function DashboardMobile() {
       console.error('Order placement failed:', error);
       alert('❌ Order placement failed (network error)');
     }
+  };
+
+  const riskRewardPct = (s) => {
+    const e = s.entry || s.currentPrice, sl = s.stopLoss, t = s.target;
+    if (!e || !sl || !t || sl >= e || t <= e) return null;
+    return { risk: ((e - sl) / e * 100).toFixed(1), reward: ((t - e) / e * 100).toFixed(1) };
+  };
+  const fmtReason = (s) => s.reason ? s.reason.replace(/\s*\|\s*R:R\s*1:[\d.]+/i, '').replace(/R:R\s*1:[\d.]+\s*\|\s*/i, '') : s.reason;
+  const allocation = (s) => {
+    const e = s.entry || s.currentPrice, q = s.recommendedQty || 0;
+    return e && q ? Math.round(e * q) : null;
   };
 
   if (loading) return <div className="p-4 text-center text-slate-400">Loading...</div>;
@@ -133,6 +168,7 @@ export default function DashboardMobile() {
           Today's Picks
         </h2>
 
+        <p className="text-[10px] font-bold tracking-widest text-blue-300 mb-2">📐 QUANT PICKS</p>
         <div className="space-y-2">
           {recommendations.length === 0 ? (
             <div className="text-center py-8">
@@ -151,7 +187,18 @@ export default function DashboardMobile() {
                 }`}
               >
                 <div className="flex-1">
-                  <p className="font-bold text-base">{stock.symbol}</p>
+                  <p className="font-bold text-base flex items-center gap-1.5 flex-wrap">
+                    {stock.symbol}
+                    {stock.heldQty > 0 && (
+                      <span className="text-[9px] font-semibold bg-purple-700 text-purple-100 px-1.5 py-0.5 rounded">HOLDING {stock.heldQty}</span>
+                    )}
+                    {!stock.heldQty && stock.positionQty > 0 && (
+                      <span className="text-[9px] font-semibold bg-purple-700 text-purple-100 px-1.5 py-0.5 rounded">TODAY {stock.positionQty}</span>
+                    )}
+                    {stock.hasForeverBuy && (
+                      <span className="text-[9px] font-semibold bg-amber-700 text-amber-100 px-1.5 py-0.5 rounded">ORDER RESTING</span>
+                    )}
+                  </p>
                   <div className="flex gap-2 mt-1">
                     <span className="text-xs bg-green-700 px-2 py-0.5 rounded">T: ₹{stock.target}</span>
                     <span className="text-xs bg-red-700 px-2 py-0.5 rounded">SL: ₹{stock.stopLoss}</span>
@@ -165,6 +212,57 @@ export default function DashboardMobile() {
                 </div>
               </button>
             ))
+          )}
+        </div>
+
+        <p className="text-[10px] font-bold tracking-widest text-emerald-300 mt-4 mb-2">🤖 AI CHART PICKS</p>
+        <div className="space-y-2">
+          {aiPicks.length > 0 ? (
+            aiPicks.map((stock) => (
+              <button
+                key={`ai-${stock.symbol}`}
+                onClick={() => selectStock(stock)}
+                className={`w-full text-left p-3 rounded-lg transition-all ${
+                  selectedStock?.symbol === stock.symbol
+                    ? 'bg-blue-600 border border-blue-400'
+                    : 'bg-slate-700 border border-emerald-800/60'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <p className="font-bold text-base flex items-center gap-1.5 flex-wrap">
+                      {stock.symbol}
+                      {stock.alsoQuantPick && (
+                        <span className="text-[9px] font-semibold bg-emerald-700 text-emerald-100 px-1.5 py-0.5 rounded">QUANT + AI</span>
+                      )}
+                      {stock.heldQty > 0 && (
+                        <span className="text-[9px] font-semibold bg-purple-700 text-purple-100 px-1.5 py-0.5 rounded">HOLDING {stock.heldQty}</span>
+                      )}
+                    </p>
+                    <div className="flex gap-2 mt-1">
+                      <span className="text-xs bg-green-700 px-2 py-0.5 rounded">T: ₹{stock.target}</span>
+                      <span className="text-xs bg-red-700 px-2 py-0.5 rounded">SL: ₹{stock.stopLoss}</span>
+                    </div>
+                  </div>
+                  <div className="text-right ml-2">
+                    <p className="font-bold text-sm">₹{stock.currentPrice}</p>
+                    <p className={`text-xs ${stock.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {stock.change >= 0 ? '+' : ''}{stock.change?.toFixed(2)}%
+                    </p>
+                  </div>
+                </div>
+                {stock.aiRatings && (
+                  <p className="text-[9px] text-emerald-200 mt-1.5">
+                    Vol: {stock.aiRatings.volumePattern} · Base: {stock.aiRatings.baseStructure} · PB: {stock.aiRatings.pullbackDepth}
+                    {stock.aiExtended ? ' · ⚠️ extended' : ''}
+                  </p>
+                )}
+              </button>
+            ))
+          ) : (
+            <p className="text-[11px] text-slate-500 py-1">
+              {aiStatus === 'pending' ? '⏳ AI analysis running…' : aiStatus === 'error' ? '⚠️ AI analysis unavailable' : 'AI picks appear after the next scan.'}
+            </p>
           )}
         </div>
       </div>
@@ -207,11 +305,55 @@ export default function DashboardMobile() {
                   {(((selectedStock.target - selectedStock.currentPrice) / selectedStock.currentPrice) * 100).toFixed(1)}%
                 </p>
               </div>
+              <div>
+                <p className="text-xs text-slate-400">Allocation</p>
+                <p className="text-lg font-bold text-amber-300">
+                  {allocation(selectedStock) != null ? `₹${allocation(selectedStock).toLocaleString('en-IN')}` : '—'}
+                </p>
+                <p className="text-[9px] text-slate-500">{selectedStock.recommendedQty} × ₹{selectedStock.entry ?? selectedStock.currentPrice}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-400">Risk:Reward</p>
+                <p className="text-lg font-bold text-blue-300">
+                  {(() => { const rr = riskRewardPct(selectedStock); return rr ? `${rr.risk}%:${rr.reward}%` : (selectedStock.rrRatio != null ? `1:${selectedStock.rrRatio}` : '—'); })()}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-400">Total Risk</p>
+                <p className="text-lg font-bold text-red-300">
+                  {selectedStock.riskPerShare != null && selectedStock.recommendedQty
+                    ? `₹${Math.round(selectedStock.riskPerShare * selectedStock.recommendedQty).toLocaleString('en-IN')}`
+                    : '—'}
+                </p>
+                <p className="text-[9px] text-slate-500">if SL hits</p>
+              </div>
             </div>
 
             <p className="mt-3 text-xs text-slate-300">
-              <strong>Reason:</strong> {selectedStock.reason}
+              <strong>Reason:</strong> {fmtReason(selectedStock)}
             </p>
+
+            {/* AI chart analysis (Gemini v3) */}
+            {selectedStock.aiRatings && (
+              <div className="mt-3 bg-emerald-900/15 border border-emerald-800/40 rounded-lg p-2.5">
+                <p className="text-[10px] font-bold tracking-widest text-emerald-300 mb-1.5">
+                  🤖 AI CHART ANALYSIS <span className="text-slate-500 font-normal">(rank #{selectedStock.aiRank ?? '—'})</span>
+                </p>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
+                  <D label="Volume Pattern" v={selectedStock.aiRatings.volumePattern ?? '—'} />
+                  <D label="Base Structure" v={selectedStock.aiRatings.baseStructure ?? '—'} />
+                  <D label="Pullback Depth" v={selectedStock.aiRatings.pullbackDepth ?? '—'} />
+                  <D label="Base Type" v={selectedStock.aiBaseType ?? '—'} />
+                  <D label="Extended?" v={selectedStock.aiExtended ? '⚠️ Yes' : 'No'} />
+                  <D label="AI Reco" v={selectedStock.aiRecommendation ?? '—'} />
+                  <D label="AI Confidence" v={selectedStock.aiConfidence != null ? `${Math.round(selectedStock.aiConfidence * 100)}%` : '—'} />
+                  <D label="Quant IFP" v={selectedStock.ifp ?? '—'} />
+                </div>
+                {selectedStock.aiVerdict && (
+                  <p className="text-[10px] text-emerald-200/90 mt-1.5 italic">"{selectedStock.aiVerdict}"</p>
+                )}
+              </div>
+            )}
 
             {/* Full screener detail */}
             {selectedStock.entryType && (
@@ -226,7 +368,6 @@ export default function DashboardMobile() {
                   <D label="Target" v={`₹${selectedStock.target}`} />
                   <D label="Qty" v={`${selectedStock.recommendedQty}${selectedStock.baseStage != null ? ` (st${selectedStock.baseStage} x${selectedStock.stageMultiplier ?? 1})` : ''}`} />
                   <D label="Risk/Share" v={selectedStock.riskPerShare != null ? `₹${selectedStock.riskPerShare}` : '—'} />
-                  <D label="R:R" v={selectedStock.rrRatio != null ? `1:${selectedStock.rrRatio}` : '—'} />
                   <D label="Tick" v={selectedStock.tickSize != null ? `₹${selectedStock.tickSize}` : '—'} />
                   <D label="Base Quality" v={selectedStock.baseQuality != null ? selectedStock.baseQuality.toFixed(2) : '—'} />
                   <D label="Liquidity" v={selectedStock.liquidityCr != null ? `₹${selectedStock.liquidityCr}cr` : '—'} />
@@ -247,13 +388,23 @@ export default function DashboardMobile() {
           </button>
 
           {/* Buy Button */}
-          <button
-            onClick={() => handleBuy(selectedStock)}
-            className="w-full bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-all"
-          >
-            <ShoppingCart className="w-5 h-5" />
-            Buy {selectedStock.symbol}
-          </button>
+          {selectedStock.owned ? (
+            <div className="w-full bg-slate-700 border border-purple-600/50 text-purple-200 font-semibold py-3 px-4 rounded-lg text-center text-sm">
+              {selectedStock.heldQty > 0
+                ? `Already holding ${selectedStock.heldQty} shares — manage from SL tab`
+                : selectedStock.positionQty > 0
+                  ? `Bought today (${selectedStock.positionQty}) — manage from SL tab`
+                  : 'BUY forever order already resting on Dhan'}
+            </div>
+          ) : (
+            <button
+              onClick={() => handleBuy(selectedStock)}
+              className="w-full bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-all"
+            >
+              <ShoppingCart className="w-5 h-5" />
+              Buy {selectedStock.symbol}
+            </button>
+          )}
         </div>
       )}
 
