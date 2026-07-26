@@ -24,6 +24,7 @@ sys.path.insert(0, '/root/trade-execution-webhook')
 
 import dhan_client
 import sl_engine
+import position_db
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -160,7 +161,10 @@ def _recommendation(p):
                 "reason": f"Closed below structural ₹{p['structural_sl']}", "trigger": None, "urgency": 0}
 
     if not p["has_sl"]:
-        init = p["structural_sl"] if (p["structural_sl"] and ltp and p["structural_sl"] < ltp) else p["safety_sl"]
+        # Initial protection defaults to -8% safety, not structural — structural
+        # is a technical/trailing reference, the safety net is what actually
+        # protects you the moment you have zero resting orders.
+        init = p["safety_sl"] if (p["safety_sl"] and ltp and p["safety_sl"] < ltp) else p["structural_sl"]
         if init and ltp and init < ltp:
             return {"action": "SET_SL", "label": f"Set SL ₹{round(init, 1)}",
                     "reason": "No stop loss — place initial protection",
@@ -219,21 +223,39 @@ def _classify_sl(sl_price, entry, structural, safety):
     return "Custom"
 
 
+STRUCT_HISTORY_FILE = '/root/trade-execution-webhook/structural_sl_history.json'
+
+
 def _screener_structural_map():
-    """{SYMBOL(no .NS): stopLoss} from the latest screener output — used as the
-    structural SL for holdings not present in the Google Sheet."""
+    """{SYMBOL(no .NS): stopLoss} — structural SL from the screener.
+
+    Reads today's latest_recommendations.json 'stocks' AND the persistent
+    structural_sl_history.json (upserted every scan, never overwritten
+    wholesale). The history is what makes this survive a stock dropping out
+    of a later scan's top-3 — without it, a stock alerted a few days ago
+    would silently lose its structural SL and fall back to the −8% safety
+    level the moment a newer scan's top picks didn't include it."""
+    m = {}
     try:
         with open(RECS_FILE) as f:
             data = json.load(f)
-        m = {}
         for s in data.get('stocks', []):
             sym = str(s.get('symbol', '')).replace('.NS', '').strip().upper()
             sl = s.get('stopLoss') or s.get('stop_loss')
             if sym and sl:
                 m[sym] = float(sl)
-        return m
     except Exception:
-        return {}
+        pass
+    try:
+        with open(STRUCT_HISTORY_FILE) as f:
+            hist = json.load(f)
+        for sym, rec in hist.items():
+            sl = rec.get('structuralSL')
+            if sl:
+                m[str(sym).upper()] = float(sl)
+    except Exception:
+        pass
+    return m
 
 
 def _last_close_map(symbols):
@@ -277,6 +299,84 @@ def _forever_sl_map():
     return out
 
 
+
+
+def _structural_map_with_db():
+    """Query DB first for structural_sl, fallback to sheet/JSON."""
+    import psycopg2
+    m = {}
+    
+    # Query DB for structural_sl values in open positions
+    try:
+        conn = psycopg2.connect(
+            os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/trading_platform"),
+            connect_timeout=5,
+        )
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT DISTINCT ON (exchange_token)
+                exchange_token, structural_sl, structural_sl_source, entry_price
+            FROM sl_positions
+            WHERE status IN ('OPEN', 'PARTIAL')
+                AND structural_sl IS NOT NULL
+            ORDER BY exchange_token, updated_at DESC
+        """)
+        for sec, sl, src, entry in cur.fetchall():
+            if sec and sl:
+                m[str(sec)] = {
+                    "structuralSL": float(sl),
+                    "entry": float(entry) if entry else None,
+                    "source": src or "db",
+                }
+        cur.close()
+        conn.close()
+        logger.info(f"Loaded {len(m)} positions from DB (sl_positions)")
+    except Exception as e:
+        logger.warning(f"DB structural SL query failed: {e}")
+
+    # Second tier: the trades journal (populated at buy-click time with the
+    # exact structural SL shown on the recommendation card — sl_positions is
+    # not actually written to for real trades, so this is the real DB source
+    # for anything bought through the recommendations flow). Only fills gaps
+    # left by sl_positions above; only live/pending trades are eligible.
+    try:
+        conn = psycopg2.connect(
+            os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/trading_platform"),
+            connect_timeout=5,
+        )
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT DISTINCT ON (security_id)
+                security_id, structural_sl, buy_trigger_price, actual_buy_price
+            FROM trades
+            WHERE status IN ('PENDING_FILL', 'OPEN', 'EXIT_PENDING', 'HALF_BOOKED')
+                AND structural_sl IS NOT NULL
+            ORDER BY security_id, id DESC
+        """)
+        added = 0
+        for sec, sl, trigger_price, actual_price in cur.fetchall():
+            if sec and sl and str(sec) not in m:
+                m[str(sec)] = {
+                    "structuralSL": float(sl),
+                    "entry": float(actual_price) if actual_price else (float(trigger_price) if trigger_price else None),
+                    "source": "trades_journal",
+                }
+                added += 1
+        cur.close()
+        conn.close()
+        if added:
+            logger.info(f"Loaded {added} additional positions from DB (trades journal)")
+    except Exception as e:
+        logger.warning(f"DB structural SL query (trades) failed: {e}")
+
+    # Fallback to original _structural_map for positions not in DB yet
+    original = _structural_map()
+    for sec, data in original.items():
+        if sec not in m:
+            m[sec] = data
+    return m
+
+
 def _structural_map():
     """{securityId: {structuralSL, entry, target, status}} from the sheet DB."""
     if sheet_db is None:
@@ -306,13 +406,40 @@ async def get_sl_alerts():
     try:
         holdings = dhan_client.get_holdings()      # has lastTradedPrice
         sl_map = _forever_sl_map()                  # existing forever SLs
-        struct = _structural_map()                  # structural SL from sheet
+        struct = _structural_map_with_db()                  # structural SL from sheet
         screener_struct = _screener_structural_map()  # fallback from screener output
         manual_struct = _manual_structural_map()      # user-entered fallback
         half_booked = _half_booked_map()              # +2R half-booking flags
     except Exception as e:
         logger.error(f"SL data fetch failed: {e}")
         raise HTTPException(status_code=502, detail=f"Dhan/sheet error: {str(e)[:140]}")
+
+    # Merge today's LONG delivery positions not yet settled into holdings
+    # (stocks bought today live in the positions API until T+1 — without this
+    #  they'd be invisible to SL tracking)
+    try:
+        held_ids = {str(h.get("securityId")) for h in holdings}
+        for p in dhan_client.get_positions():
+            if str(p.get("positionType", "")).upper() != "LONG":
+                continue
+            if str(p.get("productType", "")).upper() not in ("CNC", "DELIVERY", "MARGIN"):
+                continue
+            sec = str(p.get("securityId", ""))
+            qty = int(p.get("netQty") or 0)
+            if not sec or sec in held_ids or qty <= 0:
+                continue
+            holdings.append({
+                "securityId": sec,
+                "tradingSymbol": p.get("tradingSymbol", ""),
+                "totalQty": qty,
+                "availableQty": qty,
+                "avgCostPrice": float(p.get("buyAvg") or p.get("costPrice") or 0),
+                "lastTradedPrice": float(p.get("lastTradedPrice") or p.get("ltp") or 0),
+                "_fromPositions": True,
+            })
+            held_ids.add(sec)
+    except Exception as e:
+        logger.warning(f"positions merge skipped: {e}")
 
     # Last daily close per symbol (for the close-confirmed danger check)
     hold_syms = [str(h.get("tradingSymbol", "")).replace(".NS", "").upper()
@@ -350,8 +477,11 @@ async def get_sl_alerts():
         safety_sl = round(entry * sl_engine.SAFETY_SL_PCT, 1) if entry else None
         last_close = close_map.get(sym_key)
 
-        # R-multiple of the current move: R = buy − stop (structural, else −8% safety)
-        r_stop = structural_sl if structural_sl else safety_sl
+        # R-multiple of the current move: R = buy − stop. Unprotected positions
+        # (no resting SL order) use −8% safety as the reference — that's the
+        # real fallback protection right now. Once a real SL is placed,
+        # structural (if set) remains the reference for trailing decisions.
+        r_stop = (structural_sl if structural_sl else safety_sl) if has_sl else (safety_sl if safety_sl else structural_sl)
         r_unit = (avg - r_stop) if (r_stop and avg > r_stop) else None
         r_multiple = round((ltp - avg) / r_unit, 2) if r_unit else None
 
@@ -388,19 +518,50 @@ async def get_sl_alerts():
                            "message": f"⚠️ {symbol}: {distance}% above SL ₹{sl_price}"})
 
         is_half_booked = bool(half_booked.get(sym_key))
-        reco = _recommendation({
-            "danger": below_close, "has_sl": has_sl, "sl_price": sl_price,
-            "avg": avg, "ltp": ltp, "r_unit": r_unit, "r_multiple": r_multiple,
-            "structural_sl": structural_sl, "safety_sl": safety_sl,
-            "half_booked": is_half_booked, "qty": qty,
-        })
+
+        # Dhan's GET /forever/orders never echoes correlationId back, so the
+        # only reliable way to know "this resting order IS the exit we
+        # already placed" is our own log — without it, the recommendation
+        # kept re-suggesting "Exit at open" forever, even after the exit
+        # order was placed and resting (looked like the button did nothing).
+        pending_types = position_db.pending_order_types(sec_id, [o.get("orderId") for o in my_sls])
+        pending_exit = "EXIT" in pending_types
+        pending_half_exit = "HALF_EXIT" in pending_types
+
+        if pending_exit:
+            reco = {"action": "EXIT_PENDING", "label": "Exit pending — fills at open",
+                    "reason": "Exit order already placed — resting at the broker", "trigger": None, "urgency": 0}
+        elif pending_half_exit:
+            reco = {"action": "HALF_EXIT_PENDING", "label": "Half-exit pending — fills at open",
+                    "reason": "Half-exit order already placed — resting at the broker", "trigger": None, "urgency": 0}
+        else:
+            reco = _recommendation({
+                "danger": below_close, "has_sl": has_sl, "sl_price": sl_price,
+                "avg": avg, "ltp": ltp, "r_unit": r_unit, "r_multiple": r_multiple,
+                "structural_sl": structural_sl, "safety_sl": safety_sl,
+                "half_booked": is_half_booked, "qty": qty,
+            })
+
+        position_db.upsert_snapshot(
+            sec_id, symbol,
+            quantity=qty, buy_price=round(entry, 2) if entry else round(avg, 2),
+            structural_sl=round(structural_sl, 2) if structural_sl else None,
+            structural_sl_source=structural_src,
+            current_sl_price=round(sl_price, 2) if has_sl else None,
+            current_sl_basis=sl_basis,
+            status=("EXIT_PENDING" if pending_exit else "HALF_BOOKED" if (is_half_booked or pending_half_exit) else "OPEN"),
+            half_booked=is_half_booked, r_multiple=r_multiple,
+        )
 
         positions.append({
             "id": sec_id,
             "securityId": sec_id,
             "symbol": symbol,
             "halfBooked": is_half_booked,
+            "pendingExit": pending_exit,
+            "pendingHalfExit": pending_half_exit,
             "recommendation": reco,
+            "boughtToday": bool(h.get("_fromPositions")),
             "quantity": qty,
             "entry_price": round(entry, 2) if entry else round(avg, 2),
             "buyPrice": round(avg, 2),
@@ -435,6 +596,9 @@ async def get_sl_alerts():
                 for o in my_sls
             ],
         })
+
+    position_db.mark_closed_if_absent({str(h.get("securityId")) for h in holdings
+                                        if int(h.get("totalQty") or h.get("availableQty") or 0) > 0})
 
     return {"positions": positions, "alerts": alerts, "asOf": datetime.now().isoformat()}
 
@@ -507,6 +671,9 @@ async def place_safety(req: PlaceSafetyReq):
     ok, order_id, level = sl_engine.place_safety_sl(req.securityId, req.quantity, entry, req.symbol)
     if not ok:
         raise HTTPException(status_code=400, detail="Dhan rejected safety SL order")
+    position_db.log_order(req.securityId, req.symbol, order_id, "SAFETY", level, req.quantity)
+    position_db.upsert_snapshot(req.securityId, req.symbol, current_sl_price=level,
+                                 current_sl_basis="SAFETY", current_sl_order_id=order_id, status="OPEN")
     return {"success": True, "orderId": order_id, "trigger": level,
             "message": f"−8% safety SL placed for {req.symbol} @ ₹{level}"}
 
@@ -527,6 +694,9 @@ async def place_at_level(req: PlaceAtLevelReq):
         req.securityId, req.quantity, sl_engine._round_down(req.trigger, req.symbol), req.symbol)
     if not ok:
         raise HTTPException(status_code=400, detail="Dhan rejected SL order")
+    position_db.log_order(req.securityId, req.symbol, order_id, "CUSTOM", level, req.quantity)
+    position_db.upsert_snapshot(req.securityId, req.symbol, current_sl_price=level,
+                                 current_sl_basis="CUSTOM", current_sl_order_id=order_id, status="OPEN")
     return {"success": True, "orderId": order_id, "trigger": level,
             "message": f"SL placed for {req.symbol} @ ₹{level}"}
 
@@ -536,7 +706,8 @@ async def structural_exit(req: StructuralExitReq):
     """Place an exit-forever that fills at next open (reuses place_exit_forever)."""
     close_price = req.closePrice
     if close_price <= 0:
-        close_price = sl_engine.get_daily_close(req.securityId, req.symbol) or 0
+        close_tuple = sl_engine.get_daily_close(req.securityId, req.symbol) or (0, "NONE")
+        close_price = close_tuple[0] if close_tuple[0] else 0
     if close_price <= 0:
         raise HTTPException(status_code=400, detail="Could not determine close price")
 
@@ -551,6 +722,10 @@ async def structural_exit(req: StructuralExitReq):
         if o.get("orderId") != order_id:
             if sl_engine.cancel_forever_order(o.get("orderId"), req.symbol):
                 cancelled += 1
+
+    position_db.log_order(req.securityId, req.symbol, order_id, "EXIT", trigger, req.quantity)
+    position_db.upsert_snapshot(req.securityId, req.symbol, status="EXIT_PENDING",
+                                 exit_order_id=order_id, exit_trigger_price=trigger)
 
     msg = f"Exit order placed for {req.symbol} (fills at open @ ~₹{trigger})"
     if cancelled:
@@ -578,8 +753,9 @@ async def trail_sl(req: TrailReq):
     pos = {"securityId": req.securityId, "symbol": req.symbol,
            "qty": int(h.get("totalQty") or 0), "avgPrice": float(h.get("avgCostPrice") or 0)}
 
-    close_price = sl_engine.get_daily_close(req.securityId, req.symbol)
-    if not close_price:
+    close_tuple = sl_engine.get_daily_close(req.securityId, req.symbol)
+    close_price = close_tuple[0] if close_tuple and close_tuple[0] else 0
+    if close_price <= 0:
         raise HTTPException(status_code=400, detail="Could not fetch daily close")
 
     safety_order = next((o for o in _forever_sl_map().get(req.securityId, [])), None)
@@ -590,8 +766,11 @@ async def trail_sl(req: TrailReq):
         one_r = round(r_basis["one_r_price"], 2)
         raise HTTPException(status_code=400,
                             detail=f"No trail: close ₹{close_price} below 1R ₹{one_r}, or SL already higher")
-    return {"success": True, "newTrigger": result.get("Safety_SL"),
-            "message": f"{req.symbol} SL trailed up to ₹{result.get('Safety_SL')}"}
+    new_trigger = result.get("Safety_SL")
+    position_db.upsert_snapshot(req.securityId, req.symbol, current_sl_price=new_trigger,
+                                 current_sl_basis="TRAIL", status="OPEN")
+    return {"success": True, "newTrigger": new_trigger,
+            "message": f"{req.symbol} SL trailed up to ₹{new_trigger}"}
 
 
 class MoveReq(BaseModel):
@@ -627,6 +806,10 @@ async def move_sl(req: MoveReq):
     cancelled = False
     if req.oldOrderId:
         cancelled = sl_engine.cancel_forever_order(req.oldOrderId, req.symbol)
+
+    position_db.log_order(req.securityId, req.symbol, new_id, "MOVE", level, req.quantity)
+    position_db.upsert_snapshot(req.securityId, req.symbol, current_sl_price=level,
+                                 current_sl_basis="MOVE", current_sl_order_id=new_id, status="OPEN")
 
     return {"success": True, "orderId": new_id, "trigger": level, "oldCancelled": cancelled,
             "message": f"{req.symbol}: SL moved to ₹{level}"}
@@ -666,7 +849,8 @@ async def sell_half(req: SellHalfReq):
     half = qty // 2
     rest = qty - half
 
-    close_price = sl_engine.get_daily_close(req.securityId, req.symbol) or float(h.get("lastTradedPrice") or 0)
+    close_tuple = sl_engine.get_daily_close(req.securityId, req.symbol)
+    close_price = close_tuple[0] if close_tuple and close_tuple[0] else float(h.get("lastTradedPrice") or 0)
     if close_price <= 0:
         raise HTTPException(status_code=400, detail="Could not determine close price")
     if req.newTrigger <= 0 or req.newTrigger >= close_price:
@@ -690,6 +874,14 @@ async def sell_half(req: SellHalfReq):
 
     # 4) flag
     _set_half_booked(req.symbol, True)
+
+    position_db.log_order(req.securityId, req.symbol, exit_id, "HALF_EXIT", exit_trigger, half)
+    if ok2:
+        position_db.log_order(req.securityId, req.symbol, new_sl_id, "SAFETY", level, rest)
+    position_db.upsert_snapshot(req.securityId, req.symbol, status="HALF_BOOKED", half_booked=True,
+                                 exit_order_id=exit_id, exit_trigger_price=exit_trigger,
+                                 current_sl_price=(level if ok2 else None),
+                                 current_sl_order_id=(new_sl_id if ok2 else None))
 
     msg = f"{req.symbol}: selling {half} at open"
     msg += f", SL on remaining {rest} moved to ₹{level}" if ok2 else f" — ⚠️ could not place new SL for remaining {rest}, set manually!"

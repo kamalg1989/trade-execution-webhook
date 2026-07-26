@@ -8,6 +8,8 @@ from datetime import datetime
 import logging
 
 import dhan_client
+import trade_journal
+import position_db
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -18,6 +20,11 @@ class BuyOrderRequest(BaseModel):
     quantity: int
     price: float = 0        # entry / "buy above" trigger price
     stopLoss: float = 0     # informational (SL is placed from the SL tab after fill)
+    recommendation: dict = None  # the full stock object as shown on the recommendations
+                                  # card (target/stopLoss/confidence/reason/regime/entryType/
+                                  # signalBarDate/riskPerShare/rrRatio/targetStrategy/baseStage/
+                                  # baseQuality/liquidityCr/ifp/baseRangePct + AI fields) — frozen
+                                  # into the trades journal exactly as it was shown at click time
 
 
 @router.post("/buy")
@@ -52,6 +59,11 @@ async def place_buy_order(order: BuyOrderRequest):
     buy = dhan_client.place_forever_buy(security_id, order.quantity, entry, order.symbol)
     if not buy.get("success"):
         raise HTTPException(status_code=400, detail=f"Buy failed: {buy.get('error')}")
+
+    trade_journal.save_trade_on_buy(
+        security_id, order.symbol, buy.get("orderId"), entry, order.quantity,
+        rec=order.recommendation,
+    )
 
     return {
         "success": True,
@@ -97,6 +109,8 @@ async def close_position(security_id: str, payload: dict = None):
     )
     if not sell.get("success"):
         raise HTTPException(status_code=400, detail=f"Sell failed: {sell.get('error')}")
+
+    position_db.log_order(security_id, holding.get("tradingSymbol"), sell.get("orderId"), "MARKET_SELL", None, qty)
 
     return {"success": True, "orderId": sell.get("orderId"),
             "message": f"Sell order placed for {holding.get('tradingSymbol')} x{qty}"}
