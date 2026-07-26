@@ -27,27 +27,37 @@ USER FLOW
 1. Pick date → market snapshot banner (regime, breadth)
 2. PRIMARY filters (universe definition) + ADVANCED filters (setup quality)
    → POST /api/filter → in-memory filter over that day's indicator slice
-3. Optional: "Tune IFP" — recompute IFP live with custom params on the results
-4. AI analysis panel → POST /api/ai-analyze
+3. AI analysis panel → POST /api/ai-analyze (always analyzes every listed
+   symbol — no IFP pre-filter gate; see §3)
    a. Store lookup   (symbol+date+prompt_version+model already analyzed? free)
-   b. Feature engine (deterministic IFP numerics + levels, no AI)
-   c. Gate           (hard: weak IFP dropped before AI = zero cost)
-   d. Chart render   (clean daily+weekly PNG: candles, volume+MA20, EMAs)
-   e. Claude vision  (images + numeric feature block → forced JSON schema)
-   f. Verification   (AI levels vs computed pivot/stop, ±2% tolerance)
-   g. Annotate + store (immutable row per symbol/date/prompt_version/model)
-   h. Background: outcome scoring kicks off automatically
-5. Results table → row click → popup: charts, AI report, levels, feedback
-6. Aftermath tab → what actually happened after the call (backtest review)
-7. AI performance table → win rates per engine/verdict accumulate over time
+   b. Feature engine (deterministic IFP numerics + levels — v2 feeds these to
+      the AI; v3 computes them only for the post-hoc cross-check, never sent)
+   c. Chart render   (clean PNG: candles, volume+MA20, EMAs — daily only for
+      v3, daily+weekly for v2 unless "daily only" scope is picked)
+   d. AI vision call (v3: pure chart image + cached few-shot examples; v2:
+      images + numeric feature block) → forced JSON schema
+   e. Verification   (AI levels vs computed pivot/stop, ±2% tolerance —
+      independent check, never fed back into the prompt)
+   f. Annotate + store (immutable row per symbol/date/prompt_version/model)
+   g. Background: outcome scoring kicks off automatically
+4. Results table → row click → popup: charts, AI report, levels, feedback
+5. Aftermath tab → what actually happened after the call (backtest review)
+6. AI performance table → win rates per engine/verdict accumulate over time
 ```
 
-**Division of labor** (core design principle): *numbers detect the footprint,
-vision classifies the base, rules verify the levels.* Volume signatures are
-computed deterministically (a chart PNG can't convey exact volume magnitudes);
-Claude judges structural shape (base form, pattern geometry, cross-timeframe
-base counting); a verification layer cross-checks every AI level against the
-computed one and flags disagreement instead of trusting either.
+**Division of labor.** Two philosophies coexist, selectable per run:
+- **v3 (default) — trust the eyes.** The AI never sees our computed numbers.
+  It reads the chart image cold, calibrated by two real few-shot examples
+  (a strong-IFP and a weak-IFP stock from this account's own trades). Our
+  math runs anyway, but purely as an *independent* post-hoc cross-check —
+  it can flag disagreement, never anchor the AI's judgment.
+- **v2 (legacy) — numbers detect, vision classifies.** Volume signatures are
+  computed deterministically (a chart PNG can't convey exact volume
+  magnitudes) and fed to the model; Claude judges structural shape (base
+  form, pattern geometry, cross-timeframe base counting) on top of them.
+
+Either way, a verification layer cross-checks every AI level against the
+computed one and flags disagreement instead of trusting either blindly.
 
 ---
 
@@ -82,38 +92,166 @@ computed one and flags disagreement instead of trusting either.
 
 Every control has an ⓘ tooltip explaining its purpose w.r.t. the setup.
 
-### Tune IFP panel
-Recomputes IFP live on the filtered subset with custom params (lookback days,
-vol surge ×, close position) — updates the IFP column (marked `*`), stores
-nothing. Note: the AI gate uses the stored nightly score, not tuned values.
+Note: the live "Tune IFP" recompute panel was removed from the AI analysis
+UI — the IFP column now only ever shows the stored nightly score, and the AI
+stage no longer gates on it (see §3).
 
 ---
 
 ## 3. AI analysis
 
-### Engines and costs (per stock, daily+weekly charts)
+The panel has three selectors: **prompt version** (v3 default / v2), **AI
+engine** (Gemini default / Haiku / Hybrid / Sonnet), and — v2 only — **chart
+scope** (daily / daily+weekly; v3 is always daily-only). No gate or threshold
+control any more: every symbol passed into the panel gets analyzed, always.
+Results are cached per `symbol + date + prompt_version + model`, so re-running
+with the same combination is free (store lookup, no API call).
+
+### Prompt versions
+
+**v3 — Visual (default).** Pure chart-reading. The AI receives ONLY the
+daily chart image plus two fixed calibration examples (real charts from this
+account's own trades, rendered once and cached) — no computed numbers are in
+the prompt at all. Cheapest, and the philosophy the module is built around:
+*don't trust the math, trust what a trained eye sees on the chart.* Our
+feature engine still runs, but purely as an independent post-hoc
+cross-check (§ Verification below), never as model input.
+
+**v2 — Grounded (legacy).** The AI receives the chart(s) plus a computed
+feature block (IFP score, absorption days, volume ratios, computed levels)
+and is told to trust those numbers for anything volume/level-related, using
+the chart only for structural shape. Kept for comparison — the outcome
+tracking table (§5) reports v2 vs v3 win rates separately so the two
+philosophies can be judged on actual forward returns, not just intuition.
+
+### Engines and costs (per stock)
 
 | Engine | Model string | Cost/stock | Character |
 |---|---|---|---|
-| Haiku | `claude-haiku-4-5-20251001` | ~$0.007 (~₹0.6) | Fast cheap scan. Head-to-head test (5 symbols, same date): too optimistic — rated EARLY_STAGE/SETUP_READY on charts Sonnet rated AVOID at 0.85–0.90 confidence, and 4/5 of its levels mismatched computed pivots. Treat SETUP_READY loosely |
-| Sonnet | `claude-sonnet-4-5` | ~$0.030 (~₹2.6) | Best judgment, most reliable AVOID calls. Use before committing money |
-| Hybrid | Haiku → Sonnet | ~$0.013 (~₹1.1) | Haiku scans all; Sonnet auto re-checks anything Haiku rates SETUP_READY/EARLY_STAGE (result badge `S✓`) |
+| Gemini | `gemini-3.1-flash-lite` | ~₹0.15 (v3, daily-only; no prompt caching support) | Cheapest, now the default. "Lite" tier — chart-reading quality not yet A/B tested against Sonnet, treat any single call loosely until cross-checked |
+| Haiku | `claude-haiku-4-5-20251001` | ~₹0.5–0.6 | Fast cheap scan. Head-to-head test (v2, 5 symbols): too optimistic — rated EARLY_STAGE/SETUP_READY on charts Sonnet rated AVOID at 0.85–0.90 confidence. A first v3 test on the same symbol (ATUL) matched Sonnet's earlier AVOID call — the few-shot calibration examples appear to correct some of that optimism, but still treat SETUP_READY loosely |
+| Sonnet | `claude-sonnet-4-5` | ~₹1.6–2.6 | Best judgment, most reliable AVOID calls. Use before committing real money |
+| Hybrid | Haiku → Sonnet | ~₹1.1 | Haiku scans all; Sonnet auto re-checks anything Haiku rates SETUP_READY/EARLY_STAGE (result badge `S✓`). Gemini is not part of this chain |
 
-"Daily only" chart scope: one image instead of two, ~40% cheaper, weaker base
-counting (no weekly context).
+"Daily only" scope (v2): one image instead of two, ~40% cheaper, weaker base
+counting (no weekly context). v3 is daily-only unconditionally.
 
 Cost levers stacked into the pipeline:
-- **Hard gate** (default): weak-IFP stocks never reach the API
 - **Store-first**: same symbol+date+prompt_version+model = free replay
-- **Prompt caching**: system prompt + tool schema cached across calls
-- **Output cap**: `max_tokens=900` (output is 5× input price)
-- **Compact features**: minified JSON, trimmed absorption detail
+- **Prompt caching** (Anthropic only): v2 caches the system prompt; v3 caches
+  the system prompt + both example images + captions as one prefix, so only
+  the candidate chart + ~20 tokens of text are "fresh" per call after the
+  first. Gemini has no caching support, so its v3 calls carry the full
+  ~2,000-token example-image cost every time
+- **Slim v3 schema**: `base_type`, three IFP ratings, `extended`, two price
+  levels, `recommendation`, `confidence`, a ≤2-sentence `verdict` — far
+  fewer output tokens than the v2 schema's patterns/reasons/thesis
+- **Output cap**: `max_tokens=900` (v2) / `400` (v3) — output is ~5× input price
 - **Daily call cap**: `AI_DAILY_CALL_CAP=500` (DB counter → HTTP 429)
 
-Token budget per call: ~2×1,120 image tokens + ~1,100 system/schema + ~600
-features in; ~600 out.
+Measured token usage per stock (logged on every call):
+- **v3, Anthropic (cached)**: ~1,150 fresh input tokens + ~250 output after
+  the first call of the day primes the cache
+- **v3, Gemini (no caching)**: ~4,087 input + ~160 output — the two example
+  chart images (~900–1,000 tokens each) are resent every call
+- **v2, Gemini, for comparison**: ~2,050 input — the ~2,030-token gap
+  between v2 and v3 Gemini calls is almost exactly the two example images,
+  confirming they're transmitted correctly on every v3 call
+- **v2, Anthropic, daily+weekly**: ~2×1,120 image tokens + ~1,100
+  system/schema + ~600 features in; ~600 out
 
-### Current system prompt (prompt_version `v2`)
+### v3 system prompt (prompt_version `v3`)
+
+```
+You are an expert swing-trading analyst for Indian stocks (NSE/BSE). You rank breakout
+candidates by the quality of their Institutional Footprint (IFP) — the visible evidence
+that institutions accumulated and are defending a stock. Institutions can manipulate
+price but cannot hide volume.
+
+Analyse ONLY the chart image. Read price structure, volume bars versus the volume-average
+line, moving averages, and base boundaries yourself. Price action structure is the primary
+decision tool.
+
+BASE TYPE (context, not a filter):
+A = base after uptrend: strong move up (big candles, volume spike), then a consolidation
+base, now breaking out.
+B = accumulation after distribution: downtrend or long sideways period, quiet accumulation
+at lows, base at the bottom, now breaking out.
+
+RATE THREE IFP CRITERIA (strong / moderate / weak):
+1. volume_pattern (most important): strong = big spike on the initial move, volume dries
+up during the base; weak = choppy/random volume, no distinction between move and base.
+2. base_structure: strong = tight orderly consolidation respecting clear levels; weak =
+wide messy chop, no readable structure.
+3. pullback_depth: strong = shallow pullback with a clear floor, institutions defending;
+weak = deep unstructured pullback giving back most of the move.
+
+EXTENSION: extended=true if the stock has already moved far from its base without
+consolidating. Extended = lower priority even with good IFP. A stock just starting to
+move off a clean fresh base is the highest priority.
+
+ENTRY & LEVELS (read visually from the chart):
+- The entry trigger is a coiling-pattern breakout inside the base — inside bar is the
+primary coil; any tight consolidation counts.
+- breakout_level = top of the coil / base high you identify.
+- stop_level = below the low of the inside bar (or tightest recent coil). This stop rule
+is fixed — never suggest alternatives.
+
+VERDICT:
+- SETUP_READY: 2-3 criteria strong, near a clean base breakout, not extended.
+- EARLY_STAGE: base still forming, or criteria moderate.
+- NOT_READY: criteria weak or structure unreadable.
+- AVOID: distribution signs (high-volume churn at highs, lower highs/lows, double/triple
+top, head and shoulders) or a broken base.
+Be conservative: mixed evidence = EARLY_STAGE or NOT_READY, never SETUP_READY. Ties
+between similar stocks: cleaner base wins; less-extended wins.
+
+Do not comment on exits, position sizing, or targets. Indicator overlays other than
+price, volume and the moving averages shown are visual reference only.
+
+verdict field: max 2 sentences, specific to what you see on THIS chart (e.g. "Tight
+5-week base on dry volume after the March rally; inside bar at the pivot") — never
+generic filler.
+```
+
+**Few-shot calibration** (real charts, rendered once from this account's own
+DB by `scripts/render_v3_examples.py`, cached and reused on every call):
+
+- **COHANCE, Jan–Jun 2026 (strong IFP)** — "explosive rally mid-April 2026
+  from ~Rs 260 to ~Rs 520 on a massive volume spike (tallest bars on the
+  chart). May–June: orderly base between Rs 400-460, volume visibly drying
+  up bar after bar. Shallow pullback — gave back little of the April move.
+  Late June: tight coil / inside bar inside the base = entry trigger.
+  volume_pattern=strong, base_structure=strong, pullback_depth=strong.
+  Type A. Not extended."
+- **TNPETRO, Jan–Jun 2026 (weak IFP)** — "no institutional move anywhere on
+  the chart. Months of wide choppy oscillation ~Rs 84-94 with no readable
+  base and no floor. Volume random throughout — spikes with no
+  follow-through, no dry-up phase. volume_pattern=weak, base_structure=weak,
+  pullback_depth=weak. Skipped even though it passed the same scanner."
+
+The candidate message is just the daily chart image plus `Stock: {SYMBOL}.
+Analyse per your methodology and report via the tool.`
+
+### v3 response schema (forced tool use)
+
+```json
+{
+  "base_type": "A | B",
+  "ifp": {
+    "volume_pattern": "strong | moderate | weak",
+    "base_structure": "strong | moderate | weak",
+    "pullback_depth": "strong | moderate | weak"
+  },
+  "extended": true,
+  "buy_point": { "breakout_level": 520.0, "stop_level": 495.0 },
+  "recommendation": "SETUP_READY | EARLY_STAGE | NOT_READY | AVOID",
+  "confidence": 0.84,
+  "verdict": "max 2 sentences, chart-specific"
+}
+```
+
+### v2 system prompt (prompt_version `v2`, legacy)
 
 ```
 You are an expert technical analyst specialising in the Base-and-Bounce
@@ -168,7 +306,7 @@ Image 1 = daily chart, image 2 = weekly chart. Analyse base structure, IFP,
 patterns and buy point per your instructions.
 ```
 
-### Response structure (forced tool use — always schema-valid JSON)
+### v2 response schema (forced tool use — always schema-valid JSON)
 
 `tool_choice` forces the `report_chart_analysis` tool, so the response is never
 free text:
@@ -200,7 +338,18 @@ free text:
 ### Verification layer
 `|AI level − computed level| / computed ≤ 2%` → `verified`, else `mismatch`
 (⚠ badge; both values shown side by side in the popup). AI giving no level when
-a computed one exists → `partial`. Never silently overridden.
+a computed one exists → `partial`. Never silently overridden — this applies to
+both prompt versions, and for v3 it is the *only* place computed numbers ever
+touch the AI's output, strictly after the fact.
+
+### Result table columns
+`IFP ⓘ` = our computed nightly score (not AI). Everything marked `✦` is
+AI-generated: `Base type` (A/B, hover for definitions), `IFP quality` (Vol /
+Str / Pull chips, strong=green/moderate=amber/weak=red, hover each for its
+rating), `Ext` (extended flag), `BO / Stop` (breakout in green / stop in
+red), `Conf`, `Verdict`. Header tooltips use the browser's native title
+attribute (not a custom popup) so they're never clipped by the table's
+horizontal scroll.
 
 ---
 
@@ -242,7 +391,7 @@ Row click opens a modal (close returns to the list in place):
 | `POST /api/ifp` | Tunable IFP recompute on a symbol subset |
 | `GET /api/market-snapshot?date=` | Regime/breadth banner |
 | `GET /api/meta/sectors` | Sector + index counts for filter UI |
-| `POST /api/ai-analyze` | `{symbols, indicatorDate?, gateMode?, ifpThreshold?, aiMode?, chartScope?, force?}` |
+| `POST /api/ai-analyze` | `{symbols, indicatorDate?, gateMode?, ifpThreshold?, aiMode?, chartScope?, promptVersion?, force?}` — UI always sends `gateMode: "soft"` (no pre-filtering); `hard`/`ifpThreshold` remain in the API for scripted/backtest use only |
 | `GET /api/ai-analyze/charts/{file}.png` | Stored analysis charts |
 | `GET /api/ai-analyze/aftermath/{symbol}?date=` | Outcome numbers + forward chart URLs |
 | `GET /api/ai-analyze/aftermath-chart?symbol&date&timeframe` | Live-rendered forward chart |
@@ -257,7 +406,10 @@ AI runs; `/custom-screener` without trailing slash 301-redirects).
 - `ai_analysis_results` — immutable, `UNIQUE(symbol, analysis_date, prompt_version, model)`.
   Holds features JSON, full analysis JSON, verification JSON, chart paths,
   outcome columns (`ret_5d/20d/60d`, `hit_breakout`, `hit_stop`), user feedback.
-  Chart scope is encoded in prompt_version (`v2` = daily+weekly, `v2-d` = daily-only).
+  Chart scope is encoded in prompt_version (`v2` = daily+weekly, `v2-d` =
+  daily-only, `v3` = always daily-only). v2 and v3 rows for the same
+  symbol/date/model coexist — that's what lets the outcomes summary compare
+  them directly.
 - `ai_call_budget` — per-day API call counter (cap enforcement).
 - `symbols_meta` — series, lot_size, is_sme, sector, mcap_bucket per symbol.
 - `index_membership` — (symbol, index_name), weekly refresh.
@@ -281,25 +433,43 @@ Migrations: `backend/sql/001–004, 006, 007` + `backend/ai_analysis/sql/005, 00
 - Nightly compute processes only the latest bar date; late-arriving data can
   leave gaps (self-healing patch pending). No failure alerting yet.
 - OHLCV updater only heals 3-day gaps automatically.
-- Haiku optimism: verified level mismatches are flagged, but recommendations
-  are the model's own — prefer Hybrid/Sonnet for actionable decisions.
+- No pre-AI gate any more: every symbol handed to the panel (up to 50) is
+  analyzed on every run unless already cached for that date/prompt/model —
+  cost control now relies entirely on store-first caching + the daily call cap,
+  not on filtering out weak-IFP stocks beforehand.
+- Gemini (v3 default engine) is Google's "Lite" tier and hasn't been A/B
+  tested against Sonnet on this task yet — early observation is it rates most
+  criteria "moderate" rather than committing to strong/weak; treat single
+  Gemini calls loosely until cross-checked against Hybrid/Sonnet.
+- Haiku optimism (v2 finding): verified level mismatches are flagged, but
+  recommendations are the model's own — prefer Hybrid/Sonnet for actionable
+  decisions. A first v3 Haiku test suggested the few-shot examples reduce
+  this, but it's one data point, not a pattern yet.
+- v3 has no weekly chart or cross-timeframe base counting by design (daily
+  chart only) — if a setup needs weekly confirmation, switch to v2 with
+  daily+weekly scope.
 - Chart PNGs accumulate in `AI_CHART_DIR` (default `/tmp/ai_analysis_charts`,
-  cleared on reboot); no rotation yet.
+  cleared on reboot); no rotation yet. v3 example charts live outside `/tmp`
+  in `AI_EXAMPLES_DIR` so they survive reboots.
 - AI batch mode (50% discount for large historical runs) designed but not built
   (`api_used` column reserved).
 
 ## 10. Configuration (env)
 
 ```
-AI_MODE=haiku|hybrid|sonnet        default engine (UI overrides per run)
-AI_HAIKU_MODEL / AI_SONNET_MODEL   model strings
-AI_MAX_TOKENS=900                  output cap
-AI_PROMPT_VERSION=v2               bump to re-analyze after prompt changes
-AI_GATE_MODE=hard|soft             default gate
+AI_MODE=gemini|haiku|hybrid|sonnet default engine (UI overrides per run)
+AI_HAIKU_MODEL / AI_SONNET_MODEL   Anthropic model strings
+AI_GEMINI_MODEL=gemini-3.1-flash-lite
+GEMINI_API_KEY                     required for the Gemini engine
+AI_MAX_TOKENS=900                  v2 output cap
+AI_MAX_TOKENS_V3=400               v3 output cap (slim schema)
+AI_PROMPT_VERSION=v3               default prompt version (UI overrides per run)
+AI_GATE_MODE=hard|soft             default gate (UI always sends soft; hard/threshold are API-only now)
 IFP_GATE_THRESHOLD=0.30
-MAX_CONCURRENT_AI=5                parallel Claude calls
+AI_EXAMPLES_DIR                    v3 few-shot chart cache (default: ai_analysis/examples/, persistent)
+MAX_CONCURRENT_AI=5                parallel AI calls
 AI_DAILY_CALL_CAP=500
 AI_CHART_DIR=/tmp/ai_analysis_charts
 AI_LEVEL_TOLERANCE=0.02            verification tolerance
-ANTHROPIC_API_KEY                  required for AI endpoints
+ANTHROPIC_API_KEY                  required for Haiku/Sonnet/Hybrid engines
 ```

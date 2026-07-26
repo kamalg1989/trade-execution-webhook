@@ -17,8 +17,46 @@ import os
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+try:
+    import dhan_client
+except Exception as e:  # pragma: no cover
+    dhan_client = None
+    logger.warning(f"dhan_client unavailable in recommendations: {e}")
+
+
+def _ownership_maps():
+    """Sets of symbols (no .NS) already owned / in positions / with resting forever BUYs.
+    Best-effort: any Dhan failure returns empty sets so recommendations still load."""
+    held, pos, resting = {}, {}, set()
+    if dhan_client is None:
+        return held, pos, resting
+    try:
+        for h in dhan_client.get_holdings():
+            qty = int(h.get("totalQty") or h.get("availableQty") or 0)
+            if qty > 0:
+                held[str(h.get("tradingSymbol", "")).replace(".NS", "").strip().upper()] = qty
+    except Exception as e:
+        logger.warning(f"holdings check failed: {e}")
+    try:
+        for p in dhan_client.get_positions():
+            if str(p.get("positionType", "")).upper() == "LONG":
+                qty = int(p.get("netQty") or 0)
+                if qty > 0:
+                    pos[str(p.get("tradingSymbol", "")).replace(".NS", "").strip().upper()] = qty
+    except Exception as e:
+        logger.warning(f"positions check failed: {e}")
+    try:
+        for o in dhan_client.get_forever_orders():
+            if (str(o.get("transactionType", "")).upper() == "BUY"
+                    and str(o.get("orderStatus", "")).upper() in ("PENDING", "CONFIRM", "TRIGGERED", "ACCEPTED")):
+                resting.add(str(o.get("tradingSymbol", "")).replace(".NS", "").strip().upper())
+    except Exception as e:
+        logger.warning(f"forever-order check failed: {e}")
+    return held, pos, resting
+
 BASE_DIR = '/root/trade-execution-webhook'
 RECS_FILE = os.path.join(BASE_DIR, 'latest_recommendations.json')
+AI_PICKS_FILE = os.path.join(BASE_DIR, 'latest_ai_picks.json')
 SCREENER = os.path.join(BASE_DIR, 'screen_gpt.py')
 SCAN_LOG = os.path.join(BASE_DIR, 'screener_scan.log')
 UPDATER = os.path.join(BASE_DIR, 'market_data_setup/scripts/update_ohlcv.py')
@@ -27,7 +65,10 @@ UPDATE_LOG = os.path.join(BASE_DIR, 'market_data_setup/scripts/update.log')
 
 
 class RecommendationsListResponse(BaseModel):
-    stocks: List[dict]          # full pick objects (all screener fields passed through)
+    stocks: List[dict]          # quant top picks (all screener fields passed through)
+    aiPicks: List[dict] = []    # AI (Gemini v3) top picks from the same candidate pool
+    aiStatus: Optional[str] = None   # ok | pending | error | none
+    aiMessage: Optional[str] = None
     generatedAt: str
     count: int
     stale: bool = False
@@ -70,15 +111,78 @@ async def get_recommendations():
         stale = True
 
     # Pass the full pick objects through (all screener fields), with safe defaults
+    held, pos, resting = _ownership_maps()
     stocks = []
     for s in data.get('stocks', []):
         s = dict(s)
         s.setdefault('company', s.get('symbol', ''))
         s.setdefault('recommendedQty', 1)
+        sym = str(s.get('symbol', '')).replace('.NS', '').strip().upper()
+        s['heldQty'] = held.get(sym, 0)
+        s['positionQty'] = pos.get(sym, 0)
+        s['hasForeverBuy'] = sym in resting
+        s['owned'] = bool(s['heldQty'] or s['positionQty'] or s['hasForeverBuy'])
         stocks.append(s)
+
+    # ---- AI (Gemini v3) picks from the same candidate pool ----
+    ai_picks, ai_status, ai_message = [], "none", None
+    quant_syms = {str(s.get('symbol', '')).replace('.NS', '').strip().upper() for s in stocks}
+    try:
+        if os.path.exists(AI_PICKS_FILE):
+            with open(AI_PICKS_FILE) as f:
+                ai_data = json.load(f)
+            ai_status = ai_data.get("status", "error")
+            ai_message = ai_data.get("message")
+            # Only show AI picks that belong to the CURRENT scan
+            ai_gen = ai_data.get("generatedAt", "")
+            if ai_status == "ok" and ai_gen >= generated_at:
+                top_n = ai_data.get("picks", [])[:3]
+                for p in top_n:
+                    p = dict(p)
+                    sym = str(p.get('symbol', '')).replace('.NS', '').strip().upper()
+                    p['heldQty'] = held.get(sym, 0)
+                    p['positionQty'] = pos.get(sym, 0)
+                    p['hasForeverBuy'] = sym in resting
+                    p['owned'] = bool(p['heldQty'] or p['positionQty'] or p['hasForeverBuy'])
+                    p['alsoQuantPick'] = sym in quant_syms
+                    ai_picks.append(p)
+            elif ai_status == "ok":
+                ai_status = "pending"
+                ai_message = "AI analysis for the latest scan is still running"
+        elif data.get('candidates'):
+            ai_status = "pending"
+            ai_message = "AI analysis not yet available"
+    except Exception as e:
+        ai_status, ai_message = "error", str(e)[:120]
+        logger.warning(f"AI picks read failed: {e}")
+
+    # Flag quant picks that AI also chose, and attach AI analysis to ANY stock
+    # that was analyzed (so the detail panel can show it for quant picks too)
+    ai_syms = {str(p.get('symbol', '')).replace('.NS', '').strip().upper() for p in ai_picks}
+    ai_map = {}
+    try:
+        if os.path.exists(AI_PICKS_FILE):
+            with open(AI_PICKS_FILE) as f:
+                _ai_all = json.load(f)
+            if _ai_all.get("status") == "ok" and _ai_all.get("generatedAt", "") >= generated_at:
+                for p in _ai_all.get("picks", []):
+                    ai_map[str(p.get('symbol', '')).replace('.NS', '').strip().upper()] = p
+    except Exception:
+        pass
+    AI_FIELDS = ('aiRank', 'aiRatings', 'aiBaseType', 'aiExtended',
+                 'aiRecommendation', 'aiConfidence', 'aiVerdict')
+    for s in stocks:
+        sym = str(s.get('symbol', '')).replace('.NS', '').strip().upper()
+        s['alsoAiPick'] = sym in ai_syms
+        if sym in ai_map:
+            for k in AI_FIELDS:
+                s[k] = ai_map[sym].get(k)
 
     return RecommendationsListResponse(
         stocks=stocks,
+        aiPicks=ai_picks,
+        aiStatus=ai_status,
+        aiMessage=ai_message,
         generatedAt=generated_at,
         count=len(stocks),
         stale=stale,
