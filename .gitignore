@@ -33,3 +33,22 @@ run_*/
 web-platform/dist.tar.gz
 web-platform/*.timestamp-*.mjs
 web-platform/build*.log
+
+# Secrets (added 2026-07-26)
+api_key.json
+
+# Backups made during live-patch sessions
+*.bak
+*.bak_*
+*.BROKEN_*
+
+# Runtime-generated data (regenerated daily/hourly, not source)
+latest_ai_picks.json
+structural_sl_history.json
+
+# Claude Code / agent internal state
+.claude/
+
+# Stray debug screenshots
+/d.png
+/w.png
