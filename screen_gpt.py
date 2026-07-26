@@ -10,8 +10,10 @@
 # ==============================================
 
 import os
+import sys
 import json
 import time
+import subprocess
 import requests
 import pandas as pd
 import yfinance as yf
@@ -545,67 +547,78 @@ def send_document(path, caption=None):
         print(f"❌ Document send failed: {e}")
 
 
+_NSE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/csv,*/*",
+    "Referer": "https://www.nseindia.com/"
+}
+
+
 def get_stocks():
     """
-
-    Load NIFTY 500 stocks from NSE.
-
-    Handles NSE 403 by using browser headers.
-
-    Returns ~500 stocks.
-
+    Load ALL NSE equities in the EQ series (~2000 stocks).
+    EQ-only filtering excludes SME (SM/ST), trade-to-trade (BE/BZ) and other
+    lot-restricted / illiquid series. Falls back to NIFTY 500 if the full
+    list can't be fetched.
     """
-
     try:
-
-        print("📥 Loading NIFTY 500 from NSE...")
-
-        url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
-
-        headers = {
-
-            "User-Agent": (
-
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-
-                "Chrome/124.0.0.0 Safari/537.36"
-
-            ),
-
-            "Accept": "text/csv,*/*",
-
-            "Referer": "https://www.nseindia.com/"
-
-        }
-
-        response = requests.get(url, headers=headers, timeout=20)
-
+        print("📥 Loading all NSE equities (EQ series only)...")
+        url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+        response = requests.get(url, headers=_NSE_HEADERS, timeout=20)
         response.raise_for_status()
-
         df = pd.read_csv(StringIO(response.text))
-
-        print("Columns:", df.columns.tolist())
-
-        stocks = sorted([
-
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        eq = df[df["SERIES"].astype(str).str.strip().str.upper() == "EQ"]
+        stocks = sorted({
             str(s).strip().upper() + ".NS"
-
-            for s in df["Symbol"].dropna()
-
+            for s in eq["SYMBOL"].dropna()
             if str(s).strip().upper().isalpha()
-
-        ])
-
-        print(f"✅ Loaded {len(stocks)} NIFTY 500 stocks")
-
-        return stocks
-
+        })
+        if len(stocks) > 500:
+            print(f"✅ Loaded {len(stocks)} NSE EQ-series stocks (SME/T2T excluded)")
+            return stocks
+        print(f"⚠️ EQ list unexpectedly small ({len(stocks)}) — falling back to NIFTY 500")
     except Exception as e:
+        print(f"⚠️ NSE EQUITY_L fetch failed: {e} — falling back to NIFTY 500")
 
+    # ---- Fallback: NIFTY 500 ----
+    try:
+        print("📥 Loading NIFTY 500 from NSE...")
+        url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+        response = requests.get(url, headers=_NSE_HEADERS, timeout=20)
+        response.raise_for_status()
+        df = pd.read_csv(StringIO(response.text))
+        stocks = sorted([
+            str(s).strip().upper() + ".NS"
+            for s in df["Symbol"].dropna()
+            if str(s).strip().upper().isalpha()
+        ])
+        print(f"✅ Loaded {len(stocks)} NIFTY 500 stocks")
+        return stocks
+    except Exception as e:
         print(f"⚠️ NSE fetch failed: {e}")
 
+    # ---- Final fallback: local Dhan scrip master (works offline / NSE 503) ----
+    try:
+        print("📥 Loading universe from local Dhan scrip master...")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api-scrip-master.csv")
+        df = pd.read_csv(path, low_memory=False)
+        eq = df[(df["SEM_EXM_EXCH_ID"].astype(str).str.upper() == "NSE")
+                & (df["SEM_INSTRUMENT_NAME"].astype(str).str.upper() == "EQUITY")
+                & (df["SEM_SERIES"].astype(str).str.strip().str.upper() == "EQ")]
+        stocks = sorted({
+            str(s).strip().upper() + ".NS"
+            for s in eq["SEM_TRADING_SYMBOL"].dropna()
+            if str(s).strip().upper().isalpha()
+        })
+        print(f"✅ Loaded {len(stocks)} NSE EQ stocks from local scrip master")
+        return stocks
+    except Exception as e:
+        print(f"❌ Local scrip master fallback failed: {e}")
         return []
 
 # ==========================
@@ -1813,19 +1826,97 @@ Tick: `₹{trade['tick_size']:.4f}`
             "baseRangePct": round(m["base_range_pct"] * 100, 1),
         })
 
+    # Persist structural SL per symbol PERMANENTLY (upsert, never overwritten
+    # wholesale) — the SL screen's screener-fallback used to read only
+    # today's top-3 "stocks" list, so a stock alerted a few days ago (like
+    # SAREGAMA) lost its structural SL the moment a later scan's top-3 no
+    # longer included it, silently falling back to the −8% safety level.
+    try:
+        hist_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "structural_sl_history.json")
+        try:
+            with open(hist_path) as f:
+                hist = json.load(f)
+        except Exception:
+            hist = {}
+        for r in web_recs:
+            hist[r["symbol"].replace(".NS", "").strip().upper()] = {
+                "structuralSL": r["stopLoss"],
+                "entry": r["entry"],
+                "target": r["target"],
+                "alertedAt": datetime.now().isoformat(),
+                "signalBarDate": r.get("signalBarDate"),
+            }
+        with open(hist_path, "w") as f:
+            json.dump(hist, f, indent=2)
+    except Exception as e:
+        print(f"⚠️ structural SL history update failed: {e}")
+
+    # Build the FULL candidate list (all funnel survivors, quant-ranked) with
+    # complete trade params — the AI ranker picks from this same pre-sized pool.
+    all_candidates = []
+    for cand_rank, (s, trade, m) in enumerate(ranked, 1):
+        try:
+            c_entry, c_sl, c_qty = trade["entry"], trade["sl"], trade["qty"]
+            c_risk = round(c_entry - c_sl, 2)
+            c_target = compute_target(c_entry, c_sl, base_high=m.get("base_high"),
+                                      base_low=m.get("base_low"), symbol=s)
+            c_reward = round(c_target - c_entry, 2) if c_target > 0 else 0
+            c_rr = round(c_reward / c_risk, 2) if c_risk > 0 and c_reward > 0 else 0
+            df_s = all_data.get(s)
+            c_close = float(df_s["Close"].iloc[-1]) if df_s is not None and len(df_s) else c_entry
+            c_prev = float(df_s["Close"].iloc[-2]) if df_s is not None and len(df_s) > 1 else c_close
+            c_chg = round(((c_close - c_prev) / c_prev) * 100, 2) if c_prev else 0.0
+            c_type = {
+                "TREND_BAR": "Trend Bar", "PIN_BAR": "Pin Bar",
+                "HH_HL": "Higher High – Higher Low", "INSIDE_BAR": "Inside Bar",
+                "PULLBACK": "Pullback to EMA21", "BREAKOUT_RETEST": "Breakout Retest",
+            }.get(trade["entry_type"], trade["entry_type"])
+            all_candidates.append({
+                "symbol": s, "company": s, "quantRank": cand_rank,
+                "currentPrice": round(c_close, 2), "change": c_chg,
+                "entry": c_entry, "stopLoss": c_sl,
+                "target": c_target if c_target > 0 else round(c_entry * 1.1, 2),
+                "recommendedQty": c_qty, "riskPerShare": c_risk, "rrRatio": c_rr,
+                "confidence": int(round(m["base_quality_score"] * 100)),
+                "reason": f"{c_type} | Base stage {m['base_stage']} | Regime: {regime}",
+                "regime": regime, "entryType": c_type,
+                "signalBarDate": trade.get("signal_bar_date"),
+                "targetStrategy": TARGET_STRATEGY,
+                "tickSize": round(float(trade.get("tick_size", 0)), 4),
+                "baseStage": m["base_stage"], "stageMultiplier": trade.get("stage_multiplier"),
+                "baseQuality": round(m["base_quality_score"], 2),
+                "liquidityCr": round(m["turnover"] / 1e7, 2),
+                "ifp": round(m["ifp_score"], 2),
+                "baseRangePct": round(m["base_range_pct"] * 100, 1),
+            })
+        except Exception as e:
+            print(f"⚠️ candidate serialize failed for {s}: {e}")
+
     # Write recommendations JSON for web platform API
     try:
         out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "latest_recommendations.json")
         with open(out_path, "w") as f:
             json.dump({
                 "stocks": web_recs,
+                "candidates": all_candidates,
                 "generatedAt": datetime.now().isoformat(),
                 "regime": regime,
                 "count": len(web_recs),
             }, f, indent=2)
-        print(f"💾 Web recommendations saved: {out_path} ({len(web_recs)} picks)")
+        print(f"💾 Web recommendations saved: {out_path} ({len(web_recs)} picks, {len(all_candidates)} candidates)")
     except Exception as e:
         print(f"⚠️ Failed to write web recommendations: {e}")
+
+    # Kick off the AI (Gemini v3) ranking pass in the background — never blocks
+    # or fails the quant scan. Writes latest_ai_picks.json when done.
+    try:
+        ai_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_rank_candidates.py")
+        if os.path.exists(ai_script):
+            subprocess.Popen([sys.executable, ai_script],
+                             stdout=open("/tmp/ai_rank.log", "w"), stderr=subprocess.STDOUT)
+            print("🤖 AI ranking pass launched in background (ai_rank_candidates.py)")
+    except Exception as e:
+        print(f"⚠️ Could not launch AI ranking pass: {e}")
 
     summary = (f"✅ OHM scan complete\nRegime: {regime}\n"
                f"Alerts: {len(final)} (from {len(candidates)} candidates, "
