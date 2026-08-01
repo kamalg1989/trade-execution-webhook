@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { TrendingUp, TrendingDown, AlertCircle, ShoppingCart, BarChart3, RefreshCw, Loader, Database } from 'lucide-react';
+import { TrendingUp, AlertCircle, RefreshCw, Loader, Database, ChevronRight } from 'lucide-react';
 import ChartModal from '../components/ChartModal';
+import StockDetailModal from '../components/StockDetailModal';
 
 export default function DashboardMobile() {
   const [recommendations, setRecommendations] = useState([]);
@@ -8,6 +9,7 @@ export default function DashboardMobile() {
   const [aiStatus, setAiStatus] = useState(null);
   const [selectedStock, setSelectedStock] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [chartOpen, setChartOpen] = useState(false);
   const [status, setStatus] = useState(null);
   const [scanning, setScanning] = useState(false);
@@ -77,9 +79,6 @@ export default function DashboardMobile() {
       setRecommendations(data.stocks || []);
       setAiPicks(data.aiPicks || []);
       setAiStatus(data.aiStatus || null);
-      if (data.stocks?.length > 0) {
-        selectStock(data.stocks[0]);
-      }
       setLoading(false);
     } catch (error) {
       console.error('Failed to fetch recommendations:', error);
@@ -87,8 +86,11 @@ export default function DashboardMobile() {
     }
   };
 
-  const selectStock = (stock) => {
+  // Tapping a row opens its details straight away — no scrolling to a
+  // shared panel at the bottom of the page.
+  const openDetail = (stock) => {
     setSelectedStock(stock);
+    setDetailOpen(true);
   };
 
   const handleBuy = async (stock) => {
@@ -121,17 +123,6 @@ export default function DashboardMobile() {
       console.error('Order placement failed:', error);
       alert('❌ Order placement failed (network error)');
     }
-  };
-
-  const riskRewardPct = (s) => {
-    const e = s.entry || s.currentPrice, sl = s.stopLoss, t = s.target;
-    if (!e || !sl || !t || sl >= e || t <= e) return null;
-    return { risk: ((e - sl) / e * 100).toFixed(1), reward: ((t - e) / e * 100).toFixed(1) };
-  };
-  const fmtReason = (s) => s.reason ? s.reason.replace(/\s*\|\s*R:R\s*1:[\d.]+/i, '').replace(/R:R\s*1:[\d.]+\s*\|\s*/i, '') : s.reason;
-  const allocation = (s) => {
-    const e = s.entry || s.currentPrice, q = s.recommendedQty || 0;
-    return e && q ? Math.round(e * q) : null;
   };
 
   if (loading) return <div className="p-4 text-center text-slate-400">Loading...</div>;
@@ -179,14 +170,10 @@ export default function DashboardMobile() {
             recommendations.map((stock) => (
               <button
                 key={stock.symbol}
-                onClick={() => selectStock(stock)}
-                className={`w-full text-left p-3 rounded-lg transition-all flex items-center justify-between ${
-                  selectedStock?.symbol === stock.symbol
-                    ? 'bg-blue-600 border border-blue-400'
-                    : 'bg-slate-700 border border-slate-600'
-                }`}
+                onClick={() => openDetail(stock)}
+                className="w-full text-left p-3 rounded-lg transition-all flex items-center justify-between bg-slate-700 border border-slate-600 active:bg-slate-600"
               >
-                <div className="flex-1">
+                <div className="flex-1 min-w-0">
                   <p className="font-bold text-base flex items-center gap-1.5 flex-wrap">
                     {stock.symbol}
                     {stock.heldQty > 0 && (
@@ -204,11 +191,14 @@ export default function DashboardMobile() {
                     <span className="text-xs bg-red-700 px-2 py-0.5 rounded">SL: ₹{stock.stopLoss}</span>
                   </div>
                 </div>
-                <div className="text-right ml-2">
-                  <p className="font-bold text-sm">₹{stock.currentPrice}</p>
-                  <p className={`text-xs ${stock.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {stock.change >= 0 ? '+' : ''}{stock.change.toFixed(2)}%
-                  </p>
+                <div className="text-right ml-2 flex items-center gap-1.5 flex-shrink-0">
+                  <div>
+                    <p className="font-bold text-sm">₹{stock.currentPrice}</p>
+                    <p className={`text-xs ${stock.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {stock.change >= 0 ? '+' : ''}{stock.change.toFixed(2)}%
+                    </p>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-slate-500" />
                 </div>
               </button>
             ))
@@ -221,15 +211,11 @@ export default function DashboardMobile() {
             aiPicks.map((stock) => (
               <button
                 key={`ai-${stock.symbol}`}
-                onClick={() => selectStock(stock)}
-                className={`w-full text-left p-3 rounded-lg transition-all ${
-                  selectedStock?.symbol === stock.symbol
-                    ? 'bg-blue-600 border border-blue-400'
-                    : 'bg-slate-700 border border-emerald-800/60'
-                }`}
+                onClick={() => openDetail(stock)}
+                className="w-full text-left p-3 rounded-lg transition-all bg-slate-700 border border-emerald-800/60 active:bg-slate-600"
               >
                 <div className="flex items-center justify-between">
-                  <div className="flex-1">
+                  <div className="flex-1 min-w-0">
                     <p className="font-bold text-base flex items-center gap-1.5 flex-wrap">
                       {stock.symbol}
                       {stock.alsoQuantPick && (
@@ -244,11 +230,14 @@ export default function DashboardMobile() {
                       <span className="text-xs bg-red-700 px-2 py-0.5 rounded">SL: ₹{stock.stopLoss}</span>
                     </div>
                   </div>
-                  <div className="text-right ml-2">
-                    <p className="font-bold text-sm">₹{stock.currentPrice}</p>
-                    <p className={`text-xs ${stock.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {stock.change >= 0 ? '+' : ''}{stock.change?.toFixed(2)}%
-                    </p>
+                  <div className="text-right ml-2 flex items-center gap-1.5 flex-shrink-0">
+                    <div>
+                      <p className="font-bold text-sm">₹{stock.currentPrice}</p>
+                      <p className={`text-xs ${stock.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {stock.change >= 0 ? '+' : ''}{stock.change?.toFixed(2)}%
+                      </p>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-500" />
                   </div>
                 </div>
                 {stock.aiRatings && (
@@ -267,161 +256,19 @@ export default function DashboardMobile() {
         </div>
       </div>
 
-      {/* Selected Stock Details */}
-      {selectedStock && (
-        <div className="px-4 py-4 border-t border-slate-700">
-          {/* Stock Header */}
-          <div className="bg-slate-700 rounded-lg p-4 mb-3">
-            <div className="flex justify-between items-start mb-3">
-              <div>
-                <h3 className="text-2xl font-bold">{selectedStock.symbol}</h3>
-                <p className="text-slate-400 text-sm">{selectedStock.company}</p>
-              </div>
-              <div className="text-right">
-                <p className="text-2xl font-bold">₹{selectedStock.currentPrice}</p>
-                <p className={`text-sm font-semibold ${selectedStock.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {selectedStock.change >= 0 ? '📈' : '📉'} {selectedStock.change >= 0 ? '+' : ''}{selectedStock.change.toFixed(2)}%
-                </p>
-              </div>
-            </div>
-
-            {/* Key Metrics */}
-            <div className="grid grid-cols-2 gap-2 pt-3 border-t border-slate-600">
-              <div>
-                <p className="text-xs text-slate-400">Target</p>
-                <p className="text-lg font-bold text-green-400">₹{selectedStock.target}</p>
-              </div>
-              <div>
-                <p className="text-xs text-slate-400">Stop Loss</p>
-                <p className="text-lg font-bold text-red-400">₹{selectedStock.stopLoss}</p>
-              </div>
-              <div>
-                <p className="text-xs text-slate-400">Confidence</p>
-                <p className="text-lg font-bold text-blue-400">{selectedStock.confidence}%</p>
-              </div>
-              <div>
-                <p className="text-xs text-slate-400">Upside</p>
-                <p className="text-lg font-bold text-purple-400">
-                  {(((selectedStock.target - selectedStock.currentPrice) / selectedStock.currentPrice) * 100).toFixed(1)}%
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-slate-400">Allocation</p>
-                <p className="text-lg font-bold text-amber-300">
-                  {allocation(selectedStock) != null ? `₹${allocation(selectedStock).toLocaleString('en-IN')}` : '—'}
-                </p>
-                <p className="text-[9px] text-slate-500">{selectedStock.recommendedQty} × ₹{selectedStock.entry ?? selectedStock.currentPrice}</p>
-              </div>
-              <div>
-                <p className="text-xs text-slate-400">Risk:Reward</p>
-                <p className="text-lg font-bold text-blue-300">
-                  {(() => { const rr = riskRewardPct(selectedStock); return rr ? `${rr.risk}%:${rr.reward}%` : (selectedStock.rrRatio != null ? `1:${selectedStock.rrRatio}` : '—'); })()}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-slate-400">Total Risk</p>
-                <p className="text-lg font-bold text-red-300">
-                  {selectedStock.riskPerShare != null && selectedStock.recommendedQty
-                    ? `₹${Math.round(selectedStock.riskPerShare * selectedStock.recommendedQty).toLocaleString('en-IN')}`
-                    : '—'}
-                </p>
-                <p className="text-[9px] text-slate-500">if SL hits</p>
-              </div>
-            </div>
-
-            <p className="mt-3 text-xs text-slate-300">
-              <strong>Reason:</strong> {fmtReason(selectedStock)}
-            </p>
-
-            {/* AI chart analysis (Gemini v3) */}
-            {selectedStock.aiRatings && (
-              <div className="mt-3 bg-emerald-900/15 border border-emerald-800/40 rounded-lg p-2.5">
-                <p className="text-[10px] font-bold tracking-widest text-emerald-300 mb-1.5">
-                  🤖 AI CHART ANALYSIS <span className="text-slate-500 font-normal">(rank #{selectedStock.aiRank ?? '—'})</span>
-                </p>
-                <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
-                  <D label="Volume Pattern" v={selectedStock.aiRatings.volumePattern ?? '—'} />
-                  <D label="Base Structure" v={selectedStock.aiRatings.baseStructure ?? '—'} />
-                  <D label="Pullback Depth" v={selectedStock.aiRatings.pullbackDepth ?? '—'} />
-                  <D label="Base Type" v={selectedStock.aiBaseType ?? '—'} />
-                  <D label="Extended?" v={selectedStock.aiExtended ? '⚠️ Yes' : 'No'} />
-                  <D label="AI Reco" v={selectedStock.aiRecommendation ?? '—'} />
-                  <D label="AI Confidence" v={selectedStock.aiConfidence != null ? `${Math.round(selectedStock.aiConfidence * 100)}%` : '—'} />
-                  <D label="Quant IFP" v={selectedStock.ifp ?? '—'} />
-                </div>
-                {selectedStock.aiVerdict && (
-                  <p className="text-[10px] text-emerald-200/90 mt-1.5 italic">"{selectedStock.aiVerdict}"</p>
-                )}
-              </div>
-            )}
-
-            {/* Full screener detail */}
-            {selectedStock.entryType && (
-              <div className="mt-3 pt-3 border-t border-slate-600">
-                <div className="flex flex-wrap gap-1.5 mb-2 text-[10px]">
-                  {selectedStock.regime && <span className="px-2 py-0.5 rounded bg-purple-900/60 text-purple-300">🌍 {selectedStock.regime}</span>}
-                  <span className="px-2 py-0.5 rounded bg-blue-900/60 text-blue-300">🎯 {selectedStock.entryType}</span>
-                  {selectedStock.signalBarDate && <span className="px-2 py-0.5 rounded bg-slate-600 text-slate-200">📅 {selectedStock.signalBarDate}</span>}
-                </div>
-                <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
-                  <D label="Entry (buy above)" v={`₹${selectedStock.entry ?? '—'}`} />
-                  <D label="Target" v={`₹${selectedStock.target}`} />
-                  <D label="Qty" v={`${selectedStock.recommendedQty}${selectedStock.baseStage != null ? ` (st${selectedStock.baseStage} x${selectedStock.stageMultiplier ?? 1})` : ''}`} />
-                  <D label="Risk/Share" v={selectedStock.riskPerShare != null ? `₹${selectedStock.riskPerShare}` : '—'} />
-                  <D label="Tick" v={selectedStock.tickSize != null ? `₹${selectedStock.tickSize}` : '—'} />
-                  <D label="Base Quality" v={selectedStock.baseQuality != null ? selectedStock.baseQuality.toFixed(2) : '—'} />
-                  <D label="Liquidity" v={selectedStock.liquidityCr != null ? `₹${selectedStock.liquidityCr}cr` : '—'} />
-                  <D label="IFP" v={selectedStock.ifp ?? '—'} />
-                  <D label="Base Range" v={selectedStock.baseRangePct != null ? `${selectedStock.baseRangePct}%` : '—'} />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* View Chart button — opens fullscreen chart modal */}
-          <button
-            onClick={() => setChartOpen(true)}
-            className="w-full bg-slate-700 hover:bg-slate-600 active:bg-slate-600 rounded-lg py-3 mb-3 flex items-center justify-center gap-2 font-semibold text-blue-400 border border-slate-600"
-          >
-            <BarChart3 className="w-5 h-5" />
-            View Chart (Daily / Weekly)
-          </button>
-
-          {/* Buy Button */}
-          {selectedStock.owned ? (
-            <div className="w-full bg-slate-700 border border-purple-600/50 text-purple-200 font-semibold py-3 px-4 rounded-lg text-center text-sm">
-              {selectedStock.heldQty > 0
-                ? `Already holding ${selectedStock.heldQty} shares — manage from SL tab`
-                : selectedStock.positionQty > 0
-                  ? `Bought today (${selectedStock.positionQty}) — manage from SL tab`
-                  : 'BUY forever order already resting on Dhan'}
-            </div>
-          ) : (
-            <button
-              onClick={() => handleBuy(selectedStock)}
-              className="w-full bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-all"
-            >
-              <ShoppingCart className="w-5 h-5" />
-              Buy {selectedStock.symbol}
-            </button>
-          )}
-        </div>
-      )}
+      <StockDetailModal
+        stock={selectedStock}
+        open={detailOpen}
+        onClose={() => setDetailOpen(false)}
+        onBuy={handleBuy}
+        onViewChart={() => setChartOpen(true)}
+      />
 
       <ChartModal
         symbol={selectedStock?.symbol}
         open={chartOpen}
         onClose={() => setChartOpen(false)}
       />
-    </div>
-  );
-}
-
-function D({ label, v }) {
-  return (
-    <div>
-      <p className="text-slate-400 text-[9px]">{label}</p>
-      <p className="font-semibold text-white">{v}</p>
     </div>
   );
 }
