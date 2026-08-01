@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { TrendingUp, AlertCircle, RefreshCw, Loader, Database, ChevronRight } from 'lucide-react';
+import { AlertCircle, RefreshCw, Loader, Database, ChevronRight } from 'lucide-react';
 import ChartModal from '../components/ChartModal';
 import StockDetailModal from '../components/StockDetailModal';
 
@@ -131,121 +131,108 @@ export default function DashboardMobile() {
 
   return (
     <div className="bg-gradient-to-br from-slate-900 to-slate-800 text-white min-h-screen">
-      {/* Status + actions */}
+      {/* Status + actions — compact single row; icon buttons on the right
+          since these are infrequent/secondary actions, not thumb-critical */}
       {status && (
-        <div className="px-4 pt-3 pb-2 border-b border-slate-800">
-          <div className="text-[11px] text-slate-400 leading-tight mb-2">
-            <div>📅 Signals: <b className="text-slate-200">{fmtD(status.signalBarDate)}</b> · 🗄️ DB: <b className="text-slate-200">{fmtD(status.dbLatestCandle)}</b>{status.regime && <> · Regime: <b className="text-purple-300">{status.regime}</b></>}</div>
+        <div className="px-4 pt-2 pb-1.5 border-b border-slate-800 flex items-center justify-between gap-2">
+          <div className="text-[10px] text-slate-400 leading-tight truncate min-w-0">
+            📅 <b className="text-slate-200">{fmtD(status.signalBarDate)}</b> · 🗄️ <b className="text-slate-200">{fmtD(status.dbLatestCandle)}</b>
+            {status.regime && <> · <b className="text-purple-300">{status.regime}</b></>}
           </div>
-          <div className="flex gap-2">
-            <button onClick={updateData} disabled={updating}
-              className="flex-1 flex items-center justify-center gap-1.5 bg-emerald-600 active:bg-emerald-700 disabled:opacity-50 text-xs font-semibold px-3 py-2 rounded-lg">
+          <div className="flex gap-1.5 flex-shrink-0">
+            <button onClick={updateData} disabled={updating} title="Update Data"
+              className="p-2 flex items-center justify-center bg-emerald-600 active:bg-emerald-700 disabled:opacity-50 rounded-lg">
               {updating ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <Database className="w-3.5 h-3.5" />}
-              {updating ? 'Updating DB' : 'Update Data'}
             </button>
-            <button onClick={runScan} disabled={scanning || status.scanRunning}
-              className="flex-1 flex items-center justify-center gap-1.5 bg-blue-600 active:bg-blue-700 disabled:opacity-50 text-xs font-semibold px-3 py-2 rounded-lg">
+            <button onClick={runScan} disabled={scanning || status.scanRunning} title="Run Screener"
+              className="p-2 flex items-center justify-center bg-blue-600 active:bg-blue-700 disabled:opacity-50 rounded-lg">
               {(scanning || status.scanRunning) ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-              {status.scanRunning ? 'Scanning' : 'Run Screener'}
             </button>
           </div>
         </div>
       )}
 
-      {/* Recommendations List */}
-      <div className="px-4 py-4">
-        <h2 className="text-lg font-bold mb-3 flex items-center gap-2">
-          <TrendingUp className="w-5 h-5 text-green-400" />
-          Today's Picks
-        </h2>
-
-        <p className="text-[10px] font-bold tracking-widest text-blue-300 mb-2">📐 QUANT PICKS</p>
-        <div className="space-y-2">
+      {/* Recommendations List — compact rows so all picks fit one screen */}
+      <div className="px-4 py-2">
+        <p className="text-[10px] font-bold tracking-widest text-blue-300 mb-1">📐 QUANT PICKS</p>
+        <div className="space-y-1.5">
           {recommendations.length === 0 ? (
-            <div className="text-center py-8">
-              <AlertCircle className="w-8 h-8 mx-auto mb-2 text-slate-400 opacity-50" />
-              <p className="text-slate-400 text-sm">No recommendations</p>
+            <div className="text-center py-4">
+              <AlertCircle className="w-6 h-6 mx-auto mb-1 text-slate-400 opacity-50" />
+              <p className="text-slate-400 text-xs">No recommendations</p>
             </div>
           ) : (
             recommendations.map((stock) => (
               <button
                 key={stock.symbol}
                 onClick={() => openDetail(stock)}
-                className="w-full text-left p-3 rounded-lg transition-all flex items-center justify-between bg-slate-700 border border-slate-600 active:bg-slate-600"
+                className="w-full text-left px-3 py-2 rounded-lg transition-all flex items-center justify-between bg-slate-700 border border-slate-600 active:bg-slate-600"
               >
                 <div className="flex-1 min-w-0">
-                  <p className="font-bold text-base flex items-center gap-1.5 flex-wrap">
-                    {stock.symbol}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="font-bold text-sm">{stock.symbol}</span>
                     {stock.heldQty > 0 && (
-                      <span className="text-[9px] font-semibold bg-purple-700 text-purple-100 px-1.5 py-0.5 rounded">HOLDING {stock.heldQty}</span>
+                      <span className="text-[8px] font-semibold bg-purple-700 text-purple-100 px-1 py-0.5 rounded">HOLD {stock.heldQty}</span>
                     )}
                     {!stock.heldQty && stock.positionQty > 0 && (
-                      <span className="text-[9px] font-semibold bg-purple-700 text-purple-100 px-1.5 py-0.5 rounded">TODAY {stock.positionQty}</span>
+                      <span className="text-[8px] font-semibold bg-purple-700 text-purple-100 px-1 py-0.5 rounded">TODAY {stock.positionQty}</span>
                     )}
                     {stock.hasForeverBuy && (
-                      <span className="text-[9px] font-semibold bg-amber-700 text-amber-100 px-1.5 py-0.5 rounded">ORDER RESTING</span>
+                      <span className="text-[8px] font-semibold bg-amber-700 text-amber-100 px-1 py-0.5 rounded">RESTING</span>
                     )}
-                  </p>
-                  <div className="flex gap-2 mt-1">
-                    <span className="text-xs bg-green-700 px-2 py-0.5 rounded">T: ₹{stock.target}</span>
-                    <span className="text-xs bg-red-700 px-2 py-0.5 rounded">SL: ₹{stock.stopLoss}</span>
+                  </div>
+                  <div className="flex gap-2 mt-0.5 text-[10px]">
+                    <span className="text-green-400">T ₹{stock.target}</span>
+                    <span className="text-red-400">SL ₹{stock.stopLoss}</span>
                   </div>
                 </div>
-                <div className="text-right ml-2 flex items-center gap-1.5 flex-shrink-0">
-                  <div>
-                    <p className="font-bold text-sm">₹{stock.currentPrice}</p>
-                    <p className={`text-xs ${stock.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                <div className="flex items-center gap-1 flex-shrink-0 ml-2">
+                  <div className="text-right">
+                    <p className="font-bold text-xs">₹{stock.currentPrice}</p>
+                    <p className={`text-[10px] ${stock.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                       {stock.change >= 0 ? '+' : ''}{stock.change.toFixed(2)}%
                     </p>
                   </div>
-                  <ChevronRight className="w-4 h-4 text-slate-500" />
+                  <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
                 </div>
               </button>
             ))
           )}
         </div>
 
-        <p className="text-[10px] font-bold tracking-widest text-emerald-300 mt-4 mb-2">🤖 AI CHART PICKS</p>
-        <div className="space-y-2">
+        <p className="text-[10px] font-bold tracking-widest text-emerald-300 mt-2.5 mb-1">🤖 AI CHART PICKS</p>
+        <div className="space-y-1.5">
           {aiPicks.length > 0 ? (
             aiPicks.map((stock) => (
               <button
                 key={`ai-${stock.symbol}`}
                 onClick={() => openDetail(stock)}
-                className="w-full text-left p-3 rounded-lg transition-all bg-slate-700 border border-emerald-800/60 active:bg-slate-600"
+                className="w-full text-left px-3 py-2 rounded-lg transition-all flex items-center justify-between bg-slate-700 border border-emerald-800/60 active:bg-slate-600"
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex-1 min-w-0">
-                    <p className="font-bold text-base flex items-center gap-1.5 flex-wrap">
-                      {stock.symbol}
-                      {stock.alsoQuantPick && (
-                        <span className="text-[9px] font-semibold bg-emerald-700 text-emerald-100 px-1.5 py-0.5 rounded">QUANT + AI</span>
-                      )}
-                      {stock.heldQty > 0 && (
-                        <span className="text-[9px] font-semibold bg-purple-700 text-purple-100 px-1.5 py-0.5 rounded">HOLDING {stock.heldQty}</span>
-                      )}
-                    </p>
-                    <div className="flex gap-2 mt-1">
-                      <span className="text-xs bg-green-700 px-2 py-0.5 rounded">T: ₹{stock.target}</span>
-                      <span className="text-xs bg-red-700 px-2 py-0.5 rounded">SL: ₹{stock.stopLoss}</span>
-                    </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="font-bold text-sm">{stock.symbol}</span>
+                    {stock.alsoQuantPick && (
+                      <span className="text-[8px] font-semibold bg-emerald-700 text-emerald-100 px-1 py-0.5 rounded">Q+AI</span>
+                    )}
+                    {stock.heldQty > 0 && (
+                      <span className="text-[8px] font-semibold bg-purple-700 text-purple-100 px-1 py-0.5 rounded">HOLD {stock.heldQty}</span>
+                    )}
                   </div>
-                  <div className="text-right ml-2 flex items-center gap-1.5 flex-shrink-0">
-                    <div>
-                      <p className="font-bold text-sm">₹{stock.currentPrice}</p>
-                      <p className={`text-xs ${stock.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {stock.change >= 0 ? '+' : ''}{stock.change?.toFixed(2)}%
-                      </p>
-                    </div>
-                    <ChevronRight className="w-4 h-4 text-slate-500" />
+                  <div className="flex gap-2 mt-0.5 text-[10px]">
+                    <span className="text-green-400">T ₹{stock.target}</span>
+                    <span className="text-red-400">SL ₹{stock.stopLoss}</span>
                   </div>
                 </div>
-                {stock.aiRatings && (
-                  <p className="text-[9px] text-emerald-200 mt-1.5">
-                    Vol: {stock.aiRatings.volumePattern} · Base: {stock.aiRatings.baseStructure} · PB: {stock.aiRatings.pullbackDepth}
-                    {stock.aiExtended ? ' · ⚠️ extended' : ''}
-                  </p>
-                )}
+                <div className="flex items-center gap-1 flex-shrink-0 ml-2">
+                  <div className="text-right">
+                    <p className="font-bold text-xs">₹{stock.currentPrice}</p>
+                    <p className={`text-[10px] ${stock.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {stock.change >= 0 ? '+' : ''}{stock.change?.toFixed(2)}%
+                    </p>
+                  </div>
+                  <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
+                </div>
               </button>
             ))
           ) : (
