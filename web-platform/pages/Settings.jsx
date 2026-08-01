@@ -284,7 +284,7 @@ export default function Settings() {
                   <label className="text-sm text-slate-300 block">Enter your PIN to access API key:</label>
                   <input
                     type="password"
-                    placeholder="Enter PIN (default: 1234)"
+                    placeholder="Enter PIN"
                     value={pinInput}
                     onChange={(e) => setPinInput(e.target.value)}
                     onKeyPress={(e) => e.key === 'Enter' && loadApiKey()}

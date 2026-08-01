@@ -58,9 +58,9 @@ def load_or_create_api_key():
 
 CURRENT_API_KEY = load_or_create_api_key()
 
-# Setup PIN for accessing API key (password protection)
-SETUP_PIN = os.getenv('SETUP_PIN', '1234')  # Default: 1234, change via environment variable
-logger.info(f"🔐 Setup PIN configured (default: 1234, set SETUP_PIN env var to change)")
+# Setup PIN for accessing API key (password protection). Set via SETUP_PIN env var.
+SETUP_PIN = os.getenv('SETUP_PIN', '1234')  # fallback only used if SETUP_PIN is unset
+logger.info("🔐 Setup PIN configured")
 
 # =============================================
 # API KEY VALIDATION MIDDLEWARE
