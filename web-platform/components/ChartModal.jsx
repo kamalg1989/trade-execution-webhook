@@ -38,7 +38,12 @@ function fromDate(days) {
 
 export default function ChartModal({ symbol, open, onClose }) {
   const [chartType, setChartType] = useState('daily');
-  const [range, setRange] = useState('6M');
+  // Daily and weekly keep independent range choices — 6M of daily candles
+  // is a sensible default view, but 6M of *weekly* candles is only ~26
+  // bars, too few to be useful, so weekly defaults to 1Y instead.
+  const [dailyRange, setDailyRange] = useState('6M');
+  const [weeklyRange, setWeeklyRange] = useState('1Y');
+  const range = chartType === 'weekly' ? weeklyRange : dailyRange;
   // Follow the app's global light/dark mode by default (manual override still available)
   const [theme, setTheme] = useState(localStorage.getItem('theme') === 'light' ? 'light' : 'dark');
   const [svg, setSvg] = useState(null);   // null=loading, ''=unavailable
@@ -46,6 +51,14 @@ export default function ChartModal({ symbol, open, onClose }) {
 
   const chartAreaRef = useRef(null);
   const sizeRef = useRef({ width: null, height: null });
+  // Always-current snapshot of the values load() needs, so the ResizeObserver
+  // callback (set up once per "open" session) never reloads using a stale
+  // chartType/range/theme from whenever it was first attached — that bug is
+  // what made a resize event silently revert "weekly" back to "daily".
+  const latestRef = useRef({ chartType, range, theme });
+  useEffect(() => {
+    latestRef.current = { chartType, range, theme };
+  });
 
   const load = useCallback(async (type, rangeKey, thm) => {
     if (!symbol) return;
@@ -70,29 +83,40 @@ export default function ChartModal({ symbol, open, onClose }) {
   }, [symbol]);
 
   // Measure the chart container's real pixel size and (re)load whenever it
-  // changes (open, orientation change, resize).
+  // changes (open, orientation change, resize) — always using the latest
+  // chartType/range/theme, never a stale snapshot.
   useEffect(() => {
     if (!open) return;
     const el = chartAreaRef.current;
-    if (!el) return;
+    if (!el || typeof ResizeObserver === 'undefined') return;
     const measureAndLoad = () => {
       const rect = el.getBoundingClientRect();
       const w = Math.max(280, Math.round(rect.width));
       const h = Math.max(280, Math.round(rect.height));
       const changed = sizeRef.current.width !== w || sizeRef.current.height !== h;
       sizeRef.current = { width: w, height: h };
-      if (changed) load(chartType, range, theme);
+      if (changed) {
+        const { chartType: t, range: rk, theme: thm } = latestRef.current;
+        load(t, rk, thm);
+      }
     };
-    measureAndLoad();
-    const ro = new ResizeObserver(measureAndLoad);
-    ro.observe(el);
-    return () => ro.disconnect();
+    let ro;
+    try {
+      ro = new ResizeObserver(measureAndLoad);
+      ro.observe(el);
+    } catch {
+      // ResizeObserver unsupported — fall back to a single measurement
+      measureAndLoad();
+    }
+    return () => ro && ro.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   useEffect(() => {
     if (open) {
-      // Re-sync with the app theme each time the modal opens
+      // Re-sync with the app theme each time the modal opens. Reuse
+      // whatever chartType/range the user last had selected (state
+      // persists across opens/closes within a page session).
       const appTheme = localStorage.getItem('theme') === 'light' ? 'light' : 'dark';
       setTheme(appTheme);
       setZoom(1);
@@ -105,8 +129,16 @@ export default function ChartModal({ symbol, open, onClose }) {
 
   if (!open) return null;
 
-  const setType = (t) => { setChartType(t); setZoom(1); load(t, range, theme); };
-  const setRangeAndLoad = (rk) => { setRange(rk); setZoom(1); load(chartType, rk, theme); };
+  const setType = (t) => {
+    setChartType(t);
+    setZoom(1);
+    load(t, t === 'weekly' ? weeklyRange : dailyRange, theme);
+  };
+  const setRangeAndLoad = (rk) => {
+    if (chartType === 'weekly') setWeeklyRange(rk); else setDailyRange(rk);
+    setZoom(1);
+    load(chartType, rk, theme);
+  };
   const setThemeAndLoad = (thm) => { setTheme(thm); setZoom(1); load(chartType, range, thm); };
 
   return (
@@ -116,8 +148,8 @@ export default function ChartModal({ symbol, open, onClose }) {
     >
       {/* Header — swipe down anywhere here to close, or tap the X */}
       <div {...handlers} className="flex-shrink-0 border-b border-slate-700 bg-slate-900" style={{ touchAction: 'none' }}>
-        <div className="flex justify-center pt-1.5 pb-1">
-          <div className="w-10 h-1 rounded-full bg-slate-600" />
+        <div className="flex justify-center pt-2.5 pb-2">
+          <div className="w-20 h-1.5 rounded-full bg-slate-500" />
         </div>
         <div className="flex items-center justify-between px-4 pb-2">
           <div className="min-w-0">
