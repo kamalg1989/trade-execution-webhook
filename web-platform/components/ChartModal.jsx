@@ -1,8 +1,13 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { X, ZoomIn, ZoomOut, Loader } from 'lucide-react';
+import { useSwipeToClose } from '../utils/useSwipeToClose';
 
 // Make the upstream SVG responsive: ensure a viewBox, strip fixed width/height
-// so CSS controls sizing (otherwise the 1400px-wide chart overflows and clips).
+// so CSS controls sizing, and force it to fill its container exactly (no
+// letterboxing). We now request a viewBox sized to match the actual
+// on-screen container (see width/height query params below), so
+// preserveAspectRatio="none" is mostly a safety net for rounding, not a
+// real distortion.
 export function makeResponsive(svg) {
   if (!svg || svg[0] !== '<') return svg;
   if (!/viewBox=/i.test(svg)) {
@@ -12,7 +17,9 @@ export function makeResponsive(svg) {
   }
   return svg
     .replace(/(<svg[^>]*?)\s+width="[^"]*"/i, '$1')
-    .replace(/(<svg[^>]*?)\s+height="[^"]*"/i, '$1');
+    .replace(/(<svg[^>]*?)\s+height="[^"]*"/i, '$1')
+    .replace(/<svg([^>]*)>/i, (m, attrs) =>
+      /preserveAspectRatio=/i.test(attrs) ? m : `<svg${attrs} preserveAspectRatio="none">`);
 }
 
 const RANGES = [
@@ -37,17 +44,51 @@ export default function ChartModal({ symbol, open, onClose }) {
   const [svg, setSvg] = useState(null);   // null=loading, ''=unavailable
   const [zoom, setZoom] = useState(1);     // 1 = fit width
 
+  const chartAreaRef = useRef(null);
+  const sizeRef = useRef({ width: null, height: null });
+
   const load = useCallback(async (type, rangeKey, thm) => {
     if (!symbol) return;
     setSvg(null);
     const days = (RANGES.find(r => r.key === rangeKey) || RANGES[1]).days;
     try {
-      const r = await fetch(`/api/charts/${type}?symbol=${encodeURIComponent(symbol)}&theme=${thm}&from_date=${fromDate(days)}`);
+      const params = new URLSearchParams({
+        symbol, theme: thm, from_date: fromDate(days),
+      });
+      // Request a chart sized to match the actual on-screen container so
+      // the backend renders fonts/candles at a legible scale for this
+      // device, instead of a fixed 1400x780 desktop canvas getting
+      // squeezed (and its text shrunk) into a small mobile viewport.
+      const { width, height } = sizeRef.current;
+      if (width) params.set('width', String(Math.round(width)));
+      if (height) params.set('height', String(Math.round(height)));
+      const r = await fetch(`/api/charts/${type}?${params.toString()}`);
       setSvg(r.ok ? makeResponsive(await r.text()) : '');
     } catch {
       setSvg('');
     }
   }, [symbol]);
+
+  // Measure the chart container's real pixel size and (re)load whenever it
+  // changes (open, orientation change, resize).
+  useEffect(() => {
+    if (!open) return;
+    const el = chartAreaRef.current;
+    if (!el) return;
+    const measureAndLoad = () => {
+      const rect = el.getBoundingClientRect();
+      const w = Math.max(280, Math.round(rect.width));
+      const h = Math.max(280, Math.round(rect.height));
+      const changed = sizeRef.current.width !== w || sizeRef.current.height !== h;
+      sizeRef.current = { width: w, height: h };
+      if (changed) load(chartType, range, theme);
+    };
+    measureAndLoad();
+    const ro = new ResizeObserver(measureAndLoad);
+    ro.observe(el);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   useEffect(() => {
     if (open) {
@@ -60,6 +101,8 @@ export default function ChartModal({ symbol, open, onClose }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  const { handlers, panelStyle } = useSwipeToClose(onClose);
+
   if (!open) return null;
 
   const setType = (t) => { setChartType(t); setZoom(1); load(t, range, theme); };
@@ -67,16 +110,27 @@ export default function ChartModal({ symbol, open, onClose }) {
   const setThemeAndLoad = (thm) => { setTheme(thm); setZoom(1); load(chartType, range, thm); };
 
   return (
-    <div className={`fixed inset-0 z-50 flex flex-col ${theme === 'light' ? 'bg-white/95' : 'bg-black/95'}`}>
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700 bg-slate-900">
-        <div>
-          <p className="font-bold text-white text-lg leading-tight">{symbol?.replace('.NS', '')}</p>
-          <p className="text-xs text-slate-400 capitalize">{chartType} chart</p>
+    <div
+      className={`fixed inset-0 z-50 flex flex-col ${theme === 'light' ? 'bg-white' : 'bg-slate-950'}`}
+      style={panelStyle}
+    >
+      {/* Header — swipe down anywhere here to close, or tap the X */}
+      <div {...handlers} className="flex-shrink-0 border-b border-slate-700 bg-slate-900" style={{ touchAction: 'none' }}>
+        <div className="flex justify-center pt-1.5 pb-1">
+          <div className="w-10 h-1 rounded-full bg-slate-600" />
         </div>
-        <div className="flex items-center gap-2">
-          {/* Theme toggle */}
-          <div className="flex bg-slate-800 rounded-lg p-1">
+        <div className="flex items-center justify-between px-4 pb-2">
+          <div className="min-w-0">
+            <p className="font-bold text-white text-base leading-tight truncate">{symbol?.replace('.NS', '')}</p>
+            <p className="text-[11px] text-slate-400 capitalize">{chartType} chart</p>
+          </div>
+          <button onClick={onClose} className="p-2 text-slate-300 hover:text-white bg-slate-800 rounded-lg flex-shrink-0">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        {/* Theme + Daily/Weekly toggles — own row, scrolls instead of clipping on narrow screens */}
+        <div className="flex items-center gap-2 px-4 pb-2 overflow-x-auto">
+          <div className="flex bg-slate-800 rounded-lg p-1 flex-shrink-0">
             {['dark', 'light'].map(t => (
               <button key={t} onClick={() => setThemeAndLoad(t)}
                 className={`px-2.5 py-1 rounded-md text-sm font-semibold capitalize ${
@@ -84,7 +138,7 @@ export default function ChartModal({ symbol, open, onClose }) {
                 }`}>{t === 'dark' ? '🌙' : '☀️'}</button>
             ))}
           </div>
-          <div className="flex bg-slate-800 rounded-lg p-1">
+          <div className="flex bg-slate-800 rounded-lg p-1 flex-shrink-0">
             {['daily', 'weekly'].map(t => (
               <button key={t} onClick={() => setType(t)}
                 className={`px-3 py-1 rounded-md text-sm font-semibold capitalize ${
@@ -92,15 +146,12 @@ export default function ChartModal({ symbol, open, onClose }) {
                 }`}>{t}</button>
             ))}
           </div>
-          <button onClick={onClose} className="p-2 text-slate-300 hover:text-white bg-slate-800 rounded-lg">
-            <X className="w-5 h-5" />
-          </button>
         </div>
       </div>
 
       {/* Timeframe selector */}
-      <div className="flex items-center gap-1 px-4 py-2 border-b border-slate-800 bg-slate-900 overflow-x-auto">
-        <span className="text-xs text-slate-500 mr-1">Range:</span>
+      <div className="flex-shrink-0 flex items-center gap-1 px-4 py-2 border-b border-slate-800 bg-slate-900 overflow-x-auto">
+        <span className="text-xs text-slate-500 mr-1 flex-shrink-0">Range:</span>
         {RANGES.map(r => (
           <button key={r.key} onClick={() => setRangeAndLoad(r.key)}
             className={`px-3 py-1 rounded-md text-xs font-semibold flex-shrink-0 ${
@@ -110,7 +161,7 @@ export default function ChartModal({ symbol, open, onClose }) {
       </div>
 
       {/* Chart area: zoom 1 = fit entire chart (incl. volume) on one screen; zoom >1 = pan/scroll */}
-      <div className={`flex-1 min-h-0 p-2 ${zoom > 1 ? 'overflow-auto flex items-start justify-center' : 'overflow-hidden'}`}>
+      <div ref={chartAreaRef} className={`flex-1 min-h-0 p-2 ${zoom > 1 ? 'overflow-auto flex items-start justify-center' : 'overflow-hidden'}`}>
         {svg === null ? (
           <div className="h-full flex items-center justify-center text-slate-400 gap-2">
             <Loader className="w-5 h-5 animate-spin" /> Loading chart…
@@ -133,7 +184,7 @@ export default function ChartModal({ symbol, open, onClose }) {
 
       {/* Zoom controls */}
       {svg && svg !== '' && (
-        <div className="flex items-center justify-center gap-3 px-4 py-3 border-t border-slate-700 bg-slate-900">
+        <div className="flex-shrink-0 flex items-center justify-center gap-3 px-4 py-3 border-t border-slate-700 bg-slate-900">
           <button onClick={() => setZoom(z => Math.max(1, z - 0.5))} disabled={zoom <= 1}
             className="p-2 bg-slate-800 rounded-lg text-slate-300 disabled:opacity-40">
             <ZoomOut className="w-5 h-5" />

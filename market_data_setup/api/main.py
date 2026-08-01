@@ -492,6 +492,29 @@ def create_svg_chart(
     if len(df) == 0:
         return "<svg></svg>"
 
+    # ---- Scale factor ----
+    # All margins/fonts/strokes below are tuned for the 1400x780 desktop
+    # default. When a caller (e.g. the mobile chart popup) requests a much
+    # smaller canvas to match its actual on-screen pixel size, everything
+    # needs to shrink proportionally too - otherwise a 1400x780-tuned layout
+    # crammed into a 380x550 viewBox produces overlapping, illegible text.
+    # Scaling by height (not width) keeps text/candle proportions sane even
+    # though mobile requests a much taller-relative-to-width aspect ratio
+    # than the desktop default.
+    s = max(0.45, min(1.4, height / 780))
+    # The stats header (LTP/1Y Chg/52W High/52W Low) is laid out inline,
+    # top-right, on the same row as the symbol title - that only fits when
+    # there's enough absolute width for both. On a narrow mobile-sized
+    # request even a height-based font scale doesn't help (fonts would be
+    # small enough to fit, but the row is positioned by width math that
+    # assumes a wide desktop canvas), so below this threshold the stats
+    # move to their own row under the title instead of overlapping/
+    # overflowing off-screen.
+    is_narrow = width < 700
+
+    def px(v):
+        return round(v * s, 1)
+
     prices = pd.concat([df['open'], df['high'], df['low'], df['close']])
     min_price = float(prices.min()); max_price = float(prices.max())
     _pad = (max_price - min_price) * 0.06 or 1
@@ -499,9 +522,12 @@ def create_svg_chart(
     price_range = max_price - min_price or 1
 
     # ---- Layout ----
-    left_margin = 115; right_margin = 30
-    top_margin = 100 if stats else 64          # extra room for stats header
-    bottom_margin = 62; legend_height = 34
+    left_margin = px(115); right_margin = px(30)
+    if stats:
+        top_margin = px(175) if is_narrow else px(100)
+    else:
+        top_margin = px(64)
+    bottom_margin = px(62); legend_height = px(34)
     chart_width = width - left_margin - right_margin
     chart_height = height - top_margin - bottom_margin - legend_height
     plot_bottom = height - bottom_margin - legend_height
@@ -518,8 +544,8 @@ def create_svg_chart(
     svg = [
         f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg" font-family="Arial, sans-serif">',
         f'<rect width="100%" height="100%" fill="{bg_color}"/>',
-        f'<text x="20" y="34" font-size="24" font-weight="700" fill="{text_color}">{esc(symbol)}</text>',
-        f'<text x="20" y="54" font-size="12" fill="{sub_color}">{esc((stock_name + " · ") if stock_name else "")}{esc(symbol)}.NS · NSE · {esc(title_suffix)}</text>',
+        f'<text x="{px(20)}" y="{px(34)}" font-size="{px(24)}" font-weight="700" fill="{text_color}">{esc(symbol)}</text>',
+        f'<text x="{px(20)}" y="{px(54)}" font-size="{px(13)}" fill="{sub_color}">{esc((stock_name + " · ") if stock_name else "")}{esc(symbol)}.NS · NSE · {esc(title_suffix)}</text>',
     ]
 
     # ---- Stats header row ----
@@ -530,18 +556,30 @@ def create_svg_chart(
             ("52W High", f"₹{stats['wk52_high']:.2f}", text_color),
             ("52W Low", f"₹{stats['wk52_low']:.2f}", text_color),
         ]
-        sx = width - right_margin - len(items) * 155
+        if is_narrow:
+            # Own row under the title, evenly spread across the full width -
+            # there's no room to sit beside the title on a mobile canvas.
+            stats_left = px(20)
+            item_w = (width - stats_left - right_margin) / len(items)
+            sx = stats_left
+            label_y, val_y = px(88), px(108)
+            label_size, val_size = px(11), px(15)
+        else:
+            item_w = px(155)
+            sx = width - right_margin - len(items) * item_w
+            label_y, val_y = px(30), px(50)
+            label_size, val_size = px(12), px(17)
         for label, val, col in items:
-            svg.append(f'<text x="{sx}" y="30" font-size="11" fill="{sub_color}">{label}</text>')
-            svg.append(f'<text x="{sx}" y="50" font-size="16" font-weight="700" fill="{col}">{val}</text>')
-            sx += 155
+            svg.append(f'<text x="{sx}" y="{label_y}" font-size="{label_size}" fill="{sub_color}">{label}</text>')
+            svg.append(f'<text x="{sx}" y="{val_y}" font-size="{val_size}" font-weight="700" fill="{col}">{val}</text>')
+            sx += item_w
 
     # ---- Horizontal grid + price labels ----
     for i in range(6):
         price = min_price + (i / 5) * price_range
         y = y_coord(price)
-        svg.append(f'<line x1="{left_margin}" y1="{y:.1f}" x2="{width-right_margin}" y2="{y:.1f}" stroke="{grid_color}" stroke-width="1"/>')
-        svg.append(f'<text x="{left_margin-12}" y="{y+4:.1f}" font-size="12" fill="{sub_color}" text-anchor="end">{price:.2f}</text>')
+        svg.append(f'<line x1="{left_margin}" y1="{y:.1f}" x2="{width-right_margin}" y2="{y:.1f}" stroke="{grid_color}" stroke-width="{max(1, px(1))}"/>')
+        svg.append(f'<text x="{left_margin-px(12)}" y="{y+px(4):.1f}" font-size="{px(13)}" fill="{sub_color}" text-anchor="end">{price:.2f}</text>')
 
     # ---- X-axis date labels ----
     step = max(1, len(df) // 8)
@@ -549,7 +587,7 @@ def create_svg_chart(
         for i in range(0, len(df), step):
             x = x_coord(i)
             date_str = df.index[i].strftime("%d %b %y")
-            svg.append(f'<text x="{x:.1f}" y="{plot_bottom+22:.1f}" font-size="11" fill="{sub_color}" text-anchor="middle">{date_str}</text>')
+            svg.append(f'<text x="{x:.1f}" y="{plot_bottom+px(22):.1f}" font-size="{px(12)}" fill="{sub_color}" text-anchor="middle">{date_str}</text>')
     except (AttributeError, TypeError):
         pass
 
@@ -558,12 +596,12 @@ def create_svg_chart(
         for lvl, lbl, col in [(stats['wk52_high'], "52W High", up_color), (stats['wk52_low'], "52W Low", down_color)]:
             if min_price <= lvl <= max_price:
                 y = y_coord(lvl)
-                svg.append(f'<line x1="{left_margin}" y1="{y:.1f}" x2="{width-right_margin}" y2="{y:.1f}" stroke="{col}" stroke-width="1" stroke-dasharray="6 4" opacity="0.55"/>')
-                svg.append(f'<text x="{width-right_margin-4}" y="{y-4:.1f}" font-size="10" fill="{col}" text-anchor="end" opacity="0.9">{lbl} {lvl:.2f}</text>')
+                svg.append(f'<line x1="{left_margin}" y1="{y:.1f}" x2="{width-right_margin}" y2="{y:.1f}" stroke="{col}" stroke-width="{max(1, px(1))}" stroke-dasharray="6 4" opacity="0.55"/>')
+                svg.append(f'<text x="{width-right_margin-px(4)}" y="{y-px(4):.1f}" font-size="{px(11)}" fill="{col}" text-anchor="end" opacity="0.9">{lbl} {lvl:.2f}</text>')
 
     # ---- Volume panel (bottom 16%, cleaner) ----
     slot = chart_width / max(len(df), 1)
-    body_w = max(1.0, min(slot * 0.7, 14))
+    body_w = max(1.5, min(slot * 0.7, px(14)))
     if 'volume' in df.columns:
         max_vol = float(df['volume'].max()) or 1
         vol_h = chart_height * 0.16
@@ -572,16 +610,17 @@ def create_svg_chart(
             x = x_coord(i)
             bh = (float(row['volume']) / max_vol) * vol_h
             vc = up_color if row['close'] >= row['open'] else down_color
-            svg.append(f'<rect x="{x-body_w/2:.1f}" y="{vol_base-bh:.1f}" width="{body_w:.1f}" height="{bh:.1f}" fill="{vc}" opacity="0.28"/>')
+            svg.append(f'<rect x="{x-body_w/2:.1f}" y="{vol_base-bh:.1f}" width="{body_w:.1f}" height="{bh:.1f}" fill="{vc}" opacity="0.32"/>')
 
-    # ---- Candlesticks (clean: thin wick, flat body, no heavy border) ----
+    # ---- Candlesticks (bold enough to read on a small mobile canvas) ----
+    wick_w = max(1.0, px(1.4))
     for i, (_, row) in enumerate(df.iterrows()):
         x = x_coord(i)
         yo = y_coord(row['open']); yc = y_coord(row['close'])
         yh = y_coord(row['high']); yl = y_coord(row['low'])
         up = row['close'] >= row['open']
         col = up_color if up else down_color
-        svg.append(f'<line x1="{x:.1f}" y1="{yh:.1f}" x2="{x:.1f}" y2="{yl:.1f}" stroke="{col}" stroke-width="1.2"/>')
+        svg.append(f'<line x1="{x:.1f}" y1="{yh:.1f}" x2="{x:.1f}" y2="{yl:.1f}" stroke="{col}" stroke-width="{wick_w}"/>')
         bh = abs(yo - yc) or 1
         svg.append(f'<rect x="{x-body_w/2:.1f}" y="{min(yo,yc):.1f}" width="{body_w:.1f}" height="{bh:.1f}" fill="{col}" rx="0.5"/>')
 
@@ -593,16 +632,17 @@ def create_svg_chart(
         'ema_200': {'color': '#787b86', 'label': 'EMA 200'},
     }
     if indicators:
-        lx = left_margin + 6
-        ly = top_margin + 16
+        lx = left_margin + px(6)
+        ly = top_margin + px(16)
+        ema_w = max(1.2, px(1.8))
         for col, style in ema_styles.items():
             if col in df.columns:
                 pts = [f"{x_coord(i):.1f},{y_coord(v):.1f}" for i, v in enumerate(df[col]) if not pd.isna(v)]
                 if pts:
-                    svg.append(f'<polyline points="{" ".join(pts)}" fill="none" stroke="{style["color"]}" stroke-width="1.6" opacity="0.9"/>')
-                    svg.append(f'<line x1="{lx}" y1="{ly}" x2="{lx+18}" y2="{ly}" stroke="{style["color"]}" stroke-width="2.5"/>')
-                    svg.append(f'<text x="{lx+24}" y="{ly+4}" font-size="12" fill="{sub_color}">{style["label"]}</text>')
-                    lx += 92
+                    svg.append(f'<polyline points="{" ".join(pts)}" fill="none" stroke="{style["color"]}" stroke-width="{ema_w}" opacity="0.9"/>')
+                    svg.append(f'<line x1="{lx}" y1="{ly}" x2="{lx+px(18)}" y2="{ly}" stroke="{style["color"]}" stroke-width="{max(1.5, px(2.5))}"/>')
+                    svg.append(f'<text x="{lx+px(24)}" y="{ly+px(4)}" font-size="{px(13)}" fill="{sub_color}">{style["label"]}</text>')
+                    lx += px(92)
 
     svg.append('</svg>')
     return '\n'.join(svg)
@@ -639,7 +679,9 @@ async def get_daily_chart(
     to_date: date = Query(..., description="End date (YYYY-MM-DD)"),
     indicators: str = Query("ema", regex="^(ema|rsi|atr|macd|all|none)$", description="Indicators: ema, rsi, atr, macd, all, none"),
     format: str = Query("svg", regex="^(svg|json)$", description="Output format: svg or json"),
-    theme: str = Query("light", regex="^(light|dark)$", description="Chart theme: light (default) or dark")
+    theme: str = Query("light", regex="^(light|dark)$", description="Chart theme: light (default) or dark"),
+    width: int = Query(1400, ge=300, le=2400, description="SVG viewBox width in px (match caller's display width for crisp text)"),
+    height: int = Query(780, ge=300, le=2000, description="SVG viewBox height in px (match caller's display height)")
 ):
     """
     Generate daily candlestick chart with technical indicators
@@ -707,7 +749,7 @@ async def get_daily_chart(
         # Return format
         if format == "svg":
             calc_indicators = {col: df[col] for col in df.columns if col.startswith('ema_')}
-            svg = create_svg_chart(symbol, df, calc_indicators, title_suffix="Daily", theme=theme, stock_name=stock_name, stats=stats)
+            svg = create_svg_chart(symbol, df, calc_indicators, width=width, height=height, title_suffix="Daily", theme=theme, stock_name=stock_name, stats=stats)
             return StreamingResponse(
                 iter([svg]),
                 media_type="image/svg+xml",
@@ -737,7 +779,9 @@ async def get_weekly_chart(
     from_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
     to_date: date = Query(..., description="End date (YYYY-MM-DD)"),
     indicators: str = Query("ema", regex="^(ema|rsi|atr|macd|all|none)$", description="Indicators: ema, rsi, atr, macd, all, none"),
-    theme: str = Query("light", regex="^(light|dark)$", description="Chart theme: light (default) or dark")
+    theme: str = Query("light", regex="^(light|dark)$", description="Chart theme: light (default) or dark"),
+    width: int = Query(1400, ge=300, le=2400, description="SVG viewBox width in px (match caller's display width for crisp text)"),
+    height: int = Query(780, ge=300, le=2000, description="SVG viewBox height in px (match caller's display height)")
 ):
     """
     Generate weekly candlestick chart (aggregated from daily)
@@ -810,7 +854,7 @@ async def get_weekly_chart(
         if 'date' in weekly.columns:
             weekly = weekly.set_index(pd.to_datetime(weekly['date']))
         calc_indicators = {col: weekly[col] for col in weekly.columns if col.startswith('ema_')}
-        svg = create_svg_chart(symbol, weekly, calc_indicators, title_suffix="Weekly", theme=theme, stock_name=stock_name, stats=stats)
+        svg = create_svg_chart(symbol, weekly, calc_indicators, width=width, height=height, title_suffix="Weekly", theme=theme, stock_name=stock_name, stats=stats)
 
         return StreamingResponse(
             iter([svg]),

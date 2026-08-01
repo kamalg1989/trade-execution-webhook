@@ -28,16 +28,18 @@ def _dates(from_date: str | None, to_date: str | None):
     return from_d, to_d
 
 
-async def _proxy_chart(kind: str, symbol: str, from_date, to_date, indicators, theme):
+async def _proxy_chart(kind: str, symbol: str, from_date, to_date, indicators, theme, width=None, height=None):
     sym = _clean_symbol(symbol)
     from_d, to_d = _dates(from_date, to_date)
+    params = {"symbol": sym, "from_date": from_d, "to_date": to_d,
+              "indicators": indicators, "theme": theme}
+    if width:
+        params["width"] = width
+    if height:
+        params["height"] = height
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            r = await client.get(
-                f"{MARKET_DATA_API}/charts/{kind}",
-                params={"symbol": sym, "from_date": from_d, "to_date": to_d,
-                        "indicators": indicators, "theme": theme},
-            )
+            r = await client.get(f"{MARKET_DATA_API}/charts/{kind}", params=params)
         if r.status_code != 200:
             logger.warning(f"{kind} chart for {sym}: upstream {r.status_code} {r.text[:120]}")
             raise HTTPException(status_code=r.status_code,
@@ -59,14 +61,16 @@ async def _proxy_chart(kind: str, symbol: str, from_date, to_date, indicators, t
 
 @router.get("/charts/daily")
 async def get_daily_chart(symbol: str, from_date: str = None, to_date: str = None,
-                          indicators: str = "ema", theme: str = "dark"):
-    return await _proxy_chart("daily", symbol, from_date, to_date, indicators, theme)
+                          indicators: str = "ema", theme: str = "dark",
+                          width: int = None, height: int = None):
+    return await _proxy_chart("daily", symbol, from_date, to_date, indicators, theme, width, height)
 
 
 @router.get("/charts/weekly")
 async def get_weekly_chart(symbol: str, from_date: str = None, to_date: str = None,
-                           indicators: str = "ema", theme: str = "dark"):
-    return await _proxy_chart("weekly", symbol, from_date, to_date, indicators, theme)
+                           indicators: str = "ema", theme: str = "dark",
+                           width: int = None, height: int = None):
+    return await _proxy_chart("weekly", symbol, from_date, to_date, indicators, theme, width, height)
 
 
 @router.get("/charts/combined")
