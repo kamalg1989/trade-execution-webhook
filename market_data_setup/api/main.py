@@ -702,10 +702,10 @@ def create_svg_chart_split(
     min_price -= _pad; max_price += _pad
     price_range = max_price - min_price or 1
 
-    yaxis_width = px(78)
+    yaxis_width = px(58)
     plot_left = px(10)
     plot_right = px(16)
-    top_margin = px(96) if stats else px(50)
+    top_margin = px(38)
     bottom_margin = px(36)
     legend_height = px(30)
     plot_inner_w = max(1, plot_width - plot_left - plot_right)
@@ -718,27 +718,26 @@ def create_svg_chart_split(
     def y_coord(price):
         return plot_bottom - ((price - min_price) / price_range) * chart_height
 
-    # ---------------- Y-AXIS PANEL (fixed - title, stats, price scale) ----------------
+    # ---------------- Y-AXIS PANEL (transparent overlay - price scale only) ----------------
+    # No background rect and no title/stats text here - the frontend renders
+    # this as a see-through overlay floating on top of the chart (title and
+    # stats now come back as plain data in the JSON response and are
+    # rendered as their own compact HTML bar), so all this needs to draw is
+    # the price labels themselves. Each label gets a same-color "halo"
+    # stroke behind its fill so it stays legible over candles of any color
+    # without needing an opaque backing panel.
+    halo = bg_color
     ya = [
         f'<svg width="{yaxis_width}" height="{height}" xmlns="http://www.w3.org/2000/svg" font-family="Arial, sans-serif">',
-        f'<rect width="100%" height="100%" fill="{bg_color}"/>',
-        f'<text x="{px(10)}" y="{px(22)}" font-size="{px(15)}" font-weight="700" fill="{text_color}">{esc(symbol)}</text>',
-        f'<text x="{px(10)}" y="{px(38)}" font-size="{px(9)}" fill="{sub_color}">{esc(title_suffix)}</text>',
     ]
-    if stats:
-        # Compact - one value per line (LTP, then its 1Y change, then a
-        # rounded 52W range) instead of label+value pairs, so the whole
-        # block clears the first price gridline with room to spare even in
-        # this narrower panel.
-        chg_col = up_color if stats['chg1y'] >= 0 else down_color
-        ya.append(f'<text x="{px(10)}" y="{px(56):.1f}" font-size="{px(13)}" font-weight="700" fill="{text_color}">₹{stats["ltp"]:.2f}</text>')
-        ya.append(f'<text x="{px(10)}" y="{px(71):.1f}" font-size="{px(11)}" font-weight="700" fill="{chg_col}">{stats["chg1y"]:+.1f}%</text>')
-        ya.append(f'<text x="{px(10)}" y="{px(87):.1f}" font-size="{px(9)}" fill="{sub_color}">52W {stats["wk52_low"]:.0f}–{stats["wk52_high"]:.0f}</text>')
     for i in range(6):
         price = min_price + (i / 5) * price_range
         y = y_coord(price)
-        ya.append(f'<line x1="{yaxis_width-px(8)}" y1="{y:.1f}" x2="{yaxis_width}" y2="{y:.1f}" stroke="{grid_color}" stroke-width="{max(1, px(1))}"/>')
-        ya.append(f'<text x="{yaxis_width-px(12)}" y="{y+px(4):.1f}" font-size="{px(12)}" fill="{sub_color}" text-anchor="end">{price:.2f}</text>')
+        ya.append(
+            f'<text x="{yaxis_width-px(8):.1f}" y="{y+px(4):.1f}" font-size="{px(12)}" fill="{sub_color}" '
+            f'text-anchor="end" stroke="{halo}" stroke-width="3" stroke-linejoin="round" paint-order="stroke fill" '
+            f'opacity="0.92">{price:.2f}</text>'
+        )
     ya.append('</svg>')
 
     # ---------------- PLOT PANEL (scrollable - candles/volume/EMA/dates) ----------------
@@ -916,7 +915,7 @@ async def get_daily_chart(
             if split:
                 yaxis_svg, plot_svg, yaxis_w = create_svg_chart_split(symbol, df, calc_indicators, plot_width=width, height=height, title_suffix="Daily", theme=theme, stock_name=stock_name, stats=stats)
                 return JSONResponse(
-                    {"yaxis": yaxis_svg, "plot": plot_svg, "yaxisWidth": yaxis_w, "height": height},
+                    {"yaxis": yaxis_svg, "plot": plot_svg, "yaxisWidth": yaxis_w, "height": height, "stats": stats},
                     headers={"Cache-Control": "public, max-age=3600"}
                 )
             svg = create_svg_chart(symbol, df, calc_indicators, width=width, height=height, title_suffix="Daily", theme=theme, stock_name=stock_name, stats=stats)
@@ -1028,7 +1027,7 @@ async def get_weekly_chart(
         if split:
             yaxis_svg, plot_svg, yaxis_w = create_svg_chart_split(symbol, weekly, calc_indicators, plot_width=width, height=height, title_suffix="Weekly", theme=theme, stock_name=stock_name, stats=stats)
             return JSONResponse(
-                {"yaxis": yaxis_svg, "plot": plot_svg, "yaxisWidth": yaxis_w, "height": height},
+                {"yaxis": yaxis_svg, "plot": plot_svg, "yaxisWidth": yaxis_w, "height": height, "stats": stats},
                 headers={"Cache-Control": "public, max-age=86400"}
             )
         svg = create_svg_chart(symbol, weekly, calc_indicators, width=width, height=height, title_suffix="Weekly", theme=theme, stock_name=stock_name, stats=stats)

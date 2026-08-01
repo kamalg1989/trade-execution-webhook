@@ -53,7 +53,7 @@ export default function ChartModal({ symbol, open, onClose }) {
   const range = chartType === 'weekly' ? weeklyRange : dailyRange;
   // Follow the app's global light/dark mode by default (manual override still available)
   const [theme, setTheme] = useState(localStorage.getItem('theme') === 'light' ? 'light' : 'dark');
-  // null = loading, '' = unavailable, else {yaxis, plot, yaxisWidth, plotWidth, height}
+  // null = loading, '' = unavailable, else {yaxis, plot, yaxisWidth, plotWidth, height, stats}
   const [chartData, setChartData] = useState(null);
 
   const chartAreaRef = useRef(null);
@@ -88,6 +88,7 @@ export default function ChartModal({ symbol, open, onClose }) {
         yaxisWidth: data.yaxisWidth,
         plotWidth,
         height: data.height,
+        stats: data.stats || null,
       });
     } catch {
       setChartData('');
@@ -138,9 +139,10 @@ export default function ChartModal({ symbol, open, onClose }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Swipe-to-close stays bound to the header only (not the whole screen) -
-  // the chart area's primary gesture is horizontal panning, and letting a
-  // downward drag there compete with that would make panning unreliable.
+  // Swipe-to-close stays bound to the bottom control bar only (not the
+  // whole screen) - the chart area's primary gesture is horizontal panning,
+  // and letting an upward drag there compete with that would make panning
+  // unreliable.
   const { handlers, panelStyle } = useSwipeToClose(onClose);
 
   if (!open) return null;
@@ -154,15 +156,70 @@ export default function ChartModal({ symbol, open, onClose }) {
     load(chartType, rk, theme);
   };
   const setThemeAndLoad = (thm) => { setTheme(thm); load(chartType, range, thm); };
+  const statsBarBg = theme === 'light' ? 'bg-white/70 text-slate-700' : 'bg-slate-950/70 text-slate-200';
 
   return (
     <div
       className={`fixed inset-0 z-50 flex flex-col ${theme === 'light' ? 'bg-white' : 'bg-slate-950'}`}
       style={panelStyle}
     >
-      {/* Header — swipe up anywhere here to close, or tap the X */}
-      <div {...handlers} className="flex-shrink-0 border-b border-slate-700 bg-slate-900" style={{ touchAction: 'none' }}>
-        <div className="flex justify-center pt-3 pb-2.5">
+      {/* Chart area — takes the top of the screen. The plot panel (candles/
+          volume/EMA/date labels) fills the full width and pans horizontally;
+          the Y-axis (price scale) and the stats line float on top as
+          transparent overlays instead of taking their own layout space, so
+          neither steals width/height from the candles. Both stay put as
+          you pan since neither is inside the scrollable element. */}
+      <div ref={chartAreaRef} className="flex-1 min-h-0 relative overflow-hidden">
+        {chartData === null ? (
+          <div className="w-full h-full flex items-center justify-center text-slate-400 gap-2">
+            <Loader className="w-5 h-5 animate-spin" /> Loading chart…
+          </div>
+        ) : chartData === '' ? (
+          <div className="w-full h-full flex items-center justify-center text-slate-400">Chart unavailable for this symbol</div>
+        ) : (
+          <>
+            <div
+              className="absolute inset-y-0 left-0 overflow-x-auto overflow-y-hidden w-full"
+              style={{ WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain' }}
+            >
+              <div
+                style={{ width: chartData.plotWidth, height: '100%' }}
+                className="[&_svg]:block [&_svg]:w-full [&_svg]:h-full"
+                dangerouslySetInnerHTML={{ __html: chartData.plot }}
+              />
+            </div>
+            {/* Price scale - transparent, floats on top of the candles */}
+            <div
+              className="absolute inset-y-0 left-0 pointer-events-none [&_svg]:block [&_svg]:w-full [&_svg]:h-full"
+              style={{ width: chartData.yaxisWidth }}
+              dangerouslySetInnerHTML={{ __html: chartData.yaxis }}
+            />
+            {/* Symbol + LTP/change/52W - one compact translucent line on
+                top of the chart instead of a separate stacked section */}
+            {chartData.stats && (
+              <div className={`absolute top-0 left-0 right-0 pointer-events-none backdrop-blur-sm flex items-center gap-x-3 px-3 py-1.5 text-[11px] ${statsBarBg}`}>
+                <span className="font-bold">{symbol?.replace('.NS', '')}</span>
+                <span className="font-semibold">₹{chartData.stats.ltp.toFixed(2)}</span>
+                <span className={`font-semibold ${chartData.stats.chg1y >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                  {chartData.stats.chg1y >= 0 ? '+' : ''}{chartData.stats.chg1y.toFixed(1)}%
+                </span>
+                <span className="opacity-70">52W {chartData.stats.wk52_low.toFixed(0)}–{chartData.stats.wk52_high.toFixed(0)}</span>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {chartData && chartData !== '' && (
+        <div className="flex-shrink-0 py-1 text-center text-[11px] text-slate-500 bg-slate-900 border-t border-slate-800">
+          swipe left/right to pan · price scale stays fixed
+        </div>
+      )}
+
+      {/* Controls — bottom sheet style. Swipe up anywhere here to close,
+          or tap the X. */}
+      <div {...handlers} className="flex-shrink-0 border-t border-slate-700 bg-slate-900" style={{ touchAction: 'none' }}>
+        <div className="flex justify-center pt-2 pb-1.5">
           <div className="w-24 h-2 rounded-full bg-slate-500" />
         </div>
         <div className="flex items-center justify-between px-4 pb-2">
@@ -195,61 +252,17 @@ export default function ChartModal({ symbol, open, onClose }) {
             ))}
           </div>
         </div>
-      </div>
-
-      {/* Timeframe selector — right-aligned to match Daily/Weekly above */}
-      <div className="flex-shrink-0 flex items-center justify-end gap-1 px-4 py-2 border-b border-slate-800 bg-slate-900 overflow-x-auto">
-        <span className="text-xs text-slate-500 mr-1 flex-shrink-0">Range:</span>
-        {RANGES.map(r => (
-          <button key={r.key} onClick={() => setRangeAndLoad(r.key)}
-            className={`px-3 py-1 rounded-md text-xs font-semibold flex-shrink-0 ${
-              range === r.key ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'
-            }`}>{r.key}</button>
-        ))}
-      </div>
-
-      {/* Chart area — the plot panel (candles/volume/EMA/date labels) fills
-          the full width and pans horizontally; the Y-axis (price scale)
-          floats on top as a fixed overlay instead of a separate column, so
-          it never steals width from the candles. It stays put as you pan
-          since it isn't inside the scrollable element. */}
-      <div ref={chartAreaRef} className="flex-1 min-h-0 relative overflow-hidden">
-        {chartData === null ? (
-          <div className="w-full h-full flex items-center justify-center text-slate-400 gap-2">
-            <Loader className="w-5 h-5 animate-spin" /> Loading chart…
-          </div>
-        ) : chartData === '' ? (
-          <div className="w-full h-full flex items-center justify-center text-slate-400">Chart unavailable for this symbol</div>
-        ) : (
-          <>
-            <div
-              className="absolute inset-y-0 left-0 overflow-x-auto overflow-y-hidden w-full"
-              style={{ WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain' }}
-            >
-              <div
-                style={{ width: chartData.plotWidth, height: '100%' }}
-                className="[&_svg]:block [&_svg]:w-full [&_svg]:h-full"
-                dangerouslySetInnerHTML={{ __html: chartData.plot }}
-              />
-            </div>
-            <div
-              className="absolute inset-y-0 left-0 pointer-events-none shadow-[4px_0_10px_-4px_rgba(0,0,0,0.35)]"
-              style={{ width: chartData.yaxisWidth }}
-            >
-              <div
-                className="[&_svg]:block [&_svg]:w-full [&_svg]:h-full"
-                dangerouslySetInnerHTML={{ __html: chartData.yaxis }}
-              />
-            </div>
-          </>
-        )}
-      </div>
-
-      {chartData && chartData !== '' && (
-        <div className="flex-shrink-0 py-1.5 text-center text-[11px] text-slate-500 bg-slate-900 border-t border-slate-800">
-          swipe left/right to pan · price scale stays fixed
+        {/* Timeframe selector — right-aligned to match Daily/Weekly above */}
+        <div className="flex items-center justify-end gap-1 px-4 pb-3 overflow-x-auto">
+          <span className="text-xs text-slate-500 mr-1 flex-shrink-0">Range:</span>
+          {RANGES.map(r => (
+            <button key={r.key} onClick={() => setRangeAndLoad(r.key)}
+              className={`px-3 py-1 rounded-md text-xs font-semibold flex-shrink-0 ${
+                range === r.key ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'
+              }`}>{r.key}</button>
+          ))}
         </div>
-      )}
+      </div>
     </div>
   );
 }
