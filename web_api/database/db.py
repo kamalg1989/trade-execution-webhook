@@ -46,8 +46,6 @@ class SLPosition(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     closed_at = Column(DateTime)
-    structural_sl = Column(Float, index=True)
-    structural_sl_source = Column(String(20))
 
     # Relationships
     audit_logs = relationship("SLAuditLog", back_populates="position")
@@ -71,8 +69,6 @@ class UserTrade(Base):
     pnl = Column(Float)
     pnl_percent = Column(Float)
     trade_type = Column(String(10), default='BUY')
-    structural_sl = Column(Float, index=True)
-    structural_sl_source = Column(String(20))
 
 
 class SLAuditLog(Base):

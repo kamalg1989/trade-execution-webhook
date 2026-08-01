@@ -159,7 +159,7 @@ export default function Dashboard() {
           'Content-Type': 'application/json',
           'X-API-Key': apiKey
         },
-        body: JSON.stringify({ symbol: stock.symbol, quantity: qty, price: entry, stopLoss: sl })
+        body: JSON.stringify({ symbol: stock.symbol, quantity: qty, price: entry, stopLoss: sl, recommendation: stock })
       });
       const result = await response.json();
       if (response.ok && result.success) {

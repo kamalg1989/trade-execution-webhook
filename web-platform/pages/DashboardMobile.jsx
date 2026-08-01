@@ -106,7 +106,7 @@ export default function DashboardMobile() {
       const response = await fetch('/api/buy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
-        body: JSON.stringify({ symbol: stock.symbol, quantity: qty, price: entry, stopLoss: sl })
+        body: JSON.stringify({ symbol: stock.symbol, quantity: qty, price: entry, stopLoss: sl, recommendation: stock })
       });
       const result = await response.json();
       if (response.ok && result.success) {
