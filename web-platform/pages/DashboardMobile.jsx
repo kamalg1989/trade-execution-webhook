@@ -134,7 +134,7 @@ export default function DashboardMobile() {
       {/* Status + actions — compact single row; icon buttons on the right
           since these are infrequent/secondary actions, not thumb-critical */}
       {status && (
-        <div className="px-4 pt-2 pb-1.5 border-b border-slate-800 flex items-center justify-between gap-2">
+        <div className="px-4 pt-1.5 pb-1 border-b border-slate-800 flex items-center justify-between gap-2">
           <div className="text-[10px] text-slate-400 leading-tight truncate min-w-0">
             📅 <b className="text-slate-200">{fmtD(status.signalBarDate)}</b> · 🗄️ <b className="text-slate-200">{fmtD(status.dbLatestCandle)}</b>
             {status.regime && <> · <b className="text-purple-300">{status.regime}</b></>}
@@ -153,9 +153,9 @@ export default function DashboardMobile() {
       )}
 
       {/* Recommendations List — compact rows so all picks fit one screen */}
-      <div className="px-4 py-2">
-        <p className="text-[10px] font-bold tracking-widest text-blue-300 mb-1">📐 QUANT PICKS</p>
-        <div className="space-y-1.5">
+      <div className="px-4 py-1.5">
+        <p className="text-[10px] font-bold tracking-widest text-blue-300 mb-0.5">📐 QUANT PICKS</p>
+        <div className="space-y-1">
           {recommendations.length === 0 ? (
             <div className="text-center py-4">
               <AlertCircle className="w-6 h-6 mx-auto mb-1 text-slate-400 opacity-50" />
@@ -166,7 +166,7 @@ export default function DashboardMobile() {
               <button
                 key={stock.symbol}
                 onClick={() => openDetail(stock)}
-                className="w-full text-left px-3 py-2 rounded-lg transition-all flex items-center justify-between bg-slate-700 border border-slate-600 active:bg-slate-600"
+                className="w-full text-left px-3 py-1.5 rounded-lg transition-all flex items-center justify-between bg-slate-700 border border-slate-600 active:bg-slate-600"
               >
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5 flex-wrap">
@@ -200,14 +200,14 @@ export default function DashboardMobile() {
           )}
         </div>
 
-        <p className="text-[10px] font-bold tracking-widest text-emerald-300 mt-2.5 mb-1">🤖 AI CHART PICKS</p>
-        <div className="space-y-1.5">
+        <p className="text-[10px] font-bold tracking-widest text-emerald-300 mt-1.5 mb-0.5">🤖 AI CHART PICKS</p>
+        <div className="space-y-1">
           {aiPicks.length > 0 ? (
             aiPicks.map((stock) => (
               <button
                 key={`ai-${stock.symbol}`}
                 onClick={() => openDetail(stock)}
-                className="w-full text-left px-3 py-2 rounded-lg transition-all flex items-center justify-between bg-slate-700 border border-emerald-800/60 active:bg-slate-600"
+                className="w-full text-left px-3 py-1.5 rounded-lg transition-all flex items-center justify-between bg-slate-700 border border-emerald-800/60 active:bg-slate-600"
               >
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5 flex-wrap">

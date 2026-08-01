@@ -738,6 +738,19 @@ def create_svg_chart_split(
             f'text-anchor="end" stroke="{halo}" stroke-width="3" stroke-linejoin="round" paint-order="stroke fill" '
             f'opacity="0.92">{price:.2f}</text>'
         )
+    # 52-week high/low - always shown, not just when that price happens to
+    # fall inside whatever date range is currently plotted. Clamped to stay
+    # within the panel (rather than using the raw y-coordinate, which can
+    # land off the top/bottom edge when the visible window is shorter than
+    # 52 weeks) so these two are visible no matter what range you're on.
+    if stats:
+        for lvl, col, prefix in [(stats['wk52_high'], up_color, 'H'), (stats['wk52_low'], down_color, 'L')]:
+            y = min(max(y_coord(lvl), px(11)), height - px(5))
+            ya.append(
+                f'<text x="{yaxis_width-px(8):.1f}" y="{y:.1f}" font-size="{px(10)}" font-weight="700" fill="{col}" '
+                f'text-anchor="end" stroke="{halo}" stroke-width="3" stroke-linejoin="round" paint-order="stroke fill" '
+                f'opacity="0.95">{prefix} {lvl:.0f}</text>'
+            )
     ya.append('</svg>')
 
     # ---------------- PLOT PANEL (scrollable - candles/volume/EMA/dates) ----------------
