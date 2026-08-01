@@ -168,8 +168,11 @@ export default function ChartModal({ symbol, open, onClose }) {
           the Y-axis (price scale) and the stats line float on top as
           transparent overlays instead of taking their own layout space, so
           neither steals width/height from the candles. Both stay put as
-          you pan since neither is inside the scrollable element. */}
-      <div ref={chartAreaRef} className="flex-1 min-h-0 relative overflow-hidden">
+          you pan since neither is inside the scrollable element. Capped at
+          60% of the screen height (medium) rather than filling all the
+          space left after the controls - the controls stay pinned to the
+          true bottom of the screen either way (mt-auto below). */}
+      <div ref={chartAreaRef} className="h-[60vh] min-h-0 flex-shrink-0 relative overflow-hidden">
         {chartData === null ? (
           <div className="w-full h-full flex items-center justify-center text-slate-400 gap-2">
             <Loader className="w-5 h-5 animate-spin" /> Loading chart…
@@ -211,7 +214,7 @@ export default function ChartModal({ symbol, open, onClose }) {
       </div>
 
       {chartData && chartData !== '' && (
-        <div className="flex-shrink-0 py-1 text-center text-[11px] text-slate-500 bg-slate-900 border-t border-slate-800">
+        <div className="mt-auto flex-shrink-0 py-1 text-center text-[11px] text-slate-500 bg-slate-900 border-t border-slate-800">
           swipe left/right to pan · price scale stays fixed
         </div>
       )}
