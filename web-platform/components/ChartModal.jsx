@@ -1,13 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { X, ZoomIn, ZoomOut, Loader } from 'lucide-react';
+import { X, Loader } from 'lucide-react';
 import { useSwipeToClose } from '../utils/useSwipeToClose';
 
-// Make the upstream SVG responsive: ensure a viewBox, strip fixed width/height
+// Make an upstream SVG responsive: ensure a viewBox, strip fixed width/height
 // so CSS controls sizing, and force it to fill its container exactly (no
-// letterboxing). We now request a viewBox sized to match the actual
-// on-screen container (see width/height query params below), so
-// preserveAspectRatio="none" is mostly a safety net for rounding, not a
-// real distortion.
+// letterboxing). We request a viewBox sized to match the actual on-screen
+// panel (see width/height query params below), so preserveAspectRatio="none"
+// is mostly a safety net for rounding, not a real distortion.
 export function makeResponsive(svg) {
   if (!svg || svg[0] !== '<') return svg;
   if (!/viewBox=/i.test(svg)) {
@@ -30,14 +29,16 @@ const RANGES = [
   { key: '5Y', days: 1827 },
 ];
 
-// Requesting a chart exactly as wide as the on-screen container crams every
-// candle into very little horizontal room on a narrow phone. Requesting
-// this much extra width by default gives each candle real breathing room;
-// the chart area already supports horizontal pan/scroll for it. Height is
-// NOT multiplied — only width, so the chart still fills the container's
-// full height with no vertical dead space.
-const BASE_ZOOM = 1.6;
-const MAX_ZOOM = 4;
+// The plot panel is requested wider than the on-screen space available to
+// it so candles get real breathing room instead of being crammed together -
+// you pan/scroll horizontally to see the rest. The Y-axis (price scale)
+// panel is requested at its natural width and never scrolls, so panning
+// the plot never drags the price labels out of view or off to the side.
+const PLOT_ZOOM = 1.6;
+// Rough guess for the Y-axis panel's width, used only to size the plot
+// request sensibly before we know the backend's actual (slightly
+// screen-scaled) value; a few px of slop here is harmless.
+const YAXIS_ESTIMATE = 62;
 
 function fromDate(days) {
   const d = new Date();
@@ -55,15 +56,14 @@ export default function ChartModal({ symbol, open, onClose }) {
   const range = chartType === 'weekly' ? weeklyRange : dailyRange;
   // Follow the app's global light/dark mode by default (manual override still available)
   const [theme, setTheme] = useState(localStorage.getItem('theme') === 'light' ? 'light' : 'dark');
-  const [svg, setSvg] = useState(null);   // null=loading, ''=unavailable
-  const [zoom, setZoom] = useState(BASE_ZOOM);
+  // null = loading, '' = unavailable, else {yaxis, plot, yaxisWidth, plotWidth, height}
+  const [chartData, setChartData] = useState(null);
 
   const chartAreaRef = useRef(null);
   const sizeRef = useRef({ width: null, height: null });
   // Always-current snapshot of the values load() needs, so the ResizeObserver
   // callback (set up once per "open" session) never reloads using a stale
-  // chartType/range/theme from whenever it was first attached — that bug is
-  // what made a resize event silently revert "weekly" back to "daily".
+  // chartType/range/theme from whenever it was first attached.
   const latestRef = useRef({ chartType, range, theme });
   useEffect(() => {
     latestRef.current = { chartType, range, theme };
@@ -71,39 +71,42 @@ export default function ChartModal({ symbol, open, onClose }) {
 
   const load = useCallback(async (type, rangeKey, thm) => {
     if (!symbol) return;
-    setSvg(null);
+    setChartData(null);
     const days = (RANGES.find(r => r.key === rangeKey) || RANGES[1]).days;
+    const { width, height } = sizeRef.current;
+    const plotWidth = width ? Math.max(300, Math.round((width - YAXIS_ESTIMATE) * PLOT_ZOOM)) : 900;
     try {
       const params = new URLSearchParams({
         symbol, theme: thm, from_date: fromDate(days),
+        split: 'true', width: String(plotWidth),
       });
-      // Request a chart sized to match the actual on-screen container
-      // (width padded out by BASE_ZOOM for candle spacing; height left
-      // exact) so the backend renders fonts/candles at a legible scale
-      // for this device, instead of a fixed 1400x780 desktop canvas
-      // getting squeezed (and its text shrunk) into a small viewport.
-      const { width, height } = sizeRef.current;
-      if (width) params.set('width', String(Math.round(width * BASE_ZOOM)));
       if (height) params.set('height', String(Math.round(height)));
       const r = await fetch(`/api/charts/${type}?${params.toString()}`);
-      setSvg(r.ok ? makeResponsive(await r.text()) : '');
+      if (!r.ok) { setChartData(''); return; }
+      const data = await r.json();
+      if (!data || !data.yaxis) { setChartData(''); return; }
+      setChartData({
+        yaxis: makeResponsive(data.yaxis),
+        plot: makeResponsive(data.plot),
+        yaxisWidth: data.yaxisWidth,
+        plotWidth,
+        height: data.height,
+      });
     } catch {
-      setSvg('');
+      setChartData('');
     }
   }, [symbol]);
 
   // On open: measure the container SYNCHRONOUSLY first, then load once with
-  // the correct size already known. (Previously this measurement happened
-  // in a separate effect via ResizeObserver's deferred first callback,
-  // which fired *after* an initial load() had already gone out with no
-  // size info - producing a visible flash from a wrong-sized desktop-default
-  // chart to the correctly-sized one a moment later.) The ResizeObserver
-  // set up here is then only for genuine later changes (orientation, etc).
+  // the correct size already known - avoids a visible flash from a
+  // wrong-sized chart to the correctly-sized one a moment later. The
+  // ResizeObserver set up here only reacts to genuine later size changes
+  // (e.g. orientation change) - panning the plot panel horizontally does
+  // NOT resize this outer container, so it never re-fires from that.
   useEffect(() => {
     if (!open) return;
     const appTheme = localStorage.getItem('theme') === 'light' ? 'light' : 'dark';
     setTheme(appTheme);
-    setZoom(BASE_ZOOM);
 
     const el = chartAreaRef.current;
     if (el) {
@@ -138,22 +141,22 @@ export default function ChartModal({ symbol, open, onClose }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  // Swipe-to-close stays bound to the header only (not the whole screen) -
+  // the chart area's primary gesture is horizontal panning, and letting a
+  // downward drag there compete with that would make panning unreliable.
   const { handlers, panelStyle } = useSwipeToClose(onClose);
 
   if (!open) return null;
 
   const setType = (t) => {
     setChartType(t);
-    setZoom(BASE_ZOOM);
     load(t, t === 'weekly' ? weeklyRange : dailyRange, theme);
   };
   const setRangeAndLoad = (rk) => {
     if (chartType === 'weekly') setWeeklyRange(rk); else setDailyRange(rk);
-    setZoom(BASE_ZOOM);
     load(chartType, rk, theme);
   };
-  const setThemeAndLoad = (thm) => { setTheme(thm); setZoom(BASE_ZOOM); load(chartType, range, thm); };
-  const displayZoom = zoom / BASE_ZOOM;
+  const setThemeAndLoad = (thm) => { setTheme(thm); load(chartType, range, thm); };
 
   return (
     <div
@@ -206,38 +209,40 @@ export default function ChartModal({ symbol, open, onClose }) {
         ))}
       </div>
 
-      {/* Chart area — always wider than the viewport by BASE_ZOOM so candles
-          aren't crammed together; scroll/pan horizontally (and vertically
-          once zoomed in further) to see the rest. */}
-      <div ref={chartAreaRef} className="flex-1 min-h-0 p-2 overflow-auto flex items-start justify-center">
-        {svg === null ? (
-          <div className="h-full w-full flex items-center justify-center text-slate-400 gap-2">
+      {/* Chart area — fixed Y-axis panel (price scale never moves) beside a
+          separately, horizontally-scrollable plot panel (candles/volume/
+          EMA/date labels pan underneath it). */}
+      <div ref={chartAreaRef} className="flex-1 min-h-0 flex overflow-hidden">
+        {chartData === null ? (
+          <div className="w-full h-full flex items-center justify-center text-slate-400 gap-2">
             <Loader className="w-5 h-5 animate-spin" /> Loading chart…
           </div>
-        ) : svg === '' ? (
-          <div className="h-full w-full flex items-center justify-center text-slate-400">Chart unavailable for this symbol</div>
+        ) : chartData === '' ? (
+          <div className="w-full h-full flex items-center justify-center text-slate-400">Chart unavailable for this symbol</div>
         ) : (
-          <div
-            style={{ width: `${zoom * 100}%`, minWidth: `${zoom * 100}%` }}
-            className="[&_svg]:w-full [&_svg]:h-auto"
-            dangerouslySetInnerHTML={{ __html: svg }}
-          />
+          <>
+            <div
+              style={{ width: chartData.yaxisWidth, flexShrink: 0 }}
+              className="[&_svg]:block [&_svg]:w-full [&_svg]:h-full"
+              dangerouslySetInnerHTML={{ __html: chartData.yaxis }}
+            />
+            <div
+              className="flex-1 overflow-x-auto overflow-y-hidden"
+              style={{ WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain' }}
+            >
+              <div
+                style={{ width: chartData.plotWidth, height: '100%' }}
+                className="[&_svg]:block [&_svg]:w-full [&_svg]:h-full"
+                dangerouslySetInnerHTML={{ __html: chartData.plot }}
+              />
+            </div>
+          </>
         )}
       </div>
 
-      {/* Zoom controls */}
-      {svg && svg !== '' && (
-        <div className="flex-shrink-0 flex items-center justify-center gap-3 px-4 py-3 border-t border-slate-700 bg-slate-900">
-          <button onClick={() => setZoom(z => Math.max(BASE_ZOOM, z - BASE_ZOOM * 0.5))} disabled={zoom <= BASE_ZOOM}
-            className="p-2 bg-slate-800 rounded-lg text-slate-300 disabled:opacity-40">
-            <ZoomOut className="w-5 h-5" />
-          </button>
-          <span className="text-sm text-slate-400 w-16 text-center">{displayZoom.toFixed(1)}×</span>
-          <button onClick={() => setZoom(z => Math.min(MAX_ZOOM, z + BASE_ZOOM * 0.5))} disabled={zoom >= MAX_ZOOM}
-            className="p-2 bg-slate-800 rounded-lg text-slate-300 disabled:opacity-40">
-            <ZoomIn className="w-5 h-5" />
-          </button>
-          <span className="text-xs text-slate-500 ml-2">swipe to pan</span>
+      {chartData && chartData !== '' && (
+        <div className="flex-shrink-0 py-1.5 text-center text-[11px] text-slate-500 bg-slate-900 border-t border-slate-800">
+          swipe left/right to pan · price scale stays fixed
         </div>
       )}
     </div>

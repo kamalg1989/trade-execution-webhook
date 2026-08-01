@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { X, BarChart3, ShoppingCart } from 'lucide-react';
 import { useSwipeToClose } from '../utils/useSwipeToClose';
 
@@ -25,14 +25,19 @@ const allocation = (s) => {
 // Fullscreen detail sheet — sits below ChartModal (z-40 < z-50) so tapping
 // "View Chart" can layer the chart on top without losing this modal's state.
 export default function StockDetailModal({ stock, open, onClose, onBuy, onViewChart }) {
-  const { handlers, panelStyle } = useSwipeToClose(onClose);
+  const scrollRef = useRef(null);
+  // Bound to the whole modal (not just the header) so you can swipe down
+  // to close from anywhere - it only "arms" the close-drag when the
+  // content is already scrolled to the top, so it never fights normal
+  // scrolling further down the sheet.
+  const { handlers, panelStyle } = useSwipeToClose(onClose, 90, scrollRef);
 
   if (!open || !stock) return null;
 
   return (
-    <div className="fixed inset-0 z-40 flex flex-col bg-slate-900" style={panelStyle}>
-      {/* Header — swipe down anywhere here to close, or tap the X */}
-      <div {...handlers} className="flex-shrink-0 border-b border-slate-700 bg-slate-800" style={{ touchAction: 'none' }}>
+    <div {...handlers} className="fixed inset-0 z-40 flex flex-col bg-slate-900" style={panelStyle}>
+      {/* Header — swipe down anywhere on this screen to close, or tap the X */}
+      <div className="flex-shrink-0 border-b border-slate-700 bg-slate-800">
         <div className="flex justify-center pt-3 pb-2.5">
           <div className="w-24 h-2 rounded-full bg-slate-500" />
         </div>
@@ -55,9 +60,12 @@ export default function StockDetailModal({ stock, open, onClose, onBuy, onViewCh
         </div>
       </div>
 
-      {/* Scrollable content */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 min-h-0">
-        <div className="bg-slate-700 rounded-lg p-3">
+      {/* Scrollable content — footer buttons live inside this same scroll
+          region (sticky to its bottom) so they sit right after the content
+          instead of being pinned to the physical screen edge with a dead
+          gap above them when content is short. */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0" style={{ overscrollBehaviorY: 'contain' }}>
+        <div className="bg-slate-700 rounded-lg p-3 mx-4 mt-3">
           {/* Key Metrics */}
           <div className="grid grid-cols-3 gap-x-3 gap-y-2.5">
             <div>
@@ -144,37 +152,39 @@ export default function StockDetailModal({ stock, open, onClose, onBuy, onViewCh
             </div>
           )}
         </div>
-      </div>
 
-      {/* Sticky footer actions — bottom-anchored, full-width, thumb-friendly
-          for one-handed use. Buy is last (closest to the natural right-thumb
-          rest position) since it's the primary action. */}
-      <div className="flex-shrink-0 px-4 py-2.5 border-t border-slate-700 bg-slate-800 space-y-2">
-        <button
-          onClick={onViewChart}
-          className="w-full bg-slate-700 active:bg-slate-600 rounded-lg py-3 flex items-center justify-center gap-2 font-semibold text-base text-blue-400 border border-slate-600"
-        >
-          <BarChart3 className="w-5 h-5" />
-          View Chart
-        </button>
-
-        {stock.owned ? (
-          <div className="w-full bg-slate-700 border border-purple-600/50 text-purple-200 font-semibold py-3 px-4 rounded-lg text-center text-sm">
-            {stock.heldQty > 0
-              ? `Holding ${stock.heldQty} — manage from Today tab`
-              : stock.positionQty > 0
-                ? `Bought today (${stock.positionQty}) — manage from Today tab`
-                : 'BUY order already resting on Dhan'}
-          </div>
-        ) : (
+        {/* Action buttons — sticky to the bottom of the scroll area, so they
+            sit right after the content (no dead gap for short content) but
+            still stay pinned in view once you scroll a taller sheet.
+            Buy is last (closest to the natural right-thumb rest position)
+            since it's the primary action. */}
+        <div className="sticky bottom-0 mt-3 px-4 py-2.5 border-t border-slate-700 bg-slate-800 space-y-2">
           <button
-            onClick={() => onBuy(stock)}
-            className="w-full bg-gradient-to-r from-green-500 to-green-600 active:from-green-600 active:to-green-700 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-all text-base"
+            onClick={onViewChart}
+            className="w-full bg-slate-700 active:bg-slate-600 rounded-lg py-3 flex items-center justify-center gap-2 font-semibold text-base text-blue-400 border border-slate-600"
           >
-            <ShoppingCart className="w-5 h-5" />
-            Buy {stock.symbol}
+            <BarChart3 className="w-5 h-5" />
+            View Chart
           </button>
-        )}
+
+          {stock.owned ? (
+            <div className="w-full bg-slate-700 border border-purple-600/50 text-purple-200 font-semibold py-3 px-4 rounded-lg text-center text-sm">
+              {stock.heldQty > 0
+                ? `Holding ${stock.heldQty} — manage from Today tab`
+                : stock.positionQty > 0
+                  ? `Bought today (${stock.positionQty}) — manage from Today tab`
+                  : 'BUY order already resting on Dhan'}
+            </div>
+          ) : (
+            <button
+              onClick={() => onBuy(stock)}
+              className="w-full bg-gradient-to-r from-green-500 to-green-600 active:from-green-600 active:to-green-700 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-all text-base"
+            >
+              <ShoppingCart className="w-5 h-5" />
+              Buy {stock.symbol}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
