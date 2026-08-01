@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Save, RotateCcw, Play, CheckCircle, AlertCircle, Loader, Copy, Eye, EyeOff } from 'lucide-react';
+import { Save, RotateCcw, Play, CheckCircle, AlertCircle, Loader, Copy, Eye, EyeOff, Bell, BellOff, BellRing } from 'lucide-react';
+import { subscribeToPush, unsubscribeFromPush, getPushStatus, sendTestPush, isPushSupported } from '../utils/pushClient';
 
 const NUMBER_FIELDS = [
   { key: 'capital', label: 'Trading Capital (₹)', step: 10000, hint: 'Total capital used for position sizing' },
@@ -31,6 +32,60 @@ export default function Settings() {
   const [loadingApiKey, setLoadingApiKey] = useState(false);
   const [pinInput, setPinInput] = useState('');
   const [showPinDialog, setShowPinDialog] = useState(false);
+  const [pushStatus, setPushStatus] = useState({ supported: false, subscribed: false });
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushMessage, setPushMessage] = useState(null);
+
+  useEffect(() => {
+    if (isPushSupported()) {
+      getPushStatus().then(setPushStatus).catch(() => {});
+    }
+  }, []);
+
+  const enablePush = async () => {
+    setPushBusy(true);
+    setPushMessage(null);
+    try {
+      await subscribeToPush();
+      setPushStatus(await getPushStatus());
+      setPushMessage({ type: 'success', text: 'Push notifications enabled on this device.' });
+    } catch (e) {
+      setPushMessage({ type: 'error', text: e.message || 'Failed to enable notifications' });
+    } finally {
+      setPushBusy(false);
+    }
+  };
+
+  const disablePush = async () => {
+    setPushBusy(true);
+    setPushMessage(null);
+    try {
+      await unsubscribeFromPush();
+      setPushStatus(await getPushStatus());
+      setPushMessage({ type: 'success', text: 'Push notifications disabled on this device.' });
+    } catch (e) {
+      setPushMessage({ type: 'error', text: e.message || 'Failed to disable notifications' });
+    } finally {
+      setPushBusy(false);
+    }
+  };
+
+  const testPush = async () => {
+    setPushBusy(true);
+    setPushMessage(null);
+    try {
+      const r = await sendTestPush();
+      setPushMessage(
+        r.sent > 0
+          ? { type: 'success', text: `Test sent to ${r.sent} device(s) — check your notifications.` }
+          : { type: 'error', text: 'No active subscriptions to send to yet.' }
+      );
+    } catch (e) {
+      setPushMessage({ type: 'error', text: 'Test send failed' });
+    } finally {
+      setPushBusy(false);
+    }
+  };
 
   useEffect(() => {
     fetch('/api/settings')
@@ -147,6 +202,66 @@ export default function Settings() {
             {message.text}
           </div>
         )}
+
+        {/* Push Notifications */}
+        <div className="bg-slate-700 rounded-lg p-4 lg:p-6">
+          <h2 className="text-base lg:text-xl font-bold mb-4 flex items-center gap-2">
+            <BellRing className="w-5 h-5" /> Push Notifications
+          </h2>
+          <p className="text-sm text-slate-300 mb-4">
+            Get alerted on this device for new screener signals (top picks), the daily SL
+            reconciliation summary, and real-time SL danger alerts during market hours.
+          </p>
+          {!pushStatus.supported ? (
+            <p className="text-sm text-amber-400 flex items-center gap-2">
+              <AlertCircle className="w-4 h-4" /> Not supported in this browser.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex flex-col sm:flex-row gap-3">
+                {!pushStatus.subscribed ? (
+                  <button
+                    onClick={enablePush}
+                    disabled={pushBusy}
+                    className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2"
+                  >
+                    {pushBusy ? <Loader className="w-4 h-4 animate-spin" /> : <Bell className="w-4 h-4" />}
+                    Enable Notifications
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={testPush}
+                      disabled={pushBusy}
+                      className="flex-1 bg-green-600 hover:bg-green-700 disabled:opacity-50 font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2"
+                    >
+                      {pushBusy ? <Loader className="w-4 h-4 animate-spin" /> : <BellRing className="w-4 h-4" />}
+                      Send Test
+                    </button>
+                    <button
+                      onClick={disablePush}
+                      disabled={pushBusy}
+                      className="flex-1 bg-slate-600 hover:bg-slate-500 disabled:opacity-50 font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2"
+                    >
+                      <BellOff className="w-4 h-4" />
+                      Disable
+                    </button>
+                  </>
+                )}
+              </div>
+              {pushStatus.subscribed && (
+                <p className="text-xs text-green-400 flex items-center gap-1">
+                  <CheckCircle className="w-3.5 h-3.5" /> Enabled on this device
+                </p>
+              )}
+              {pushMessage && (
+                <p className={`text-xs ${pushMessage.type === 'error' ? 'text-red-400' : 'text-green-400'}`}>
+                  {pushMessage.text}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* API Key Security */}
         <div className="bg-slate-700 rounded-lg p-4 lg:p-6">

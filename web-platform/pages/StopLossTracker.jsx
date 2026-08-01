@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { AlertTriangle, AlertCircle, CheckCircle, Shield, Loader, RefreshCw,
-  MoreVertical, LogOut, Trash2, Check, ChevronDown, Zap } from 'lucide-react';
+  MoreVertical, LogOut, Trash2, Check, ChevronDown, Zap, LayoutGrid, Table2, ChevronUp } from 'lucide-react';
 
 const api = async (path, body) => {
   const apiKey = localStorage.getItem('trading_api_key');
@@ -24,32 +24,41 @@ const api = async (path, body) => {
 
 // ---------- R-ladder progress bar ----------
 const RLadder = ({ p }) => {
-  const rStop = p.structuralSL || p.safetySL;
+  const hasProtection = p.stop_loss > 0;
+  const rStop = hasProtection ? (p.structuralSL || p.safetySL) : (p.safetySL || p.structuralSL);
   if (!rStop || !p.buyPrice || p.buyPrice <= rStop) return null;
   const rUnit = p.buyPrice - rStop;
   const maxR = Math.max(3, Math.ceil(p.rMultiple ?? 0) + 1);
-  const toPct = (price) => Math.min(97, Math.max(0, ((price - p.buyPrice) / (rUnit * maxR)) * 100));
+  // Extend the scale below Buy so an underwater position (negative R, e.g.
+  // IKS at -1.41R) doesn't get clamped/pinned at the Buy tick — previously
+  // Math.max(0, ...) floored every sub-Buy price to the same 0% position.
+  const minR = Math.min(-1, Math.floor(p.rMultiple ?? 0));
+  const span = maxR - minR;
+  const toPct = (price) => Math.min(100, Math.max(0, (((price - p.buyPrice) / rUnit) - minR) / span * 100));
   const ticks = [];
-  for (let i = 0; i <= maxR; i++) ticks.push(i);
+  for (let i = minR; i <= maxR; i++) ticks.push(i);
+  const buyPct = toPct(p.buyPrice);
+  const curPct = toPct(p.current_price);
+  const underwater = p.current_price < p.buyPrice;
   return (
     <div className="mt-3 mb-1">
       <div className="relative h-7">
         <div className="absolute top-2.5 left-0 right-0 h-1 rounded bg-slate-600/40" />
-        <div className="absolute top-2.5 left-0 h-1 rounded bg-green-400"
-          style={{ width: `${toPct(p.current_price)}%` }} />
+        <div className={`absolute top-2.5 h-1 rounded ${underwater ? 'bg-red-400' : 'bg-green-400'}`}
+          style={{ left: `${Math.min(buyPct, curPct)}%`, width: `${Math.abs(curPct - buyPct)}%` }} />
         {ticks.map(i => (
           <React.Fragment key={i}>
-            <div className="absolute top-1 w-0.5 h-4 bg-slate-500" style={{ left: `${(i / maxR) * 100}%` }} />
+            <div className="absolute top-1 w-0.5 h-4 bg-slate-500" style={{ left: `${((i - minR) / span) * 100}%` }} />
             <div className="absolute top-6 text-[9px] text-slate-400 -translate-x-1/2"
-              style={{ left: `${(i / maxR) * 100}%` }}>{i === 0 ? 'Buy' : `${i}R`}</div>
+              style={{ left: `${((i - minR) / span) * 100}%` }}>{i === 0 ? 'Buy' : `${i}R`}</div>
           </React.Fragment>
         ))}
         {p.stop_loss > 0 && (
           <div className="absolute top-0.5 w-1 h-5 bg-red-400 rounded -translate-x-1/2"
             title={`SL ₹${p.stop_loss}`} style={{ left: `${toPct(p.stop_loss)}%` }} />
         )}
-        <div className="absolute top-1.5 w-3 h-3 rounded-full bg-green-400 border-2 border-slate-900 -translate-x-1/2"
-          title={`Now ₹${p.current_price}`} style={{ left: `${toPct(p.current_price)}%` }} />
+        <div className={`absolute top-1.5 w-3 h-3 rounded-full border-2 border-slate-900 -translate-x-1/2 ${underwater ? 'bg-red-400' : 'bg-green-400'}`}
+          title={`Now ₹${p.current_price}`} style={{ left: `${curPct}%` }} />
       </div>
     </div>
   );
@@ -59,17 +68,148 @@ const RLadder = ({ p }) => {
 const RMeta = ({ p }) => {
   const rStop = p.structuralSL || p.safetySL;
   if (!rStop || !p.buyPrice || p.buyPrice <= rStop) return null;
+  const isStruct = !!p.structuralSL;
   const rUnit = p.buyPrice - rStop;
   const t2 = p.buyPrice + 2 * rUnit;
   const riskPct = ((rUnit / p.buyPrice) * 100).toFixed(1);
   const rewPct = ((2 * rUnit / p.buyPrice) * 100).toFixed(1);
   return (
     <p className="text-[11px] text-slate-400 mt-1">
-      Struct −1R: <span className="text-red-300">₹{rStop.toFixed(1)} (−{riskPct}%)</span>
+      {isStruct ? 'Struct −1R: ' : 'Safety −1R (no structural set): '}
+      <span className="text-red-300">₹{rStop.toFixed(1)} (−{riskPct}%)</span>
       {' · '}Target +2R: <span className="text-green-300">₹{t2.toFixed(1)} (+{rewPct}%)</span>
     </p>
   );
 };
+
+const TABLE_COLUMNS = [
+  { key: 'symbol', label: 'Symbol', align: 'left', sticky: true },
+  { key: 'quantity', label: 'Qty', align: 'right' },
+  { key: 'buyPrice', label: 'Entry', align: 'right' },
+  { key: 'current_price', label: 'LTP', align: 'right' },
+  { key: 'structuralSL', label: 'Struct SL', align: 'right' },
+  { key: 'safetySL', label: 'Safety SL', align: 'right' },
+  { key: 'stop_loss', label: 'Current SL', align: 'right' },
+  { key: 'rMultiple', label: 'R', align: 'right' },
+  { key: 'pnl', label: 'PnL', align: 'right' },
+  { key: 'pnlPct', label: 'PnL %', align: 'right' },
+  { key: 'status', label: 'Status', align: 'left' },
+];
+
+const actionOf = (p) => p.recommendation?.action || 'NONE';
+const actionLabel = (a) => ({
+  EXIT: 'Exit', SET_SL: 'Set SL', SELL_HALF: 'Sell half', TRAIL: 'Trail', NONE: 'OK',
+  EXIT_PENDING: 'Exit pending', HALF_EXIT_PENDING: 'Half-exit pending',
+}[a] || a);
+const actionClass = (a) => ({
+  EXIT: 'text-red-400', SET_SL: 'text-amber-400', SELL_HALF: 'text-emerald-400', TRAIL: 'text-green-400',
+  EXIT_PENDING: 'text-blue-400', HALF_EXIT_PENDING: 'text-blue-400',
+}[a] || 'text-slate-400');
+
+const fmtNum = (v, decimals = 2) => (v == null ? '—' : Number(v).toFixed(decimals));
+const fmtSigned = (v, decimals = 1, suffix = '') =>
+  v == null ? '—' : `${v >= 0 ? '+' : ''}${Number(v).toFixed(decimals)}${suffix}`;
+
+function tableCell(p, key) {
+  switch (key) {
+    case 'symbol': return p.symbol;
+    case 'quantity': return p.quantity ?? '—';
+    case 'buyPrice': return fmtNum(p.buyPrice);
+    case 'current_price': return fmtNum(p.current_price);
+    case 'structuralSL': return fmtNum(p.structuralSL);
+    case 'safetySL': return fmtNum(p.safetySL);
+    case 'stop_loss': return p.stop_loss ? fmtNum(p.stop_loss) : '—';
+    case 'rMultiple': return fmtSigned(p.rMultiple, 1, 'R');
+    case 'pnl': return p.pnl == null ? '—' : `${p.pnl >= 0 ? '+' : ''}₹${Math.abs(p.pnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+    case 'pnlPct': return fmtSigned(p.pnlPct, 1, '%');
+    case 'status': return actionLabel(actionOf(p));
+    default: return '—';
+  }
+}
+
+function tableCellClass(p, key) {
+  if (key === 'safetySL') return 'text-red-300';
+  if (key === 'rMultiple') return p.rMultiple == null ? 'text-slate-400' : p.rMultiple >= 0 ? 'text-green-400' : 'text-red-400';
+  if (key === 'pnl' || key === 'pnlPct') {
+    const v = key === 'pnl' ? p.pnl : p.pnlPct;
+    return v == null ? 'text-slate-400' : v >= 0 ? 'text-green-400' : 'text-red-400';
+  }
+  if (key === 'status') return actionClass(actionOf(p));
+  if (key === 'current_price') return 'text-blue-400 font-semibold';
+  return 'text-slate-100';
+}
+
+function PositionsTable({ positions, onRefresh, refreshing }) {
+  const [sortKey, setSortKey] = useState('rMultiple');
+  const [sortDir, setSortDir] = useState(-1);
+
+  const rows = useMemo(() => positions.map(p => ({
+    ...p,
+    pnlPct: p.buyPrice ? Math.round(((p.current_price - p.buyPrice) / p.buyPrice) * 1000) / 10 : null,
+  })), [positions]);
+
+  const sorted = useMemo(() => {
+    const list = [...rows];
+    list.sort((a, b) => {
+      let av = sortKey === 'status' ? actionOf(a) : a[sortKey];
+      let bv = sortKey === 'status' ? actionOf(b) : b[sortKey];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === 'string') return av.localeCompare(bv) * sortDir;
+      return (av - bv) * sortDir;
+    });
+    return list;
+  }, [rows, sortKey, sortDir]);
+
+  const onHeaderClick = (key) => {
+    if (sortKey === key) setSortDir(d => -d);
+    else { setSortKey(key); setSortDir(1); }
+  };
+
+  return (
+    <div className="rounded-lg border border-slate-700 overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 bg-slate-800/60 border-b border-slate-700">
+        <span className="text-[11px] text-slate-400">Tap a column to sort</span>
+        <button onClick={onRefresh} disabled={refreshing} className="p-1.5 rounded bg-slate-700 text-slate-200 disabled:opacity-50">
+          <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="border-collapse text-[11px] whitespace-nowrap w-full">
+          <thead>
+            <tr className="bg-slate-800 border-b border-slate-600">
+              {TABLE_COLUMNS.map(c => (
+                <th key={c.key} onClick={() => onHeaderClick(c.key)}
+                  className={`px-2.5 py-2 font-medium text-slate-400 cursor-pointer select-none ${c.align === 'right' ? 'text-right' : 'text-left'} ${c.sticky ? 'sticky left-0 bg-slate-800 z-10' : ''}`}>
+                  <span className="inline-flex items-center gap-0.5">
+                    {c.label}
+                    {sortKey === c.key && (sortDir === 1 ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}
+                  </span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map(p => (
+              <tr key={p.id} className={`border-b border-slate-700/60 ${actionOf(p) === 'EXIT' ? 'bg-red-950/30' : ''}`}>
+                {TABLE_COLUMNS.map(c => (
+                  <td key={c.key}
+                    className={`px-2.5 py-2 ${c.align === 'right' ? 'text-right' : 'text-left'} ${c.sticky ? 'sticky left-0 bg-slate-900 font-semibold text-white' : tableCellClass(p, c.key)}`}>
+                    {tableCell(p, c.key)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+            {sorted.length === 0 && (
+              <tr><td colSpan={TABLE_COLUMNS.length} className="px-3 py-4 text-center text-slate-400">No positions</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
 export default function StopLossTracker() {
   const [positions, setPositions] = useState([]);
@@ -81,6 +221,7 @@ export default function StopLossTracker() {
   const [showDone, setShowDone] = useState(false);
   const [structIn, setStructIn] = useState({});
   const [customSl, setCustomSl] = useState({});
+  const [viewMode, setViewMode] = useState('cards');
 
   const fetchData = useCallback(async () => {
     try {
@@ -144,7 +285,8 @@ export default function StopLossTracker() {
   };
 
   const saveStructural = (p) => {
-    const v = Number(structIn[p.id]);
+    const raw = structIn[p.id];
+    const v = (raw === undefined || raw === '') ? Number(p.structuralSL) : Number(raw);
     if (!v || v <= 0) return setMessage({ type: 'error', text: 'Enter a valid structural SL' });
     run(`struct-${p.id}`, null, '/api/sl/set-structural',
       { symbol: p.symbol, structuralSL: v }, () => `✅ ${p.symbol}: structural SL ₹${v}`);
@@ -157,6 +299,7 @@ export default function StopLossTracker() {
   const unprotected = positions.filter(p => reco(p).action === 'SET_SL');
   const trailDue = positions.filter(p => ['SELL_HALF', 'TRAIL'].includes(reco(p).action));
   const done = positions.filter(p => reco(p).action === 'NONE');
+  const exitPending = positions.filter(p => ['EXIT_PENDING', 'HALF_EXIT_PENDING'].includes(reco(p).action));
   const pending = exits.length + unprotected.length + trailDue.length;
 
   const btnStyle = {
@@ -194,7 +337,11 @@ export default function StopLossTracker() {
             <RLadder p={p} />
           </div>
           <div className="flex items-center gap-2 flex-shrink-0 flex-wrap" onClick={e => e.stopPropagation()}>
-            {r.action !== 'NONE' && (
+            {['EXIT_PENDING', 'HALF_EXIT_PENDING'].includes(r.action) ? (
+              <span className="bg-blue-900/50 text-blue-300 font-semibold text-sm px-4 py-2.5 rounded-lg whitespace-nowrap flex items-center gap-2">
+                ⏳ {r.label}
+              </span>
+            ) : r.action !== 'NONE' && (
               <button onClick={() => executeReco(p)} disabled={isBusy || (!r.trigger && r.action !== 'EXIT')}
                 className={`${btnStyle[r.action]} disabled:opacity-50 text-white font-semibold text-sm px-4 py-2.5 rounded-lg whitespace-nowrap flex items-center gap-2`}>
                 {isBusy ? <Loader className="w-4 h-4 animate-spin" /> : null}
@@ -307,8 +454,19 @@ export default function StopLossTracker() {
             {exits.length > 0 && <span className="text-[11px] px-2.5 py-1 rounded-full bg-red-900/60 text-red-300 font-semibold">{exits.length} exit</span>}
             {unprotected.length > 0 && <span className="text-[11px] px-2.5 py-1 rounded-full bg-amber-900/60 text-amber-300 font-semibold">{unprotected.length} unprotected</span>}
             {trailDue.length > 0 && <span className="text-[11px] px-2.5 py-1 rounded-full bg-green-900/60 text-green-300 font-semibold">{trailDue.length} trail due</span>}
+            {exitPending.length > 0 && <span className="text-[11px] px-2.5 py-1 rounded-full bg-blue-900/60 text-blue-300 font-semibold">{exitPending.length} resting</span>}
+            <div className="flex bg-slate-900 border border-slate-600 rounded-lg p-0.5">
+              <button onClick={() => setViewMode('cards')} title="Card view"
+                className={`p-1.5 rounded-md ${viewMode === 'cards' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}>
+                <LayoutGrid className="w-4 h-4" />
+              </button>
+              <button onClick={() => setViewMode('table')} title="Table view"
+                className={`p-1.5 rounded-md ${viewMode === 'table' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}>
+                <Table2 className="w-4 h-4" />
+              </button>
+            </div>
             <button onClick={() => { setRefreshing(true); fetchData().finally(() => setRefreshing(false)); }}
-              disabled={refreshing} className="p-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 disabled:opacity-50">
+              disabled={refreshing} title="Refresh" className="p-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 disabled:opacity-50">
               <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
             </button>
           </div>
@@ -321,7 +479,13 @@ export default function StopLossTracker() {
           </div>
         )}
 
-        {pending === 0 && (
+        {viewMode === 'table' && (
+          <PositionsTable positions={positions}
+            onRefresh={() => { setRefreshing(true); fetchData().finally(() => setRefreshing(false)); }}
+            refreshing={refreshing} />
+        )}
+
+        {viewMode === 'cards' && pending === 0 && (
           <div className="rounded-xl p-6 bg-green-900/20 border border-green-800/40 text-center">
             <CheckCircle className="w-8 h-8 text-green-400 mx-auto mb-2" />
             <p className="font-semibold text-green-300">All clear — nothing to do tonight</p>
@@ -329,12 +493,13 @@ export default function StopLossTracker() {
           </div>
         )}
 
-        <Section title="STEP 1 — EXIT REQUIRED" color="text-red-400" items={exits} accent="border-l-red-500" />
-        <Section title="STEP 2 — PLACE INITIAL SL" color="text-amber-400" items={unprotected} accent="border-l-amber-500" />
-        <Section title="STEP 3 — BOOK PROFIT / TRAIL (R-LADDER)" color="text-green-400" items={trailDue} accent="border-l-green-500" />
+        {viewMode === 'cards' && <Section title="STEP 1 — EXIT REQUIRED" color="text-red-400" items={exits} accent="border-l-red-500" />}
+        {viewMode === 'cards' && <Section title="RESTING — ORDER PLACED, AWAITING FILL AT OPEN" color="text-blue-400" items={exitPending} accent="border-l-blue-500" />}
+        {viewMode === 'cards' && <Section title="STEP 2 — PLACE INITIAL SL" color="text-amber-400" items={unprotected} accent="border-l-amber-500" />}
+        {viewMode === 'cards' && <Section title="STEP 3 — BOOK PROFIT / TRAIL (R-LADDER)" color="text-green-400" items={trailDue} accent="border-l-green-500" />}
 
         {/* Nothing to do */}
-        {done.length > 0 && (
+        {viewMode === 'cards' && done.length > 0 && (
           <div>
             <h2 className="text-[11px] font-bold tracking-widest mb-2 text-slate-500">NOTHING TO DO ({done.length})</h2>
             <div className="space-y-1.5">

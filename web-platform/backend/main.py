@@ -138,6 +138,7 @@ try:
         ('sl_engine', 'Stop Loss'),
         ('charts', 'Charts'),
         ('settings', 'Settings'),
+        ('push', 'Push Notifications'),
     ]
 
     for module_name, label in router_modules:

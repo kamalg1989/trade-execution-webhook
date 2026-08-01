@@ -1826,6 +1826,31 @@ Tick: `₹{trade['tick_size']:.4f}`
             "baseRangePct": round(m["base_range_pct"] * 100, 1),
         })
 
+    # Persist structural SL per symbol PERMANENTLY (upsert, never overwritten
+    # wholesale) — the SL screen's screener-fallback used to read only
+    # today's top-3 "stocks" list, so a stock alerted a few days ago (like
+    # SAREGAMA) lost its structural SL the moment a later scan's top-3 no
+    # longer included it, silently falling back to the −8% safety level.
+    try:
+        hist_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "structural_sl_history.json")
+        try:
+            with open(hist_path) as f:
+                hist = json.load(f)
+        except Exception:
+            hist = {}
+        for r in web_recs:
+            hist[r["symbol"].replace(".NS", "").strip().upper()] = {
+                "structuralSL": r["stopLoss"],
+                "entry": r["entry"],
+                "target": r["target"],
+                "alertedAt": datetime.now().isoformat(),
+                "signalBarDate": r.get("signalBarDate"),
+            }
+        with open(hist_path, "w") as f:
+            json.dump(hist, f, indent=2)
+    except Exception as e:
+        print(f"⚠️ structural SL history update failed: {e}")
+
     # Build the FULL candidate list (all funnel survivors, quant-ranked) with
     # complete trade params — the AI ranker picks from this same pre-sized pool.
     all_candidates = []
@@ -1888,7 +1913,7 @@ Tick: `₹{trade['tick_size']:.4f}`
         ai_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_rank_candidates.py")
         if os.path.exists(ai_script):
             subprocess.Popen([sys.executable, ai_script],
-                             stdout=open("/tmp/ai_rank.log", "w"), stderr=subprocess.STDOUT)
+                             stdout=open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_rank.log"), "a"), stderr=subprocess.STDOUT)
             print("🤖 AI ranking pass launched in background (ai_rank_candidates.py)")
     except Exception as e:
         print(f"⚠️ Could not launch AI ranking pass: {e}")
