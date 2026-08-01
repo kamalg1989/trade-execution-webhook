@@ -675,7 +675,7 @@ def create_svg_chart_split(
     drags the price scale out of view. Both panels share the same price
     scale and vertical layout math so their gridlines line up exactly.
 
-    Returns (yaxis_svg, plot_svg, yaxis_width).
+    Returns (yaxis_svg, plot_svg, yaxis_width, ema_legend).
     """
     if theme == "light":
         bg_color = "#ffffff"; text_color = "#131722"; sub_color = "#787b86"
@@ -686,7 +686,7 @@ def create_svg_chart_split(
     up_color = "#26a69a"; down_color = "#ef5350"
 
     if len(df) == 0:
-        return "<svg></svg>", "<svg></svg>", 60
+        return "<svg></svg>", "<svg></svg>", 60, []
 
     s = max(0.45, min(1.4, height / 780))
 
@@ -793,21 +793,23 @@ def create_svg_chart_split(
         'ema_50': {'color': '#ab47bc', 'label': 'EMA 50'},
         'ema_200': {'color': '#787b86', 'label': 'EMA 200'},
     }
+    # The legend (swatch + label per EMA) is NOT drawn here - it's returned
+    # separately (see ema_legend below) so the frontend can render it as its
+    # own fixed, translucent overlay that doesn't scroll away with the
+    # candles, the same treatment as the price scale. Only the actual EMA
+    # curves get drawn into the scrollable plot.
+    ema_legend = []
     if indicators:
-        lx = plot_left + px(4)
-        ly = top_margin + px(14)
         ema_w = max(1.2, px(1.8))
         for col, style in ema_styles.items():
             if col in df.columns:
                 pts = [f"{x_coord(i):.1f},{y_coord(v):.1f}" for i, v in enumerate(df[col]) if not pd.isna(v)]
                 if pts:
                     pl.append(f'<polyline points="{" ".join(pts)}" fill="none" stroke="{style["color"]}" stroke-width="{ema_w}" opacity="0.9"/>')
-                    pl.append(f'<line x1="{lx}" y1="{ly}" x2="{lx+px(16)}" y2="{ly}" stroke="{style["color"]}" stroke-width="{max(1.5, px(2.5))}"/>')
-                    pl.append(f'<text x="{lx+px(22)}" y="{ly+px(4)}" font-size="{px(11)}" fill="{sub_color}">{style["label"]}</text>')
-                    lx += px(80)
+                    ema_legend.append({"label": style["label"], "color": style["color"]})
     pl.append('</svg>')
 
-    return '\n'.join(ya), '\n'.join(pl), yaxis_width
+    return '\n'.join(ya), '\n'.join(pl), yaxis_width, ema_legend
 
 
 async def compute_symbol_stats(conn, symbol: str):
@@ -913,9 +915,9 @@ async def get_daily_chart(
         if format == "svg":
             calc_indicators = {col: df[col] for col in df.columns if col.startswith('ema_')}
             if split:
-                yaxis_svg, plot_svg, yaxis_w = create_svg_chart_split(symbol, df, calc_indicators, plot_width=width, height=height, title_suffix="Daily", theme=theme, stock_name=stock_name, stats=stats)
+                yaxis_svg, plot_svg, yaxis_w, ema_legend = create_svg_chart_split(symbol, df, calc_indicators, plot_width=width, height=height, title_suffix="Daily", theme=theme, stock_name=stock_name, stats=stats)
                 return JSONResponse(
-                    {"yaxis": yaxis_svg, "plot": plot_svg, "yaxisWidth": yaxis_w, "height": height, "stats": stats},
+                    {"yaxis": yaxis_svg, "plot": plot_svg, "yaxisWidth": yaxis_w, "height": height, "stats": stats, "emaLegend": ema_legend},
                     headers={"Cache-Control": "public, max-age=3600"}
                 )
             svg = create_svg_chart(symbol, df, calc_indicators, width=width, height=height, title_suffix="Daily", theme=theme, stock_name=stock_name, stats=stats)
@@ -1025,9 +1027,9 @@ async def get_weekly_chart(
             weekly = weekly.set_index(pd.to_datetime(weekly['date']))
         calc_indicators = {col: weekly[col] for col in weekly.columns if col.startswith('ema_')}
         if split:
-            yaxis_svg, plot_svg, yaxis_w = create_svg_chart_split(symbol, weekly, calc_indicators, plot_width=width, height=height, title_suffix="Weekly", theme=theme, stock_name=stock_name, stats=stats)
+            yaxis_svg, plot_svg, yaxis_w, ema_legend = create_svg_chart_split(symbol, weekly, calc_indicators, plot_width=width, height=height, title_suffix="Weekly", theme=theme, stock_name=stock_name, stats=stats)
             return JSONResponse(
-                {"yaxis": yaxis_svg, "plot": plot_svg, "yaxisWidth": yaxis_w, "height": height, "stats": stats},
+                {"yaxis": yaxis_svg, "plot": plot_svg, "yaxisWidth": yaxis_w, "height": height, "stats": stats, "emaLegend": ema_legend},
                 headers={"Cache-Control": "public, max-age=86400"}
             )
         svg = create_svg_chart(symbol, weekly, calc_indicators, width=width, height=height, title_suffix="Weekly", theme=theme, stock_name=stock_name, stats=stats)

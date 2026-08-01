@@ -53,7 +53,7 @@ export default function ChartModal({ symbol, open, onClose }) {
   const range = chartType === 'weekly' ? weeklyRange : dailyRange;
   // Follow the app's global light/dark mode by default (manual override still available)
   const [theme, setTheme] = useState(localStorage.getItem('theme') === 'light' ? 'light' : 'dark');
-  // null = loading, '' = unavailable, else {yaxis, plot, yaxisWidth, plotWidth, height, stats}
+  // null = loading, '' = unavailable, else {yaxis, plot, yaxisWidth, plotWidth, height, stats, emaLegend}
   const [chartData, setChartData] = useState(null);
 
   const chartAreaRef = useRef(null);
@@ -89,6 +89,7 @@ export default function ChartModal({ symbol, open, onClose }) {
         plotWidth,
         height: data.height,
         stats: data.stats || null,
+        emaLegend: data.emaLegend || [],
       });
     } catch {
       setChartData('');
@@ -170,8 +171,8 @@ export default function ChartModal({ symbol, open, onClose }) {
           neither steals width/height from the candles. Both stay put as
           you pan since neither is inside the scrollable element. Capped at
           60% of the screen height (medium) rather than filling all the
-          space left after the controls - the controls stay pinned to the
-          true bottom of the screen either way (mt-auto below). */}
+          space left after the controls - the controls sit immediately
+          below (no forced stretch/gap). */}
       <div ref={chartAreaRef} className="h-[60vh] min-h-0 flex-shrink-0 relative overflow-hidden">
         {chartData === null ? (
           <div className="w-full h-full flex items-center justify-center text-slate-400 gap-2">
@@ -209,12 +210,25 @@ export default function ChartModal({ symbol, open, onClose }) {
                 <span className="opacity-70">52W {chartData.stats.wk52_low.toFixed(0)}–{chartData.stats.wk52_high.toFixed(0)}</span>
               </div>
             )}
+            {/* EMA legend - same treatment as the price scale: a fixed,
+                translucent overlay (not drawn inside the plot SVG) so it
+                doesn't scroll away when you pan, right below the stats line */}
+            {chartData.emaLegend && chartData.emaLegend.length > 0 && (
+              <div className={`absolute top-[28px] left-0 right-0 pointer-events-none backdrop-blur-sm flex items-center gap-x-2.5 px-3 py-1 text-[10px] ${statsBarBg}`}>
+                {chartData.emaLegend.map(e => (
+                  <span key={e.label} className="flex items-center gap-1 flex-shrink-0">
+                    <span className="w-2.5 h-0.5 rounded-full" style={{ backgroundColor: e.color }} />
+                    {e.label}
+                  </span>
+                ))}
+              </div>
+            )}
           </>
         )}
       </div>
 
       {chartData && chartData !== '' && (
-        <div className="mt-auto flex-shrink-0 py-1 text-center text-[11px] text-slate-500 bg-slate-900 border-t border-slate-800">
+        <div className="flex-shrink-0 py-1 text-center text-[11px] text-slate-500 bg-slate-900 border-t border-slate-800">
           swipe left/right to pan · price scale stays fixed
         </div>
       )}
