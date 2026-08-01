@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Home, TrendingUp, Shield, Briefcase, Settings as SettingsIcon, Sun, Moon } from 'lucide-react';
+import { Home, Shield, Briefcase, Settings as SettingsIcon, Sun, Moon } from 'lucide-react';
 import DashboardMobile from './pages/DashboardMobile';
-import ProfitLossTrackerMobile from './pages/ProfitLossTrackerMobile';
 import StopLossTracker from './pages/StopLossTracker';
 import PortfolioMobile from './pages/PortfolioMobile';
 import Settings from './pages/Settings';
@@ -20,8 +19,7 @@ export default function AppMobile() {
 
   const navigation = [
     { id: 'dashboard', name: 'Home', icon: Home },
-    { id: 'pl-tracker', name: 'P&L', icon: TrendingUp },
-    { id: 'sl-tracker', name: 'SL', icon: Shield },
+    { id: 'sl-tracker', name: 'Today', icon: Shield },
     { id: 'portfolio', name: 'Portfolio', icon: Briefcase },
     { id: 'settings', name: 'Settings', icon: SettingsIcon },
   ];
@@ -30,8 +28,6 @@ export default function AppMobile() {
     switch (currentPage) {
       case 'dashboard':
         return <DashboardMobile />;
-      case 'pl-tracker':
-        return <ProfitLossTrackerMobile />;
       case 'sl-tracker':
         return <StopLossTracker />;
       case 'portfolio':

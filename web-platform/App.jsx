@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Home, TrendingUp, Shield, Briefcase, LogOut, Menu, X, Settings as SettingsIcon } from 'lucide-react';
+import { Home, Shield, Briefcase, LogOut, Menu, X, Settings as SettingsIcon } from 'lucide-react';
 import { useDevice } from './hooks/useDevice';
 import { ThemeToggle } from './hooks/useTheme';
 import Dashboard from './pages/Dashboard';
-import ProfitLossTracker from './pages/ProfitLossTracker';
 import StopLossTracker from './pages/StopLossTracker';
 import Portfolio from './pages/Portfolio';
 import Settings from './pages/Settings';
@@ -53,8 +52,7 @@ export default function App() {
 
   const navigation = [
     { id: 'dashboard', name: 'Dashboard', icon: Home, description: 'Daily recommendations' },
-    { id: 'pl-tracker', name: 'P&L Tracker', icon: TrendingUp, description: 'Portfolio performance' },
-    { id: 'sl-tracker', name: 'Stop Loss', icon: Shield, description: 'Risk management' },
+    { id: 'sl-tracker', name: 'Today', icon: Shield, description: 'Daily actions & P&L' },
     { id: 'portfolio', name: 'Portfolio', icon: Briefcase, description: 'Holdings & history' },
     { id: 'settings', name: 'Settings', icon: SettingsIcon, description: 'Screener configuration' },
   ];
@@ -63,8 +61,6 @@ export default function App() {
     switch (currentPage) {
       case 'dashboard':
         return <Dashboard />;
-      case 'pl-tracker':
-        return <ProfitLossTracker />;
       case 'sl-tracker':
         return <StopLossTracker />;
       case 'portfolio':

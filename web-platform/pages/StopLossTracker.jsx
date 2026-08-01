@@ -222,6 +222,7 @@ export default function StopLossTracker() {
   const [structIn, setStructIn] = useState({});
   const [customSl, setCustomSl] = useState({});
   const [viewMode, setViewMode] = useState('cards');
+  const [summary, setSummary] = useState(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -233,7 +234,15 @@ export default function StopLossTracker() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  const fetchSummary = useCallback(async () => {
+    try {
+      const r = await fetch('/api/portfolio');
+      if (!r.ok) throw new Error('fetch failed');
+      setSummary(await r.json());
+    } catch (e) { console.error('Portfolio summary fetch failed:', e); }
+  }, []);
+
+  useEffect(() => { fetchData(); fetchSummary(); }, [fetchData, fetchSummary]);
   useEffect(() => {
     const close = () => setMenuOpen(null);
     window.addEventListener('click', close);
@@ -465,12 +474,35 @@ export default function StopLossTracker() {
                 <Table2 className="w-4 h-4" />
               </button>
             </div>
-            <button onClick={() => { setRefreshing(true); fetchData().finally(() => setRefreshing(false)); }}
+            <button onClick={() => { setRefreshing(true); Promise.all([fetchData(), fetchSummary()]).finally(() => setRefreshing(false)); }}
               disabled={refreshing} title="Refresh" className="p-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 disabled:opacity-50">
               <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
             </button>
           </div>
         </div>
+
+        {summary && (
+          <div className="grid grid-cols-3 gap-2 lg:gap-4">
+            <div className="bg-slate-800/60 rounded-lg p-3 lg:p-4">
+              <p className="text-slate-400 text-[11px] lg:text-sm mb-0.5 lg:mb-1">Invested</p>
+              <p className="text-sm lg:text-xl font-bold truncate">
+                ₹{summary.totalInvested?.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+              </p>
+            </div>
+            <div className="bg-slate-800/60 rounded-lg p-3 lg:p-4">
+              <p className="text-slate-400 text-[11px] lg:text-sm mb-0.5 lg:mb-1">Current Value</p>
+              <p className="text-sm lg:text-xl font-bold text-blue-400 truncate">
+                ₹{summary.totalValue?.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+              </p>
+            </div>
+            <div className={`rounded-lg p-3 lg:p-4 ${summary.unrealizedPnL >= 0 ? 'bg-green-900/30' : 'bg-red-900/30'}`}>
+              <p className="text-slate-400 text-[11px] lg:text-sm mb-0.5 lg:mb-1">Unrealized P&L</p>
+              <p className={`text-sm lg:text-xl font-bold truncate ${summary.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {summary.unrealizedPnL >= 0 ? '+' : ''}₹{summary.unrealizedPnL?.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+              </p>
+            </div>
+          </div>
+        )}
 
         {message && (
           <div className={`rounded-lg p-3 text-sm flex items-center gap-2 ${message.type === 'ok' ? 'bg-green-900/50 text-green-300' : 'bg-red-900/50 text-red-300'}`}>

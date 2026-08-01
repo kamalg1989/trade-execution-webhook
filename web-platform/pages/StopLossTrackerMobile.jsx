@@ -159,6 +159,7 @@ export default function StopLossTrackerMobile() {
   const [busy, setBusy] = useState({});
   const [message, setMessage] = useState(null);
   const [viewMode, setViewMode] = useState('cards');
+  const [summary, setSummary] = useState(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -171,12 +172,21 @@ export default function StopLossTrackerMobile() {
     setLoading(false);
   }, []);
 
+  const fetchSummary = useCallback(async () => {
+    try {
+      const r = await fetch('/api/portfolio');
+      if (!r.ok) throw new Error('failed');
+      setSummary(await r.json());
+    } catch (e) { console.error('Portfolio summary fetch failed:', e); }
+  }, []);
+
   useEffect(() => {
     fetchData();
+    fetchSummary();
     if (!autoRefresh) return;
-    const t = setInterval(fetchData, 20000);
+    const t = setInterval(() => { fetchData(); fetchSummary(); }, 20000);
     return () => clearInterval(t);
-  }, [autoRefresh, fetchData]);
+  }, [autoRefresh, fetchData, fetchSummary]);
 
   const run = async (key, confirmMsg, path, body, okMsg) => {
     if (confirmMsg && !window.confirm(confirmMsg)) return;
@@ -261,7 +271,7 @@ export default function StopLossTrackerMobile() {
               <Table2 className="w-4 h-4" />
             </button>
           </div>
-          <button onClick={() => { setRefreshing(true); fetchData().finally(() => setRefreshing(false)); }} disabled={refreshing}
+          <button onClick={() => { setRefreshing(true); Promise.all([fetchData(), fetchSummary()]).finally(() => setRefreshing(false)); }} disabled={refreshing}
             title="Refresh" className="p-2 rounded-lg bg-slate-700 text-slate-200 disabled:opacity-50">
             <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
           </button>
@@ -271,6 +281,25 @@ export default function StopLossTrackerMobile() {
           </button>
         </div>
       </div>
+
+      {summary && (
+        <div className="px-4 pt-3 grid grid-cols-3 gap-2">
+          <div className="bg-slate-800/60 rounded-lg p-2">
+            <p className="text-slate-400 text-[10px] mb-0.5">Invested</p>
+            <p className="text-xs font-bold truncate">₹{summary.totalInvested?.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</p>
+          </div>
+          <div className="bg-slate-800/60 rounded-lg p-2">
+            <p className="text-slate-400 text-[10px] mb-0.5">Value</p>
+            <p className="text-xs font-bold text-blue-400 truncate">₹{summary.totalValue?.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</p>
+          </div>
+          <div className={`rounded-lg p-2 ${summary.unrealizedPnL >= 0 ? 'bg-green-900/30' : 'bg-red-900/30'}`}>
+            <p className="text-slate-400 text-[10px] mb-0.5">Unrealized</p>
+            <p className={`text-xs font-bold truncate ${summary.unrealizedPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+              {summary.unrealizedPnL >= 0 ? '+' : ''}₹{summary.unrealizedPnL?.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+            </p>
+          </div>
+        </div>
+      )}
 
       {message && (
         <div className={`mx-4 mt-3 rounded-lg p-2.5 text-xs flex items-center gap-2 ${message.type === 'ok' ? 'bg-green-900/50 text-green-300' : 'bg-red-900/50 text-red-300'}`}>
