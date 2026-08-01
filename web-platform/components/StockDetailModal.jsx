@@ -36,12 +36,11 @@ export default function StockDetailModal({ stock, open, onClose, onBuy, onViewCh
 
   return (
     <div {...handlers} className="fixed inset-0 z-40 flex flex-col bg-slate-900" style={panelStyle}>
-      {/* Header — swipe up anywhere on this screen to close, or tap the X */}
+      {/* Header — swipe up anywhere on this screen to close, or tap the X.
+          The drag-handle pill itself lives at the bottom (see below), next
+          to the action buttons, matching the swipe-up gesture direction. */}
       <div className="flex-shrink-0 border-b border-slate-700 bg-slate-800">
-        <div className="flex justify-center pt-5 pb-3">
-          <div className="w-24 h-2 rounded-full bg-slate-500" />
-        </div>
-        <div className="flex items-center justify-between px-4 pb-2.5">
+        <div className="flex items-center justify-between px-4 pt-4 pb-2.5">
           <div className="min-w-0">
             <h3 className="text-lg font-bold text-white leading-tight truncate">{stock.symbol}</h3>
             <p className="text-slate-400 text-xs truncate">{stock.company}</p>
@@ -158,7 +157,10 @@ export default function StockDetailModal({ stock, open, onClose, onBuy, onViewCh
             still stay pinned in view once you scroll a taller sheet.
             Buy is last (closest to the natural right-thumb rest position)
             since it's the primary action. */}
-        <div className="sticky bottom-0 mt-3 px-4 py-2.5 border-t border-slate-700 bg-slate-800 space-y-2">
+        <div className="sticky bottom-0 mt-3 px-4 pb-2.5 border-t border-slate-700 bg-slate-800 space-y-2">
+          <div className="flex justify-center pt-2 pb-1">
+            <div className="w-24 h-2 rounded-full bg-slate-500" />
+          </div>
           <button
             onClick={onViewChart}
             className="w-full bg-slate-700 active:bg-slate-600 rounded-lg py-3 flex items-center justify-center gap-2 font-semibold text-base text-blue-400 border border-slate-600"

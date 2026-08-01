@@ -57,6 +57,7 @@ export default function ChartModal({ symbol, open, onClose }) {
   const [chartData, setChartData] = useState(null);
 
   const chartAreaRef = useRef(null);
+  const plotScrollRef = useRef(null);
   const sizeRef = useRef({ width: null, height: null });
   // Always-current snapshot of the values load() needs, so the ResizeObserver
   // callback (set up once per "open" session) never reloads using a stale
@@ -140,6 +141,16 @@ export default function ChartModal({ symbol, open, onClose }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  // Default to showing the latest (rightmost) candles rather than the
+  // oldest - the plot is rendered wider than the viewport for candle
+  // spacing, so without this it opens scrolled all the way to the start
+  // of the date range instead of today's price action.
+  useEffect(() => {
+    if (chartData && chartData !== '' && plotScrollRef.current) {
+      plotScrollRef.current.scrollLeft = plotScrollRef.current.scrollWidth;
+    }
+  }, [chartData]);
+
   // Swipe-to-close stays bound to the bottom control bar only (not the
   // whole screen) - the chart area's primary gesture is horizontal panning,
   // and letting an upward drag there compete with that would make panning
@@ -158,6 +169,30 @@ export default function ChartModal({ symbol, open, onClose }) {
   };
   const setThemeAndLoad = (thm) => { setTheme(thm); load(chartType, range, thm); };
   const statsBarBg = theme === 'light' ? 'bg-white/70 text-slate-700' : 'bg-slate-950/70 text-slate-200';
+  // The app has a global light-mode CSS layer that silently re-themes plain
+  // classes like bg-slate-900/text-white based on the APP-WIDE theme,
+  // independent of this modal's own dark/light toggle above - that's what
+  // caused the hint bar and bottom sheet to render light even while the
+  // chart itself was set to dark. Arbitrary-hex classes for the dark
+  // branch sidestep that global override so this modal's own toggle is
+  // always what decides how it looks, regardless of the rest of the app.
+  const chrome = theme === 'light'
+    ? {
+        panel: 'bg-white border-slate-200',
+        text: 'text-slate-900', subtext: 'text-slate-500',
+        pill: 'bg-slate-300',
+        toggleBg: 'bg-slate-100', toggleInactive: 'text-slate-500',
+        closeBtn: 'bg-slate-100 text-slate-600',
+        rangeBg: 'bg-slate-100 text-slate-500',
+      }
+    : {
+        panel: 'bg-[#0f172a] border-[#334155]',
+        text: 'text-white', subtext: 'text-[#94a3b8]',
+        pill: 'bg-[#64748b]',
+        toggleBg: 'bg-[#1e293b]', toggleInactive: 'text-[#94a3b8]',
+        closeBtn: 'bg-[#1e293b] text-[#cbd5e1]',
+        rangeBg: 'bg-[#1e293b] text-[#94a3b8]',
+      };
 
   return (
     <div
@@ -183,6 +218,7 @@ export default function ChartModal({ symbol, open, onClose }) {
         ) : (
           <>
             <div
+              ref={plotScrollRef}
               className="absolute inset-y-0 left-0 overflow-x-auto overflow-y-hidden w-full"
               style={{ WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain' }}
             >
@@ -228,23 +264,24 @@ export default function ChartModal({ symbol, open, onClose }) {
       </div>
 
       {chartData && chartData !== '' && (
-        <div className="flex-shrink-0 py-1 text-center text-[11px] text-slate-500 bg-slate-900 border-t border-slate-800">
+        <div className={`flex-shrink-0 py-1 text-center text-[11px] ${chrome.subtext} ${chrome.panel} border-t`}>
           swipe left/right to pan · price scale stays fixed
         </div>
       )}
 
       {/* Controls — bottom sheet style. Swipe up anywhere here to close,
-          or tap the X. */}
-      <div {...handlers} className="flex-shrink-0 border-t border-slate-700 bg-slate-900" style={{ touchAction: 'none' }}>
+          or tap the X. Always themed off this modal's OWN toggle (chrome),
+          not the app-wide theme, so it never mismatches the chart above it. */}
+      <div {...handlers} className={`flex-shrink-0 border-t ${chrome.panel}`} style={{ touchAction: 'none' }}>
         <div className="flex justify-center pt-2 pb-1.5">
-          <div className="w-24 h-2 rounded-full bg-slate-500" />
+          <div className={`w-24 h-2 rounded-full ${chrome.pill}`} />
         </div>
         <div className="flex items-center justify-between px-4 pb-2">
           <div className="min-w-0">
-            <p className="font-bold text-white text-base leading-tight truncate">{symbol?.replace('.NS', '')}</p>
-            <p className="text-[11px] text-slate-400 capitalize">{chartType} chart</p>
+            <p className={`font-bold text-base leading-tight truncate ${chrome.text}`}>{symbol?.replace('.NS', '')}</p>
+            <p className={`text-[11px] capitalize ${chrome.subtext}`}>{chartType} chart</p>
           </div>
-          <button onClick={onClose} className="p-2 text-slate-300 hover:text-white bg-slate-800 rounded-lg flex-shrink-0">
+          <button onClick={onClose} className={`p-2 rounded-lg flex-shrink-0 ${chrome.closeBtn}`}>
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -252,30 +289,30 @@ export default function ChartModal({ symbol, open, onClose }) {
             (thumb-friendly) via ml-auto. Own row so it scrolls instead of
             clipping on narrow screens. */}
         <div className="flex items-center gap-2 px-4 pb-2 overflow-x-auto">
-          <div className="flex bg-slate-800 rounded-lg p-1 flex-shrink-0">
+          <div className={`flex rounded-lg p-1 flex-shrink-0 ${chrome.toggleBg}`}>
             {['dark', 'light'].map(t => (
               <button key={t} onClick={() => setThemeAndLoad(t)}
                 className={`px-2.5 py-1 rounded-md text-sm font-semibold capitalize ${
-                  theme === t ? 'bg-blue-600 text-white' : 'text-slate-400'
+                  theme === t ? 'bg-blue-600 text-white' : chrome.toggleInactive
                 }`}>{t === 'dark' ? '🌙' : '☀️'}</button>
             ))}
           </div>
-          <div className="flex bg-slate-800 rounded-lg p-1 flex-shrink-0 ml-auto">
+          <div className={`flex rounded-lg p-1 flex-shrink-0 ml-auto ${chrome.toggleBg}`}>
             {['daily', 'weekly'].map(t => (
               <button key={t} onClick={() => setType(t)}
                 className={`px-3 py-1 rounded-md text-sm font-semibold capitalize ${
-                  chartType === t ? 'bg-blue-600 text-white' : 'text-slate-400'
+                  chartType === t ? 'bg-blue-600 text-white' : chrome.toggleInactive
                 }`}>{t}</button>
             ))}
           </div>
         </div>
         {/* Timeframe selector — right-aligned to match Daily/Weekly above */}
         <div className="flex items-center justify-end gap-1 px-4 pb-3 overflow-x-auto">
-          <span className="text-xs text-slate-500 mr-1 flex-shrink-0">Range:</span>
+          <span className={`text-xs mr-1 flex-shrink-0 ${chrome.subtext}`}>Range:</span>
           {RANGES.map(r => (
             <button key={r.key} onClick={() => setRangeAndLoad(r.key)}
               className={`px-3 py-1 rounded-md text-xs font-semibold flex-shrink-0 ${
-                range === r.key ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'
+                range === r.key ? 'bg-blue-600 text-white' : chrome.rangeBg
               }`}>{r.key}</button>
           ))}
         </div>
