@@ -26,17 +26,17 @@ const allocation = (s) => {
 // "View Chart" can layer the chart on top without losing this modal's state.
 export default function StockDetailModal({ stock, open, onClose, onBuy, onViewChart }) {
   const scrollRef = useRef(null);
-  // Bound to the whole modal (not just the header) so you can swipe down
+  // Bound to the whole modal (not just the header) so you can swipe up
   // to close from anywhere - it only "arms" the close-drag when the
-  // content is already scrolled to the top, so it never fights normal
-  // scrolling further down the sheet.
+  // content is already scrolled to the bottom, so it never fights normal
+  // scrolling further up the sheet.
   const { handlers, panelStyle } = useSwipeToClose(onClose, 90, scrollRef);
 
   if (!open || !stock) return null;
 
   return (
     <div {...handlers} className="fixed inset-0 z-40 flex flex-col bg-slate-900" style={panelStyle}>
-      {/* Header — swipe down anywhere on this screen to close, or tap the X */}
+      {/* Header — swipe up anywhere on this screen to close, or tap the X */}
       <div className="flex-shrink-0 border-b border-slate-700 bg-slate-800">
         <div className="flex justify-center pt-3 pb-2.5">
           <div className="w-24 h-2 rounded-full bg-slate-500" />

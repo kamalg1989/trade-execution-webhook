@@ -702,10 +702,10 @@ def create_svg_chart_split(
     min_price -= _pad; max_price += _pad
     price_range = max_price - min_price or 1
 
-    yaxis_width = px(85)
+    yaxis_width = px(78)
     plot_left = px(10)
     plot_right = px(16)
-    top_margin = px(150) if stats else px(64)
+    top_margin = px(96) if stats else px(50)
     bottom_margin = px(36)
     legend_height = px(30)
     plot_inner_w = max(1, plot_width - plot_left - plot_right)
@@ -726,17 +726,14 @@ def create_svg_chart_split(
         f'<text x="{px(10)}" y="{px(38)}" font-size="{px(9)}" fill="{sub_color}">{esc(title_suffix)}</text>',
     ]
     if stats:
-        rows = [
-            ("LTP", f"₹{stats['ltp']:.2f}", text_color),
-            ("1Y Chg", f"{stats['chg1y']:+.1f}%", up_color if stats['chg1y'] >= 0 else down_color),
-            ("52W High", f"₹{stats['wk52_high']:.2f}", text_color),
-            ("52W Low", f"₹{stats['wk52_low']:.2f}", text_color),
-        ]
-        ry = px(62)
-        for label, val, col in rows:
-            ya.append(f'<text x="{px(10)}" y="{ry}" font-size="{px(9)}" fill="{sub_color}">{label}</text>')
-            ya.append(f'<text x="{px(10)}" y="{ry+px(14):.1f}" font-size="{px(12)}" font-weight="700" fill="{col}">{val}</text>')
-            ry += px(27)
+        # Compact - one value per line (LTP, then its 1Y change, then a
+        # rounded 52W range) instead of label+value pairs, so the whole
+        # block clears the first price gridline with room to spare even in
+        # this narrower panel.
+        chg_col = up_color if stats['chg1y'] >= 0 else down_color
+        ya.append(f'<text x="{px(10)}" y="{px(56):.1f}" font-size="{px(13)}" font-weight="700" fill="{text_color}">₹{stats["ltp"]:.2f}</text>')
+        ya.append(f'<text x="{px(10)}" y="{px(71):.1f}" font-size="{px(11)}" font-weight="700" fill="{chg_col}">{stats["chg1y"]:+.1f}%</text>')
+        ya.append(f'<text x="{px(10)}" y="{px(87):.1f}" font-size="{px(9)}" fill="{sub_color}">52W {stats["wk52_low"]:.0f}–{stats["wk52_high"]:.0f}</text>')
     for i in range(6):
         price = min_price + (i / 5) * price_range
         y = y_coord(price)

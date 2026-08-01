@@ -31,14 +31,11 @@ const RANGES = [
 
 // The plot panel is requested wider than the on-screen space available to
 // it so candles get real breathing room instead of being crammed together -
-// you pan/scroll horizontally to see the rest. The Y-axis (price scale)
-// panel is requested at its natural width and never scrolls, so panning
-// the plot never drags the price labels out of view or off to the side.
+// you pan/scroll horizontally to see the rest. It renders at the FULL
+// container width (not shrunk to make room for the Y-axis) because the
+// Y-axis panel is a floating overlay on top of it, not a separate column -
+// that way it never eats into candle space.
 const PLOT_ZOOM = 1.6;
-// Rough guess for the Y-axis panel's width, used only to size the plot
-// request sensibly before we know the backend's actual (slightly
-// screen-scaled) value; a few px of slop here is harmless.
-const YAXIS_ESTIMATE = 62;
 
 function fromDate(days) {
   const d = new Date();
@@ -74,7 +71,7 @@ export default function ChartModal({ symbol, open, onClose }) {
     setChartData(null);
     const days = (RANGES.find(r => r.key === rangeKey) || RANGES[1]).days;
     const { width, height } = sizeRef.current;
-    const plotWidth = width ? Math.max(300, Math.round((width - YAXIS_ESTIMATE) * PLOT_ZOOM)) : 900;
+    const plotWidth = width ? Math.max(300, Math.round(width * PLOT_ZOOM)) : 900;
     try {
       const params = new URLSearchParams({
         symbol, theme: thm, from_date: fromDate(days),
@@ -163,7 +160,7 @@ export default function ChartModal({ symbol, open, onClose }) {
       className={`fixed inset-0 z-50 flex flex-col ${theme === 'light' ? 'bg-white' : 'bg-slate-950'}`}
       style={panelStyle}
     >
-      {/* Header — swipe down anywhere here to close, or tap the X */}
+      {/* Header — swipe up anywhere here to close, or tap the X */}
       <div {...handlers} className="flex-shrink-0 border-b border-slate-700 bg-slate-900" style={{ touchAction: 'none' }}>
         <div className="flex justify-center pt-3 pb-2.5">
           <div className="w-24 h-2 rounded-full bg-slate-500" />
@@ -177,7 +174,9 @@ export default function ChartModal({ symbol, open, onClose }) {
             <X className="w-5 h-5" />
           </button>
         </div>
-        {/* Theme + Daily/Weekly toggles — own row, scrolls instead of clipping on narrow screens */}
+        {/* Theme toggle stays left; Daily/Weekly moves to the right edge
+            (thumb-friendly) via ml-auto. Own row so it scrolls instead of
+            clipping on narrow screens. */}
         <div className="flex items-center gap-2 px-4 pb-2 overflow-x-auto">
           <div className="flex bg-slate-800 rounded-lg p-1 flex-shrink-0">
             {['dark', 'light'].map(t => (
@@ -187,7 +186,7 @@ export default function ChartModal({ symbol, open, onClose }) {
                 }`}>{t === 'dark' ? '🌙' : '☀️'}</button>
             ))}
           </div>
-          <div className="flex bg-slate-800 rounded-lg p-1 flex-shrink-0">
+          <div className="flex bg-slate-800 rounded-lg p-1 flex-shrink-0 ml-auto">
             {['daily', 'weekly'].map(t => (
               <button key={t} onClick={() => setType(t)}
                 className={`px-3 py-1 rounded-md text-sm font-semibold capitalize ${
@@ -198,8 +197,8 @@ export default function ChartModal({ symbol, open, onClose }) {
         </div>
       </div>
 
-      {/* Timeframe selector */}
-      <div className="flex-shrink-0 flex items-center gap-1 px-4 py-2 border-b border-slate-800 bg-slate-900 overflow-x-auto">
+      {/* Timeframe selector — right-aligned to match Daily/Weekly above */}
+      <div className="flex-shrink-0 flex items-center justify-end gap-1 px-4 py-2 border-b border-slate-800 bg-slate-900 overflow-x-auto">
         <span className="text-xs text-slate-500 mr-1 flex-shrink-0">Range:</span>
         {RANGES.map(r => (
           <button key={r.key} onClick={() => setRangeAndLoad(r.key)}
@@ -209,10 +208,12 @@ export default function ChartModal({ symbol, open, onClose }) {
         ))}
       </div>
 
-      {/* Chart area — fixed Y-axis panel (price scale never moves) beside a
-          separately, horizontally-scrollable plot panel (candles/volume/
-          EMA/date labels pan underneath it). */}
-      <div ref={chartAreaRef} className="flex-1 min-h-0 flex overflow-hidden">
+      {/* Chart area — the plot panel (candles/volume/EMA/date labels) fills
+          the full width and pans horizontally; the Y-axis (price scale)
+          floats on top as a fixed overlay instead of a separate column, so
+          it never steals width from the candles. It stays put as you pan
+          since it isn't inside the scrollable element. */}
+      <div ref={chartAreaRef} className="flex-1 min-h-0 relative overflow-hidden">
         {chartData === null ? (
           <div className="w-full h-full flex items-center justify-center text-slate-400 gap-2">
             <Loader className="w-5 h-5 animate-spin" /> Loading chart…
@@ -222,18 +223,22 @@ export default function ChartModal({ symbol, open, onClose }) {
         ) : (
           <>
             <div
-              style={{ width: chartData.yaxisWidth, flexShrink: 0 }}
-              className="[&_svg]:block [&_svg]:w-full [&_svg]:h-full"
-              dangerouslySetInnerHTML={{ __html: chartData.yaxis }}
-            />
-            <div
-              className="flex-1 overflow-x-auto overflow-y-hidden"
+              className="absolute inset-y-0 left-0 overflow-x-auto overflow-y-hidden w-full"
               style={{ WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain' }}
             >
               <div
                 style={{ width: chartData.plotWidth, height: '100%' }}
                 className="[&_svg]:block [&_svg]:w-full [&_svg]:h-full"
                 dangerouslySetInnerHTML={{ __html: chartData.plot }}
+              />
+            </div>
+            <div
+              className="absolute inset-y-0 left-0 pointer-events-none shadow-[4px_0_10px_-4px_rgba(0,0,0,0.35)]"
+              style={{ width: chartData.yaxisWidth }}
+            >
+              <div
+                className="[&_svg]:block [&_svg]:w-full [&_svg]:h-full"
+                dangerouslySetInnerHTML={{ __html: chartData.yaxis }}
               />
             </div>
           </>
