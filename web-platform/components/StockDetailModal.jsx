@@ -33,8 +33,8 @@ export default function StockDetailModal({ stock, open, onClose, onBuy, onViewCh
     <div className="fixed inset-0 z-40 flex flex-col bg-slate-900" style={panelStyle}>
       {/* Header — swipe down anywhere here to close, or tap the X */}
       <div {...handlers} className="flex-shrink-0 border-b border-slate-700 bg-slate-800" style={{ touchAction: 'none' }}>
-        <div className="flex justify-center pt-2.5 pb-2">
-          <div className="w-20 h-1.5 rounded-full bg-slate-500" />
+        <div className="flex justify-center pt-3 pb-2.5">
+          <div className="w-24 h-2 rounded-full bg-slate-500" />
         </div>
         <div className="flex items-center justify-between px-4 pb-2.5">
           <div className="min-w-0">

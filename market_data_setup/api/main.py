@@ -522,12 +522,19 @@ def create_svg_chart(
     price_range = max_price - min_price or 1
 
     # ---- Layout ----
-    left_margin = px(115); right_margin = px(30)
+    # Narrow (mobile) requests get smaller margins than the desktop
+    # defaults - the desktop values leave a lot of dead space (wide left
+    # gutter for price labels, tall bottom gutter for date labels) that's
+    # disproportionately large once everything else has already been
+    # scaled down, and that space is better spent on the candles.
+    left_margin = px(80) if is_narrow else px(115)
+    right_margin = px(20) if is_narrow else px(30)
     if stats:
         top_margin = px(175) if is_narrow else px(100)
     else:
         top_margin = px(64)
-    bottom_margin = px(62); legend_height = px(34)
+    bottom_margin = px(42) if is_narrow else px(62)
+    legend_height = px(34)
     chart_width = width - left_margin - right_margin
     chart_height = height - top_margin - bottom_margin - legend_height
     plot_bottom = height - bottom_margin - legend_height
