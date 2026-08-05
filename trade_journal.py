@@ -87,16 +87,55 @@ def save_trade_on_buy(security_id, symbol, buy_order_id, buy_trigger_price, quan
 # Reconciliation — run daily (or on demand)
 # ---------------------------------------------------------------------------
 def reconcile_pending_buys():
-    """Poll every PENDING_FILL trade's buy_order_id; record the actual fill
-    price and flip to OPEN once Dhan confirms it traded."""
-    import sl_engine  # top-level production module — confirm_fill lives here
+    """Flip PENDING_FILL trades to OPEN once the buy has actually filled.
+
+    Every buy here is placed as a Dhan FOREVER (GTT) order (see
+    dhan_client.place_forever_buy / sl_engine.place_*) - those live in
+    Dhan's separate /forever/orders namespace with their own order IDs.
+    Once a forever order triggers, Dhan does NOT surface a fill under that
+    same ID via GET /v2/orders/{id} — confirm_fill() polling that endpoint
+    can therefore never resolve a forever buy, and every trade was silently
+    stuck at PENDING_FILL forever (confirmed on 2026-08-06: real, currently
+    held positions like CRAFTSMAN/AFFLE/NELCO were still sitting at
+    PENDING_FILL despite having existed - and profited - for weeks).
+
+    The authoritative source for "did this buy fill" is current holdings:
+    if the security is now held, it filled - full stop, regardless of
+    which Dhan order-ID namespace the order lives in. Order-ID polling is
+    kept as a secondary check for the (rare) case a buy was placed as a
+    plain order rather than a forever order.
+    """
+    import sl_engine  # top-level production module — confirm_fill/get_holdings live here
     updated = 0
     try:
         with _conn() as conn, conn.cursor() as cur:
-            cur.execute("SELECT id, symbol, buy_order_id FROM trades WHERE status = 'PENDING_FILL'")
+            cur.execute("SELECT id, symbol, security_id, buy_order_id FROM trades WHERE status = 'PENDING_FILL'")
             rows = cur.fetchall()
+        if not rows:
+            return updated
 
-        for trade_id, symbol, order_id in rows:
+        holdings_by_sec = {}
+        try:
+            for h in sl_engine.get_holdings():
+                holdings_by_sec[str(h.get("securityId", ""))] = h
+        except Exception as e:
+            logger.warning(f"reconcile_pending_buys: holdings fetch failed: {e}")
+
+        for trade_id, symbol, sec_id, order_id in rows:
+            h = holdings_by_sec.get(str(sec_id))
+            if h:
+                fill_price = h.get("avgPrice")
+                with _conn() as conn, conn.cursor() as cur:
+                    cur.execute("""
+                        UPDATE trades SET actual_buy_price = %s, buy_filled_at = NOW(), status = 'OPEN'
+                        WHERE id = %s
+                    """, (fill_price, trade_id))
+                updated += 1
+                logger.info(f"Trade journal: {symbol} buy confirmed via holdings @ {fill_price}")
+                continue
+
+            # Not currently held - either still resting, or placed as a
+            # plain (non-forever) order that this CAN resolve directly.
             status, fill_price = sl_engine.confirm_fill(order_id, symbol)
             if status == "FILLED":
                 with _conn() as conn, conn.cursor() as cur:
@@ -116,12 +155,28 @@ def reconcile_pending_buys():
 
 
 def reconcile_open_trades():
-    """For OPEN/EXIT_PENDING/HALF_BOOKED trades, check every order we've
-    logged against this security (sl_order_log). If one has actually filled
-    at the broker, close the trade and record HOW it closed:
+    """For OPEN/EXIT_PENDING/HALF_BOOKED trades, detect a position that has
+    actually been sold (fully exited) and close it out, recording HOW it
+    closed from the most recent order we logged for that security
+    (sl_order_log):
       - order_type EXIT / HALF_EXIT / MARKET_SELL -> closed_via MANUAL_EXIT / MANUAL_MARKET_SELL
       - order_type SAFETY / CUSTOM / TRAIL / MOVE  -> closed_via SL_TRIGGERED
         (a resting protective stop simply got hit — no same-day manual action)
+
+    Exit/SL orders here are placed as Dhan FOREVER orders too (same
+    endpoint as buys - see sl_engine.place_safety_sl / place_exit_forever),
+    so - exactly like the PENDING_FILL buy-side bug above - polling
+    GET /v2/orders/{order_id} for a triggered forever SELL never resolves
+    either. Left unfixed, a position that actually got sold would just sit
+    at OPEN forever: still shown as held, never appearing as a closed trade
+    anywhere, and liable to be treated as a "fresh" candidate the moment it
+    reappears in a scan (which is what "shows as a new buy" looked like).
+
+    The fix mirrors the buy side: the position no longer being in current
+    holdings IS the authoritative signal it was sold. Once that's detected,
+    the exit price is pulled from today's trade book (falls back to the
+    order-ID poll only if the trade book doesn't have it, e.g. this run is
+    reconciling a fill from a previous day).
     """
     import sl_engine
     closed = 0
@@ -133,8 +188,32 @@ def reconcile_open_trades():
                 FROM trades WHERE status IN ('OPEN', 'EXIT_PENDING', 'HALF_BOOKED')
             """)
             open_trades = cur.fetchall()
+        if not open_trades:
+            return closed, closed_details
+
+        held_qty = {}
+        holdings_ok = True
+        try:
+            for h in sl_engine.get_holdings():
+                held_qty[str(h.get("securityId", ""))] = int(h.get("qty") or 0)
+        except Exception as e:
+            logger.warning(f"reconcile_open_trades: holdings fetch failed: {e}")
+            holdings_ok = False  # unknown state — don't assume anything closed
+
+        sells_by_sec = {}
+        if holdings_ok:
+            try:
+                for t in sl_engine.get_trade_book():
+                    if str(t.get("transactionType", "")).upper() == "SELL":
+                        sells_by_sec.setdefault(str(t.get("securityId", "")), []).append(t)
+            except Exception as e:
+                logger.warning(f"reconcile_open_trades: trade book fetch failed: {e}")
 
         for trade_id, symbol, sec_id, buy_price, buy_filled_at, qty, risk_per_share in open_trades:
+            sec_id = str(sec_id)
+            if not holdings_ok or held_qty.get(sec_id, 0) > 0:
+                continue  # still held (or holdings unknown this run) — nothing to close
+
             with _conn() as conn, conn.cursor() as cur:
                 cur.execute("""
                     SELECT order_id, order_type FROM sl_order_log
@@ -143,41 +222,66 @@ def reconcile_open_trades():
                 """, (sec_id,))
                 candidates = cur.fetchall()
 
-            for order_id, order_type in candidates:
-                status, fill_price = sl_engine.confirm_fill(order_id, symbol)
-                if status != "FILLED":
-                    continue
+            fill_price = None
+            order_id_used = None
+            order_type = candidates[0][1] if candidates else None  # most recent logged order = best guess
 
-                closed_via = "MANUAL_MARKET_SELL" if order_type == "MARKET_SELL" else \
-                             "MANUAL_EXIT" if order_type in ("EXIT", "HALF_EXIT") else \
-                             "SL_TRIGGERED"
-                exit_reason = {"EXIT": "STRUCTURAL_EXIT", "HALF_EXIT": "HALF_BOOK",
-                                "MARKET_SELL": "MANUAL_CLOSE"}.get(order_type, "SL_HIT")
+            sec_sells = sells_by_sec.get(sec_id)
+            if sec_sells:
+                last = sec_sells[-1]
+                for k in ("tradedPrice", "averageTradedPrice", "price"):
+                    v = last.get(k)
+                    if v:
+                        fill_price = float(v)
+                        break
+                order_id_used = last.get("orderId")
 
-                holding_days = (datetime.now() - buy_filled_at).days if buy_filled_at else None
-                r_realized = None
-                pnl = None
-                if fill_price is not None and buy_price:
-                    buy_price = float(buy_price)
-                    if risk_per_share:
-                        r_realized = round((fill_price - buy_price) / float(risk_per_share), 2)
-                    pnl = round((fill_price - buy_price) * qty, 2)
+            if fill_price is None:
+                # Not in today's trade book (reconciliation running a day
+                # late) — fall back to the order-ID poll for each logged
+                # order, in case any of them resolve directly.
+                for order_id, o_type in candidates:
+                    status, fp = sl_engine.confirm_fill(order_id, symbol)
+                    if status == "FILLED":
+                        fill_price = fp
+                        order_id_used = order_id
+                        order_type = o_type
+                        break
 
-                with _conn() as conn, conn.cursor() as cur:
-                    cur.execute("""
-                        UPDATE trades SET
-                            status = 'CLOSED', sell_order_id = %s, sell_price = %s, sell_date = NOW(),
-                            closed_via = %s, exit_reason = %s,
-                            r_multiple_realized = %s, holding_period_days = %s, realized_pnl = %s
-                        WHERE id = %s
-                    """, (order_id, fill_price, closed_via, exit_reason, r_realized, holding_days, pnl, trade_id))
-                closed += 1
-                closed_details.append({
-                    "symbol": symbol, "closed_via": closed_via,
-                    "r_realized": r_realized, "pnl": pnl,
-                })
-                logger.info(f"Trade journal: {symbol} closed via {closed_via} @ {fill_price}")
-                break  # first confirmed fill wins — don't keep checking older orders
+            if fill_price is None:
+                logger.warning(f"Trade journal: {symbol} no longer held but no exit price found yet "
+                                f"(will retry next run)")
+                continue
+
+            closed_via = "MANUAL_MARKET_SELL" if order_type == "MARKET_SELL" else \
+                         "MANUAL_EXIT" if order_type in ("EXIT", "HALF_EXIT") else \
+                         "SL_TRIGGERED"
+            exit_reason = {"EXIT": "STRUCTURAL_EXIT", "HALF_EXIT": "HALF_BOOK",
+                            "MARKET_SELL": "MANUAL_CLOSE"}.get(order_type, "SL_HIT")
+
+            holding_days = (datetime.now() - buy_filled_at).days if buy_filled_at else None
+            r_realized = None
+            pnl = None
+            if fill_price is not None and buy_price:
+                buy_price = float(buy_price)
+                if risk_per_share:
+                    r_realized = round((fill_price - buy_price) / float(risk_per_share), 2)
+                pnl = round((fill_price - buy_price) * qty, 2)
+
+            with _conn() as conn, conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE trades SET
+                        status = 'CLOSED', sell_order_id = %s, sell_price = %s, sell_date = NOW(),
+                        closed_via = %s, exit_reason = %s,
+                        r_multiple_realized = %s, holding_period_days = %s, realized_pnl = %s
+                    WHERE id = %s
+                """, (order_id_used, fill_price, closed_via, exit_reason, r_realized, holding_days, pnl, trade_id))
+            closed += 1
+            closed_details.append({
+                "symbol": symbol, "closed_via": closed_via,
+                "r_realized": r_realized, "pnl": pnl,
+            })
+            logger.info(f"Trade journal: {symbol} closed via {closed_via} @ {fill_price}")
     except Exception as e:
         logger.warning(f"reconcile_open_trades failed: {e}")
     return closed, closed_details

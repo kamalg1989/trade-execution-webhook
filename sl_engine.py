@@ -374,6 +374,28 @@ def get_forever_orders():
         return []
 
 
+def get_trade_book():
+    """Today's executed trade book — [{securityId, transactionType, tradedPrice,
+    orderId, ...}]. Unlike GET /orders/{id}, this reflects fills regardless of
+    whether the originating order was a plain order or a triggered forever
+    (GTT) order — Dhan's forever orders live in their own /forever/orders
+    namespace with their own order IDs, so polling /orders/{forever_order_id}
+    for a fill (as confirm_fill() does) never resolves for them. The trade
+    book is the reliable way to confirm a forever order actually filled."""
+    token = get_token()
+    if not token:
+        return []
+    try:
+        r = session.get("https://api.dhan.co/v2/trades",
+                        headers={"access-token": token, "client-id": DHAN_CLIENT_ID}, timeout=10)
+        data = r.json()
+        logger.info(f"📊 Found {len(data) if isinstance(data, list) else 0} trade-book entries")
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        logger.error(f"❌ Get trade book failed: {e}")
+        return []
+
+
 # ==========================
 # DAILY CLOSE  (Dhan → yfinance → None)
 # ==========================
