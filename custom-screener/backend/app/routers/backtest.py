@@ -239,6 +239,33 @@ def _track_stats(closed: list[dict], open_trades: list[dict], price_map: dict, r
     }
 
 
+async def _daily_unrealized(pool, run_id: int, end_date: date) -> dict:
+    """Per-day mark-to-market snapshot (not cumulative — a level, not a
+    flow) of unrealized P&L for every day a position was actually open,
+    split by track. For each trade, joins its symbol's close price across
+    every day from entry_fill_date up to (but excluding) exit_date — or
+    through the run's end_date if it's still open — so a position open for
+    N days contributes N daily mark-to-market rows."""
+    rows = await pool.fetch(
+        """
+        SELECT o.time::date AS d,
+          SUM(CASE WHEN t.quant_rank IS NOT NULL
+                    THEN (o.close - t.entry_fill_price) * t.quantity ELSE 0 END) AS quant_unrealized,
+          SUM(CASE WHEN t.ai_rank IS NOT NULL
+                    THEN (o.close - t.entry_fill_price) * t.quantity ELSE 0 END) AS ai_unrealized
+        FROM backtest_trades t
+        JOIN ohlcv_data o
+          ON o.symbol = t.symbol
+         AND o.time::date >= t.entry_fill_date
+         AND o.time::date < COALESCE(t.exit_date, $2::date + 1)
+        WHERE t.run_id = $1 AND t.entry_fill_date IS NOT NULL
+        GROUP BY o.time::date
+        """,
+        run_id, end_date,
+    )
+    return {r["d"]: {"quant": float(r["quant_unrealized"] or 0), "ai": float(r["ai_unrealized"] or 0)} for r in rows}
+
+
 @router.get("/backtest/runs/{run_id}/summary")
 async def get_summary(run_id: int, request: Request):
     pool = _pool(request)
@@ -253,21 +280,31 @@ async def get_summary(run_id: int, request: Request):
     open_trades = [t for t in trades if t["status"] == "OPEN"]
     price_map = await _latest_close_map(pool, list({t["symbol"] for t in open_trades}), run["end_date"])
 
-    by_day: dict = {}
+    realized_by_day: dict = {}
     for t in closed:
         d = t["exit_date"]
-        row = by_day.setdefault(d, {"quant": 0.0, "ai": 0.0})
+        row = realized_by_day.setdefault(d, {"quant": 0.0, "ai": 0.0})
         if t.get("quant_rank") is not None:
             row["quant"] += float(t["realized_pnl"] or 0)
         if t.get("ai_rank") is not None:
             row["ai"] += float(t["realized_pnl"] or 0)
 
+    unrealized_by_day = await _daily_unrealized(pool, run_id, run["end_date"])
+
+    all_days = sorted(set(realized_by_day) | set(unrealized_by_day))
     equity_curve = []
     cq = ca = 0.0
-    for d in sorted(by_day):
-        cq += by_day[d]["quant"]
-        ca += by_day[d]["ai"]
-        equity_curve.append({"date": str(d), "quantCumPnl": round(cq, 2), "aiCumPnl": round(ca, 2)})
+    for d in all_days:
+        r = realized_by_day.get(d)
+        if r:
+            cq += r["quant"]
+            ca += r["ai"]
+        u = unrealized_by_day.get(d, {"quant": 0.0, "ai": 0.0})
+        equity_curve.append({
+            "date": str(d),
+            "quantRealizedCumPnl": round(cq, 2), "aiRealizedCumPnl": round(ca, 2),
+            "quantUnrealizedPnl": round(u["quant"], 2), "aiUnrealizedPnl": round(u["ai"], 2),
+        })
 
     # Overall deployed capital — from the raw open-trade rows (each counted
     # once), unlike the per-track figures below which double-count a symbol

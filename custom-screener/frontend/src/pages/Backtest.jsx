@@ -227,64 +227,119 @@ const fmtInrCompact = (n) => {
   return `${sign}₹${Math.round(abs)}`;
 };
 const fmtAxisDate = (d) => (d ? `${d.slice(8, 10)}-${d.slice(5, 7)}` : '');
-const niceTicks = (min, max, count = 5) => {
-  if (min === max) return [min];
-  const span = max - min;
-  const step = span / (count - 1);
-  return Array.from({ length: count }, (_, i) => min + step * i);
-};
+
+// "Nice numbers for graph labels" (Heckbert) — picks a round step (1/2/5 x
+// 10^n) instead of naively interpolating min..max, so ticks read as e.g.
+// ₹0 / ₹20k / ₹40k rather than arbitrary fractions of whatever the data's
+// min/max happened to be.
+function _niceNum(range, round) {
+  if (range <= 0) return 1;
+  const exp = Math.floor(Math.log10(range));
+  const frac = range / 10 ** exp;
+  let niceFrac;
+  if (round) {
+    niceFrac = frac < 1.5 ? 1 : frac < 3 ? 2 : frac < 7 ? 5 : 10;
+  } else {
+    niceFrac = frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 5 ? 5 : 10;
+  }
+  return niceFrac * 10 ** exp;
+}
+function niceTicks(dataMin, dataMax, maxTicks = 5) {
+  if (dataMin === dataMax) { dataMin -= 1; dataMax += 1; }
+  const range = _niceNum(dataMax - dataMin, false);
+  const step = _niceNum(range / (maxTicks - 1), true);
+  const niceMin = Math.floor(dataMin / step) * step;
+  const niceMax = Math.ceil(dataMax / step) * step;
+  const ticks = [];
+  for (let v = niceMin; v <= niceMax + step / 2; v += step) ticks.push(Math.round(v * 100) / 100);
+  return { ticks, min: niceMin, max: niceMax };
+}
+
+const SERIES = [
+  { key: 'quantRealizedCumPnl', label: 'Quant realized', color: '#38bdf8', dash: '0', group: 'realized' },
+  { key: 'aiRealizedCumPnl', label: 'AI realized', color: '#c084fc', dash: '0', group: 'realized' },
+  { key: 'quantUnrealizedPnl', label: 'Quant unrealized', color: '#38bdf8', dash: '4,3', group: 'unrealized' },
+  { key: 'aiUnrealizedPnl', label: 'AI unrealized', color: '#c084fc', dash: '4,3', group: 'unrealized' },
+];
 
 function EquityCurve({ points, capital }) {
-  if (!points.length) return <div className="text-sm text-slate-500 py-8 text-center">No closed trades yet.</div>;
+  const [showRealized, setShowRealized] = useState(true);
+  const [showUnrealized, setShowUnrealized] = useState(true);
+
+  if (!points.length) return <div className="text-sm text-slate-500 py-8 text-center">No trade activity yet.</div>;
+
+  const visible = SERIES.filter((s) =>
+    (s.group === 'realized' && showRealized) || (s.group === 'unrealized' && showUnrealized));
+
   const W = 760, H = 260;
   const M = { top: 28, right: 16, bottom: 30, left: 68 };
   const plotW = W - M.left - M.right, plotH = H - M.top - M.bottom;
 
-  const all = points.flatMap((p) => [p.quantCumPnl, p.aiCumPnl]).filter((v) => v != null);
-  const min = Math.min(0, ...all), max = Math.max(0, ...all);
-  const span = max - min || 1;
-  const pad = span * 0.08; // breathing room so lines don't hug the top/bottom
-  const yMin = min - pad, yMax = max + pad;
+  const all = points.flatMap((p) => visible.map((s) => p[s.key])).filter((v) => v != null);
+  const dataMin = Math.min(0, ...all, 0), dataMax = Math.max(0, ...all, 0);
+  const { ticks: yTicks, min: yMin, max: yMax } = niceTicks(dataMin, dataMax, 5);
   const yRange = yMax - yMin || 1;
 
   const x = (i) => M.left + (i / Math.max(points.length - 1, 1)) * plotW;
   const y = (v) => M.top + plotH - ((v - yMin) / yRange) * plotH;
-  const path = (key) => points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(p[key])}`).join(' ');
-  const zeroY = y(0);
+  const path = (key) => points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(p[key] ?? 0)}`).join(' ');
 
-  const yTicks = niceTicks(yMin, yMax, 5);
   const xTickCount = Math.min(6, points.length);
   const xTickIdx = Array.from({ length: xTickCount }, (_, i) =>
     Math.round((i / Math.max(xTickCount - 1, 1)) * (points.length - 1)));
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-64">
-      {/* Y gridlines + ₹ / % labels */}
-      {yTicks.map((v, i) => (
-        <g key={i}>
-          <line x1={M.left} y1={y(v)} x2={W - M.right} y2={y(v)}
-            stroke="#334155" strokeWidth="1" strokeDasharray={Math.abs(v) < 1e-6 ? '0' : '3,3'} />
-          <text x={M.left - 8} y={y(v) + 3} fontSize="10" fill="#94a3b8" textAnchor="end">
-            {fmtInrCompact(v)}
-          </text>
-          {capital ? (
-            <text x={W - M.right + 4} y={y(v) + 3} fontSize="9" fill="#64748b" textAnchor="start">
-              {((v / capital) * 100).toFixed(1)}%
+    <div>
+      <div className="flex flex-wrap items-center gap-4 mb-2">
+        <label className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer select-none">
+          <input type="checkbox" checked={showRealized} onChange={(e) => setShowRealized(e.target.checked)}
+            className="accent-emerald-500" />
+          Realized
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer select-none">
+          <input type="checkbox" checked={showUnrealized} onChange={(e) => setShowUnrealized(e.target.checked)}
+            className="accent-emerald-500" />
+          Unrealized
+        </label>
+      </div>
+
+      {!visible.length ? (
+        <div className="text-sm text-slate-500 py-8 text-center">Toggle Realized or Unrealized to see the curve.</div>
+      ) : (
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-64">
+          {/* Y gridlines + ₹ / % labels — values are "nice" round steps, not raw min/max fractions */}
+          {yTicks.map((v, i) => (
+            <g key={i}>
+              <line x1={M.left} y1={y(v)} x2={W - M.right} y2={y(v)}
+                stroke="#334155" strokeWidth="1" strokeDasharray={Math.abs(v) < 1e-6 ? '0' : '3,3'} />
+              <text x={M.left - 8} y={y(v) + 3} fontSize="10" fill="#94a3b8" textAnchor="end">
+                {fmtInrCompact(v)}
+              </text>
+              {capital ? (
+                <text x={W - M.right + 4} y={y(v) + 3} fontSize="9" fill="#64748b" textAnchor="start">
+                  {((v / capital) * 100).toFixed(1)}%
+                </text>
+              ) : null}
+            </g>
+          ))}
+          {/* X date labels */}
+          {xTickIdx.map((idx) => (
+            <text key={idx} x={x(idx)} y={H - M.bottom + 16} fontSize="10" fill="#94a3b8" textAnchor="middle">
+              {fmtAxisDate(points[idx].date)}
             </text>
-          ) : null}
-        </g>
-      ))}
-      {/* X date labels */}
-      {xTickIdx.map((idx) => (
-        <text key={idx} x={x(idx)} y={H - M.bottom + 16} fontSize="10" fill="#94a3b8" textAnchor="middle">
-          {fmtAxisDate(points[idx].date)}
-        </text>
-      ))}
-      <path d={path('quantCumPnl')} fill="none" stroke="#38bdf8" strokeWidth="2" />
-      <path d={path('aiCumPnl')} fill="none" stroke="#c084fc" strokeWidth="2" />
-      <text x={M.left} y={16} fontSize="10" fill="#38bdf8">● Quant</text>
-      <text x={M.left + 60} y={16} fontSize="10" fill="#c084fc">● AI</text>
-    </svg>
+          ))}
+          {visible.map((s) => (
+            <path key={s.key} d={path(s.key)} fill="none" stroke={s.color} strokeWidth="2"
+              strokeDasharray={s.dash} />
+          ))}
+          {visible.map((s, i) => (
+            <text key={s.key} x={M.left + i * 110} y={16} fontSize="10" fill={s.color}>
+              {s.dash === '0' ? '●' : '- -'} {s.label}
+            </text>
+          ))}
+        </svg>
+      )}
+    </div>
   );
 }
 
@@ -343,7 +398,7 @@ function RunSummary({ runId }) {
         <KpiCard title="🤖 AI track" stats={summary.ai} color="text-purple-300" capital={summary.capital} />
       </div>
       <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-4">
-        <div className="text-sm font-semibold text-slate-200 mb-2">Equity curve (cumulative realized P&amp;L)</div>
+        <div className="text-sm font-semibold text-slate-200 mb-2">Equity curve</div>
         <EquityCurve points={summary.equityCurve} capital={summary.capital} />
       </div>
       <div className="flex flex-wrap gap-4 text-sm text-slate-300">
