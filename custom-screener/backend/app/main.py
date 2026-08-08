@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import config
-from .routers import screener
+from .routers import backtest, screener
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("custom-screener")
@@ -48,6 +48,7 @@ app.add_middleware(
 )
 
 app.include_router(screener.router, prefix="/api")
+app.include_router(backtest.router, prefix="/api")
 
 # AI visual analysis (optional module — requires ANTHROPIC_API_KEY for POST)
 try:

@@ -1,0 +1,290 @@
+"""Backtest run management + results — see /BACKTEST_ENGINE_SPEC.md (repo
+root) for the full design. Runs execute as a detached subprocess
+(backtest/runner.py) so the API stays responsive; status/progress is
+persisted in backtest_runs, not held in memory, so it's safe across API
+restarts.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sys
+from datetime import date
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
+
+router = APIRouter()
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]  # custom-screener/backend/
+LOG_DIR = Path("/tmp/ohm_backtest_logs")
+LOG_DIR.mkdir(exist_ok=True)
+
+
+class ExitConfig(BaseModel):
+    breakeven: bool = True
+    half_booking: bool = True
+    trailing: bool = True
+    fixed_target: bool = True
+
+
+class RunCreate(BaseModel):
+    start_date: date
+    end_date: date
+    track_mode: str = Field("BOTH", pattern="^(QUANT|AI|BOTH)$")
+    capital: float = 400000
+    resting_window_days: int | None = None
+    stacking_guard: bool = False
+    stacking_guard_mode: str | None = Field(None, pattern="^(SKIP|OVERRIDE)$")
+    exit_config: ExitConfig = ExitConfig()
+    notes: str | None = None
+
+
+def _pool(request: Request):
+    repo = getattr(request.app.state, "repo", None)
+    if repo is None:
+        raise HTTPException(status_code=503, detail="DB not ready")
+    return repo.pool
+
+
+@router.post("/backtest/runs")
+async def create_run(body: RunCreate, request: Request):
+    if body.end_date < body.start_date:
+        raise HTTPException(status_code=400, detail="end_date must be >= start_date")
+    if body.stacking_guard and not body.stacking_guard_mode:
+        raise HTTPException(status_code=400, detail="stacking_guard_mode required when stacking_guard is on")
+
+    pool = _pool(request)
+    running = await pool.fetchrow("SELECT id FROM backtest_runs WHERE status = 'RUNNING'")
+    if running:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run #{running['id']} is already in progress — only one run at a time.",
+        )
+
+    row = await pool.fetchrow(
+        """
+        INSERT INTO backtest_runs
+          (start_date, end_date, track_mode, capital, resting_window_days,
+           stacking_guard, stacking_guard_mode, exit_config, status, params)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9)
+        RETURNING id
+        """,
+        body.start_date, body.end_date, body.track_mode, body.capital,
+        body.resting_window_days, body.stacking_guard, body.stacking_guard_mode,
+        json.dumps(body.exit_config.model_dump()),
+        json.dumps({"notes": body.notes}),
+    )
+    run_id = row["id"]
+
+    # VPS is 961MB RAM total — cap AI concurrency hard for this subprocess
+    # regardless of the service-wide default (which OOM-killed the process
+    # in testing at the default of 5 concurrent daily+weekly chart renders).
+    env = {**os.environ, "MAX_CONCURRENT_AI": "1"}
+
+    log_path = LOG_DIR / f"run_{run_id}.log"
+    with open(log_path, "wb") as logf:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "backtest.runner", "--run-id", str(run_id),
+            cwd=str(BACKEND_DIR), stdout=logf, stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True, env=env,
+        )
+    # Deliberately not awaited — runs detached. If the process dies before
+    # writing COMPLETED/FAILED (e.g. OOM-killed), the run just sits at
+    # RUNNING forever; see the log file for diagnosis, mark FAILED by hand.
+    del proc
+
+    return {"id": run_id, "status": "RUNNING"}
+
+
+@router.get("/backtest/runs")
+async def list_runs(request: Request):
+    pool = _pool(request)
+    rows = await pool.fetch(
+        """
+        SELECT r.*,
+          (SELECT count(*) FROM backtest_trades t WHERE t.run_id = r.id) AS trade_count
+        FROM backtest_runs r ORDER BY r.created_at DESC LIMIT 50
+        """
+    )
+    return [_run_to_json(r) for r in rows]
+
+
+@router.get("/backtest/runs/{run_id}")
+async def get_run(run_id: int, request: Request):
+    pool = _pool(request)
+    row = await pool.fetchrow("SELECT * FROM backtest_runs WHERE id = $1", run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return _run_to_json(row)
+
+
+def _run_to_json(r) -> dict:
+    d = dict(r)
+    exit_cfg = d.get("exit_config")
+    if isinstance(exit_cfg, str):
+        exit_cfg = json.loads(exit_cfg)
+    params = d.get("params")
+    if isinstance(params, str):
+        params = json.loads(params)
+    return {
+        "id": d["id"], "createdAt": d["created_at"].isoformat() if d.get("created_at") else None,
+        "completedAt": d["completed_at"].isoformat() if d.get("completed_at") else None,
+        "startDate": str(d["start_date"]), "endDate": str(d["end_date"]),
+        "universe": d["universe"], "trackMode": d["track_mode"], "capital": float(d["capital"]),
+        "restingWindowDays": d["resting_window_days"], "stackingGuard": d["stacking_guard"],
+        "stackingGuardMode": d["stacking_guard_mode"], "exitConfig": exit_cfg,
+        "status": d["status"], "progressDay": d["progress_day"], "progressTotalDays": d["progress_total_days"],
+        "error": d["error"], "params": params, "tradeCount": d.get("trade_count"),
+    }
+
+
+def _track_stats(trades: list[dict], rank_key: str) -> dict:
+    ts = [t for t in trades if t.get(rank_key) is not None]
+    n = len(ts)
+    if n == 0:
+        return {"count": 0, "winRate": 0.0, "totalPnl": 0.0, "avgR": None, "maxDrawdown": 0.0}
+    wins = len([t for t in ts if (t["realized_pnl"] or 0) > 0])
+    r_vals = [float(t["r_multiple"]) for t in ts if t.get("r_multiple") is not None]
+    by_day: dict = {}
+    for t in ts:
+        if t.get("exit_date"):
+            by_day[t["exit_date"]] = by_day.get(t["exit_date"], 0.0) + float(t["realized_pnl"] or 0)
+    cum, peak, max_dd = 0.0, 0.0, 0.0
+    for d in sorted(by_day):
+        cum += by_day[d]
+        peak = max(peak, cum)
+        max_dd = max(max_dd, peak - cum)
+    return {
+        "count": n, "winRate": round(wins / n * 100, 1),
+        "totalPnl": round(sum(float(t["realized_pnl"] or 0) for t in ts), 2),
+        "avgR": round(sum(r_vals) / len(r_vals), 2) if r_vals else None,
+        "maxDrawdown": round(max_dd, 2),
+    }
+
+
+@router.get("/backtest/runs/{run_id}/summary")
+async def get_summary(run_id: int, request: Request):
+    pool = _pool(request)
+    trades = [dict(r) for r in await pool.fetch(
+        "SELECT * FROM backtest_trades WHERE run_id = $1", run_id
+    )]
+    closed = [t for t in trades if t["status"] == "CLOSED" and t.get("exit_date")]
+
+    by_day: dict = {}
+    for t in closed:
+        d = t["exit_date"]
+        row = by_day.setdefault(d, {"quant": 0.0, "ai": 0.0})
+        if t.get("quant_rank") is not None:
+            row["quant"] += float(t["realized_pnl"] or 0)
+        if t.get("ai_rank") is not None:
+            row["ai"] += float(t["realized_pnl"] or 0)
+
+    equity_curve = []
+    cq = ca = 0.0
+    for d in sorted(by_day):
+        cq += by_day[d]["quant"]
+        ca += by_day[d]["ai"]
+        equity_curve.append({"date": str(d), "quantCumPnl": round(cq, 2), "aiCumPnl": round(ca, 2)})
+
+    return {
+        "runId": run_id,
+        "equityCurve": equity_curve,
+        "quant": _track_stats(closed, "quant_rank"),
+        "ai": _track_stats(closed, "ai_rank"),
+        "openCount": len([t for t in trades if t["status"] == "OPEN"]),
+        "pendingCount": len([t for t in trades if t["status"] == "PENDING"]),
+    }
+
+
+@router.get("/backtest/runs/{run_id}/trades")
+async def get_trades(run_id: int, request: Request, track: str | None = None, status: str | None = None):
+    pool = _pool(request)
+    q = "SELECT * FROM backtest_trades WHERE run_id = $1"
+    params = [run_id]
+    if status:
+        params.append(status)
+        q += f" AND status = ${len(params)}"
+    q += " ORDER BY signal_date DESC, id DESC"
+    rows = [dict(r) for r in await pool.fetch(q, *params)]
+    if track == "quant":
+        rows = [r for r in rows if r.get("quant_rank") is not None]
+    elif track == "ai":
+        rows = [r for r in rows if r.get("ai_rank") is not None]
+    return [_trade_to_json(r) for r in rows]
+
+
+def _trade_to_json(t: dict) -> dict:
+    return {
+        "id": t["id"], "symbol": t["symbol"], "quantRank": t["quant_rank"], "aiRank": t["ai_rank"],
+        "signalDate": str(t["signal_date"]), "entryTriggerPrice": float(t["entry_trigger_price"]),
+        "structuralSl": float(t["structural_sl"]), "targetPrice": float(t["target_price"]) if t["target_price"] else None,
+        "quantity": t["quantity"], "entryType": t["entry_type"], "baseStage": t["base_stage"],
+        "aiConfidence": float(t["ai_confidence"]) if t["ai_confidence"] is not None else None,
+        "aiRecommendation": t["ai_recommendation"], "status": t["status"],
+        "entryFillDate": str(t["entry_fill_date"]) if t["entry_fill_date"] else None,
+        "entryFillPrice": float(t["entry_fill_price"]) if t["entry_fill_price"] is not None else None,
+        "halfBooked": t["half_booked"], "exitDate": str(t["exit_date"]) if t["exit_date"] else None,
+        "exitPrice": float(t["exit_price"]) if t["exit_price"] is not None else None,
+        "exitReason": t["exit_reason"],
+        "realizedPnl": float(t["realized_pnl"]) if t["realized_pnl"] is not None else None,
+        "rMultiple": float(t["r_multiple"]) if t["r_multiple"] is not None else None,
+        "holdingDays": t["holding_days"],
+    }
+
+
+@router.get("/backtest/runs/{run_id}/day/{d}")
+async def get_day(run_id: int, d: date, request: Request):
+    pool = _pool(request)
+    picks = [dict(r) for r in await pool.fetch(
+        "SELECT * FROM backtest_trades WHERE run_id = $1 AND signal_date = $2", run_id, d
+    )]
+    filled_today = [dict(r) for r in await pool.fetch(
+        "SELECT * FROM backtest_trades WHERE run_id = $1 AND entry_fill_date = $2", run_id, d
+    )]
+    closed_today = [dict(r) for r in await pool.fetch(
+        "SELECT * FROM backtest_trades WHERE run_id = $1 AND exit_date = $2", run_id, d
+    )]
+    open_rows = [dict(r) for r in await pool.fetch(
+        """
+        SELECT * FROM backtest_trades
+        WHERE run_id = $1 AND status IN ('OPEN', 'PENDING')
+          AND signal_date <= $2
+          AND (entry_fill_date IS NULL OR entry_fill_date <= $2)
+        """,
+        run_id, d,
+    )]
+    open_symbols = list({r["symbol"] for r in open_rows if r["status"] == "OPEN"})
+    closes_today: dict[str, float] = {}
+    if open_symbols:
+        rows = await pool.fetch(
+            "SELECT symbol, close FROM ohlcv_data WHERE symbol = ANY($1) AND time::date = $2",
+            open_symbols, d,
+        )
+        closes_today = {r["symbol"]: float(r["close"]) for r in rows}
+
+    open_positions = []
+    for r in open_rows:
+        if r["status"] != "OPEN":
+            open_positions.append({**_trade_to_json(r), "unrealizedPnl": None})
+            continue
+        close = closes_today.get(r["symbol"])
+        unrealized = round((close - float(r["entry_fill_price"])) * r["quantity"], 2) if close is not None and r["entry_fill_price"] else None
+        open_positions.append({**_trade_to_json(r), "unrealizedPnl": unrealized})
+
+    realized_row = await pool.fetchrow(
+        "SELECT COALESCE(SUM(realized_pnl), 0) AS s FROM backtest_trades "
+        "WHERE run_id = $1 AND status = 'CLOSED' AND exit_date <= $2",
+        run_id, d,
+    )
+
+    return {
+        "date": str(d),
+        "picks": [_trade_to_json(r) for r in picks],
+        "ordersFilled": [_trade_to_json(r) for r in filled_today],
+        "closedToday": [_trade_to_json(r) for r in closed_today],
+        "openPositions": open_positions,
+        "realizedPnlToDate": round(float(realized_row["s"]), 2),
+    }

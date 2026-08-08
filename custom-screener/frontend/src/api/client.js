@@ -71,3 +71,23 @@ export const aiAftermath = (symbol, date) =>
 // Backend returns chart URLs as /api/ai-analyze/charts/x.png — prefix the
 // nginx path (BASE already ends with /api).
 export const aiChartSrc = (url) => (url ? url.replace(/^\/api/, BASE) : null);
+
+// --- Backtest ---
+export const createBacktestRun = (payload) =>
+  req('/backtest/runs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+export const listBacktestRuns = () => req('/backtest/runs');
+export const getBacktestRun = (id) => req(`/backtest/runs/${id}`);
+export const getBacktestSummary = (id) => req(`/backtest/runs/${id}/summary`);
+export const getBacktestTrades = (id, track, status) => {
+  const qs = new URLSearchParams();
+  if (track) qs.set('track', track);
+  if (status) qs.set('status', status);
+  const q = qs.toString();
+  return req(`/backtest/runs/${id}/trades${q ? `?${q}` : ''}`);
+};
+export const getBacktestDay = (id, d) => req(`/backtest/runs/${id}/day/${d}`);

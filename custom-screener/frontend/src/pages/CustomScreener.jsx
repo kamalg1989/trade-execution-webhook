@@ -6,6 +6,7 @@ import ResultsTable from '../components/ResultsTable.jsx';
 import ChartModal from '../components/ChartModal.jsx';
 import ExportCsvButton from '../components/ExportCsvButton.jsx';
 import AiAnalysisPanel from '../components/AiAnalysisPanel.jsx';
+import Backtest from './Backtest.jsx';
 
 const EMPTY = { sma200: 'any', sma50: 'any', ema50: 'any' };
 
@@ -19,6 +20,7 @@ const applyTheme = (t) => {
 export default function CustomScreener() {
   const [theme, setTheme] = useState(getTheme);
   useEffect(() => { applyTheme(theme); }, [theme]);
+  const [tab, setTab] = useState('screener');
   const [date, setDate] = useState('');
   const [snap, setSnap] = useState(null);
   const [filters, setFilters] = useState(EMPTY);
@@ -119,51 +121,75 @@ export default function CustomScreener() {
 
   return (
     <div className="min-h-screen text-slate-100 p-4 sm:p-6 max-w-7xl mx-auto space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold">Custom Screener</h1>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-4">
+          <h1 className="text-xl font-bold">Custom Screener</h1>
+          <div className="flex gap-1">
+            <button onClick={() => setTab('screener')}
+              className={`px-3 py-1.5 text-sm rounded ${tab === 'screener'
+                ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300 hover:text-white'}`}>
+              Screener
+            </button>
+            <button onClick={() => setTab('backtest')}
+              className={`px-3 py-1.5 text-sm rounded ${tab === 'backtest'
+                ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300 hover:text-white'}`}>
+              Backtest
+            </button>
+          </div>
+        </div>
         <div className="flex items-center gap-2">
           <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
             title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
             className="px-2.5 py-1.5 text-sm rounded-lg bg-slate-800 border border-slate-600 text-slate-300 hover:text-white">
             {theme === 'dark' ? '☀️' : '🌙'}
           </button>
-          <label className="flex items-center gap-2 text-sm text-slate-300">
-            Date
-            <input type="date" value={date} onChange={onDateChange}
-              className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100" />
-          </label>
-          <button onClick={fetchThisDate} disabled={fetching || !date}
-            className="px-3 py-1.5 text-sm rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold whitespace-nowrap">
-            {fetching ? 'Fetching…' : 'Fetch this date'}
-          </button>
+          {tab === 'screener' && (
+            <>
+              <label className="flex items-center gap-2 text-sm text-slate-300">
+                Date
+                <input type="date" value={date} onChange={onDateChange}
+                  className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100" />
+              </label>
+              <button onClick={fetchThisDate} disabled={fetching || !date}
+                className="px-3 py-1.5 text-sm rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold whitespace-nowrap">
+                {fetching ? 'Fetching…' : 'Fetch this date'}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
-      {fetchMsg && <div className="bg-emerald-900/30 border border-emerald-700 text-emerald-200 text-sm rounded px-3 py-2">{fetchMsg}</div>}
-      {error && <div className="bg-red-900/40 border border-red-700 text-red-200 text-sm rounded px-3 py-2">{error}</div>}
+      {tab === 'backtest' ? (
+        <Backtest />
+      ) : (
+        <>
+          {fetchMsg && <div className="bg-emerald-900/30 border border-emerald-700 text-emerald-200 text-sm rounded px-3 py-2">{fetchMsg}</div>}
+          {error && <div className="bg-red-900/40 border border-red-700 text-red-200 text-sm rounded px-3 py-2">{error}</div>}
 
-      <MarketSnapshot snap={snap} />
+          <MarketSnapshot snap={snap} />
 
-      <FilterPanel
-        filters={filters} setFilters={setFilters}
-        includeInsufficient={includeInsufficient} setIncludeInsufficient={setIncludeInsufficient}
-        onApply={apply} onReset={reset} loading={loading}
-      />
+          <FilterPanel
+            filters={filters} setFilters={setFilters}
+            includeInsufficient={includeInsufficient} setIncludeInsufficient={setIncludeInsufficient}
+            onApply={apply} onReset={reset} loading={loading}
+          />
 
-      <div className="flex items-center justify-between">
-        <div className="text-sm text-slate-300">
-          {matchCount == null ? 'Apply filters to see results' : `${matchCount} stocks`}
-        </div>
-        <ExportCsvButton rows={rows} date={date} />
-      </div>
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-slate-300">
+              {matchCount == null ? 'Apply filters to see results' : `${matchCount} stocks`}
+            </div>
+            <ExportCsvButton rows={rows} date={date} />
+          </div>
 
-      {rows.length > 0 && (
-        <AiAnalysisPanel symbols={rows.map((r) => r.symbol)} date={date} />
+          {rows.length > 0 && (
+            <AiAnalysisPanel symbols={rows.map((r) => r.symbol)} date={date} />
+          )}
+
+          <ResultsTable rows={rows} onPick={setPicked} />
+
+          <ChartModal symbol={picked?.symbol} open={!!picked} onClose={() => setPicked(null)} />
+        </>
       )}
-
-      <ResultsTable rows={rows} onPick={setPicked} />
-
-      <ChartModal symbol={picked?.symbol} open={!!picked} onClose={() => setPicked(null)} />
     </div>
   );
 }
