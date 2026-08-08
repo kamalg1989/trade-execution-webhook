@@ -92,3 +92,4 @@ export const getBacktestTrades = (id, track, status) => {
   return req(`/backtest/runs/${id}/trades${q ? `?${q}` : ''}`);
 };
 export const getBacktestDay = (id, d) => req(`/backtest/runs/${id}/day/${d}`);
+export const backtestTradeChartUrl = (runId, tradeId) => `${BASE}/backtest/runs/${runId}/trades/${tradeId}/chart`;

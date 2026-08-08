@@ -193,17 +193,26 @@ def _unrealized(t: dict, current_price: float | None) -> float | None:
     return round((current_price - float(t["entry_fill_price"])) * t["quantity"], 2)
 
 
-def _track_stats(closed: list[dict], open_trades: list[dict], price_map: dict, rank_key: str) -> dict:
+def _deployed(t: dict) -> float:
+    if t.get("entry_fill_price") is None or t.get("quantity") is None:
+        return 0.0
+    return float(t["entry_fill_price"]) * t["quantity"]
+
+
+def _track_stats(closed: list[dict], open_trades: list[dict], price_map: dict, rank_key: str, capital: float) -> dict:
     ts = [t for t in closed if t.get(rank_key) is not None]
     open_ts = [t for t in open_trades if t.get(rank_key) is not None]
     unrealized = sum(
         (u for u in (_unrealized(t, price_map.get(t["symbol"])) for t in open_ts) if u is not None)
     )
+    deployed = round(sum(_deployed(t) for t in open_ts), 2)
+    unrealized_pct = round(unrealized / deployed * 100, 2) if deployed else 0.0
     n = len(ts)
     if n == 0:
         return {
-            "count": 0, "winRate": 0.0, "totalPnl": 0.0, "avgR": None, "maxDrawdown": 0.0,
-            "unrealizedPnl": round(unrealized, 2), "openPositionCount": len(open_ts),
+            "count": 0, "winRate": 0.0, "totalPnl": 0.0, "totalPnlPct": 0.0, "avgR": None, "maxDrawdown": 0.0,
+            "unrealizedPnl": round(unrealized, 2), "unrealizedPnlPct": unrealized_pct,
+            "deployed": deployed, "openPositionCount": len(open_ts),
         }
     wins = len([t for t in ts if (t["realized_pnl"] or 0) > 0])
     r_vals = [float(t["r_multiple"]) for t in ts if t.get("r_multiple") is not None]
@@ -220,9 +229,12 @@ def _track_stats(closed: list[dict], open_trades: list[dict], price_map: dict, r
     return {
         "count": n, "winRate": round(wins / n * 100, 1),
         "totalPnl": total_pnl,
+        "totalPnlPct": round(total_pnl / capital * 100, 2) if capital else 0.0,
         "avgR": round(sum(r_vals) / len(r_vals), 2) if r_vals else None,
         "maxDrawdown": round(max_dd, 2),
         "unrealizedPnl": round(unrealized, 2),
+        "unrealizedPnlPct": unrealized_pct,
+        "deployed": deployed,
         "openPositionCount": len(open_ts),
     }
 
@@ -230,9 +242,10 @@ def _track_stats(closed: list[dict], open_trades: list[dict], price_map: dict, r
 @router.get("/backtest/runs/{run_id}/summary")
 async def get_summary(run_id: int, request: Request):
     pool = _pool(request)
-    run = await pool.fetchrow("SELECT end_date FROM backtest_runs WHERE id = $1", run_id)
+    run = await pool.fetchrow("SELECT end_date, capital FROM backtest_runs WHERE id = $1", run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
+    capital = float(run["capital"])
     trades = [dict(r) for r in await pool.fetch(
         "SELECT * FROM backtest_trades WHERE run_id = $1", run_id
     )]
@@ -256,13 +269,20 @@ async def get_summary(run_id: int, request: Request):
         ca += by_day[d]["ai"]
         equity_curve.append({"date": str(d), "quantCumPnl": round(cq, 2), "aiCumPnl": round(ca, 2)})
 
+    # Overall deployed capital — from the raw open-trade rows (each counted
+    # once), unlike the per-track figures below which double-count a symbol
+    # picked by both tracks the same day (by design, same as their P&L).
+    total_deployed = round(sum(_deployed(t) for t in open_trades), 2)
+
     return {
         "runId": run_id,
+        "capital": capital,
         "equityCurve": equity_curve,
-        "quant": _track_stats(closed, open_trades, price_map, "quant_rank"),
-        "ai": _track_stats(closed, open_trades, price_map, "ai_rank"),
+        "quant": _track_stats(closed, open_trades, price_map, "quant_rank", capital),
+        "ai": _track_stats(closed, open_trades, price_map, "ai_rank", capital),
         "openCount": len(open_trades),
         "pendingCount": len([t for t in trades if t["status"] == "PENDING"]),
+        "totalDeployed": total_deployed,
     }
 
 
@@ -293,12 +313,15 @@ def _trade_to_json(t: dict, current_price: float | None = None) -> dict:
         "id": t["id"], "symbol": t["symbol"], "quantRank": t["quant_rank"], "aiRank": t["ai_rank"],
         "signalDate": str(t["signal_date"]), "entryTriggerPrice": float(t["entry_trigger_price"]),
         "structuralSl": float(t["structural_sl"]), "targetPrice": float(t["target_price"]) if t["target_price"] else None,
+        "riskPerShare": float(t["risk_per_share"]) if t.get("risk_per_share") is not None else None,
         "quantity": t["quantity"], "entryType": t["entry_type"], "baseStage": t["base_stage"],
         "aiConfidence": float(t["ai_confidence"]) if t["ai_confidence"] is not None else None,
         "aiRecommendation": t["ai_recommendation"], "status": t["status"],
         "entryFillDate": str(t["entry_fill_date"]) if t["entry_fill_date"] else None,
         "entryFillPrice": float(t["entry_fill_price"]) if t["entry_fill_price"] is not None else None,
-        "halfBooked": t["half_booked"], "exitDate": str(t["exit_date"]) if t["exit_date"] else None,
+        "halfBooked": t["half_booked"],
+        "trailSl": float(t["trail_sl"]) if t.get("trail_sl") is not None else None,
+        "exitDate": str(t["exit_date"]) if t["exit_date"] else None,
         "exitPrice": float(t["exit_price"]) if t["exit_price"] is not None else None,
         "exitReason": t["exit_reason"],
         "realizedPnl": float(t["realized_pnl"]) if t["realized_pnl"] is not None else None,
@@ -306,6 +329,37 @@ def _trade_to_json(t: dict, current_price: float | None = None) -> dict:
         "rMultiple": float(t["r_multiple"]) if t["r_multiple"] is not None else None,
         "holdingDays": t["holding_days"],
     }
+
+
+@router.get("/backtest/runs/{run_id}/trades/{trade_id}/chart")
+async def get_trade_chart(run_id: int, trade_id: int, request: Request):
+    """Annotated PNG for one trade — entry, -8% floor, structural/trail SL,
+    1R/2R/3R, target, entry/exit day markers. See backtest/chart.py."""
+    from fastapi import Response
+
+    from backtest.chart import load_trade_window, render_trade_chart
+
+    pool = _pool(request)
+    run = await pool.fetchrow("SELECT end_date FROM backtest_runs WHERE id = $1", run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    row = await pool.fetchrow(
+        "SELECT * FROM backtest_trades WHERE id = $1 AND run_id = $2", trade_id, run_id
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Trade not found")
+    t = dict(row)
+    trade = _trade_to_json(t)
+
+    anchor_start = t["entry_fill_date"] or t["signal_date"]
+    anchor_end = t["exit_date"] or run["end_date"]
+
+    df = await load_trade_window(pool, t["symbol"], anchor_start, anchor_end)
+    if df is None or df.empty:
+        raise HTTPException(status_code=404, detail="No OHLCV data for this symbol/window")
+
+    png = render_trade_chart(df, trade, t["symbol"])
+    return Response(content=png, media_type="image/png")
 
 
 @router.get("/backtest/runs/{run_id}/day/{d}")

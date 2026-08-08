@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   createBacktestRun, listBacktestRuns, getBacktestRun, getBacktestSummary,
-  getBacktestTrades, getBacktestDay, cancelBacktestRun,
+  getBacktestTrades, getBacktestDay, cancelBacktestRun, backtestTradeChartUrl,
 } from '../api/client.js';
 
 const fmtInr = (n) =>
@@ -241,23 +241,34 @@ function EquityCurve({ points }) {
   );
 }
 
-function KpiCard({ title, stats, color }) {
+const fmtPct = (n) => (n == null ? '' : ` (${n > 0 ? '+' : ''}${n.toFixed(1)}%)`);
+const round1 = (n) => Math.round(n * 10) / 10;
+
+function KpiCard({ title, stats, color, capital }) {
   const totalWithOpen = (stats.totalPnl || 0) + (stats.unrealizedPnl || 0);
+  const totalPct = capital ? round1((totalWithOpen / capital) * 100) : null;
   return (
     <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-4">
       <div className={`text-sm font-semibold mb-2 ${color}`}>{title}</div>
       <div className="grid grid-cols-2 gap-3">
         <div><div className="text-lg font-bold text-slate-100">{stats.count}</div><div className="text-[10px] text-slate-400 uppercase">Closed trades</div></div>
         <div><div className="text-lg font-bold text-slate-100">{stats.winRate}%</div><div className="text-[10px] text-slate-400 uppercase">Win rate</div></div>
-        <div><div className={`text-lg font-bold ${pnlColor(stats.totalPnl)}`}>{fmtInr(stats.totalPnl)}</div><div className="text-[10px] text-slate-400 uppercase">Realized P&amp;L</div></div>
+        <div>
+          <div className={`text-lg font-bold ${pnlColor(stats.totalPnl)}`}>{fmtInr(stats.totalPnl)}<span className="text-sm">{fmtPct(stats.totalPnlPct)}</span></div>
+          <div className="text-[10px] text-slate-400 uppercase">Realized P&amp;L</div>
+        </div>
         <div><div className="text-lg font-bold text-slate-100">{fmtR(stats.avgR)}</div><div className="text-[10px] text-slate-400 uppercase">Avg R</div></div>
         <div>
-          <div className={`text-lg font-bold ${pnlColor(stats.unrealizedPnl)}`}>{fmtInr(stats.unrealizedPnl)}</div>
+          <div className={`text-lg font-bold ${pnlColor(stats.unrealizedPnl)}`}>{fmtInr(stats.unrealizedPnl)}<span className="text-sm">{fmtPct(stats.unrealizedPnlPct)}</span></div>
           <div className="text-[10px] text-slate-400 uppercase">Unrealized ({stats.openPositionCount ?? 0} open)</div>
         </div>
         <div><div className="text-lg font-bold text-amber-300">{fmtInr(stats.maxDrawdown)}</div><div className="text-[10px] text-slate-400 uppercase">Max drawdown</div></div>
+        <div className="col-span-2">
+          <div className="text-lg font-bold text-slate-100">{fmtInr(stats.deployed)}</div>
+          <div className="text-[10px] text-slate-400 uppercase">Capital deployed (open positions)</div>
+        </div>
         <div className="col-span-2 pt-1 border-t border-slate-800">
-          <div className={`text-lg font-bold ${pnlColor(totalWithOpen)}`}>{fmtInr(totalWithOpen)}</div>
+          <div className={`text-lg font-bold ${pnlColor(totalWithOpen)}`}>{fmtInr(totalWithOpen)}<span className="text-sm">{fmtPct(totalPct)}</span></div>
           <div className="text-[10px] text-slate-400 uppercase">Total P&amp;L (realized + unrealized)</div>
         </div>
       </div>
@@ -281,16 +292,17 @@ function RunSummary({ runId }) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <KpiCard title="📐 Quant track" stats={summary.quant} color="text-sky-300" />
-        <KpiCard title="🤖 AI track" stats={summary.ai} color="text-purple-300" />
+        <KpiCard title="📐 Quant track" stats={summary.quant} color="text-sky-300" capital={summary.capital} />
+        <KpiCard title="🤖 AI track" stats={summary.ai} color="text-purple-300" capital={summary.capital} />
       </div>
       <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-4">
         <div className="text-sm font-semibold text-slate-200 mb-2">Equity curve (cumulative realized P&amp;L)</div>
         <EquityCurve points={summary.equityCurve} />
       </div>
-      <div className="flex gap-4 text-sm text-slate-300">
+      <div className="flex flex-wrap gap-4 text-sm text-slate-300">
         <span>Open positions: <b className="text-blue-300">{summary.openCount}</b></span>
         <span>Pending orders: <b className="text-slate-400">{summary.pendingCount}</b></span>
+        <span>Capital deployed: <b className="text-slate-100">{fmtInr(summary.totalDeployed)}</b> of {fmtInr(summary.capital)}</span>
       </div>
     </div>
   );
@@ -312,6 +324,12 @@ function TradeMiniRow({ t, extra }) {
   );
 }
 
+const addDays = (dateStr, delta) => {
+  const dt = new Date(`${dateStr}T00:00:00Z`);
+  dt.setUTCDate(dt.getUTCDate() + delta);
+  return dt.toISOString().slice(0, 10);
+};
+
 function DayDrilldown({ runId, minDate, maxDate }) {
   const [d, setD] = useState(minDate || '');
   const [data, setData] = useState(null);
@@ -331,14 +349,34 @@ function DayDrilldown({ runId, minDate, maxDate }) {
   };
   useEffect(() => { load(d); }, [d, runId]);
 
+  const step = (delta) => {
+    if (!d) return;
+    const next = addDays(d, delta);
+    if (minDate && next < minDate) return;
+    if (maxDate && next > maxDate) return;
+    setD(next);
+  };
+
   return (
     <div className="space-y-3">
-      <label className="text-xs text-slate-400 flex items-center gap-2">
-        Date
-        <input type="date" value={d} min={minDate} max={maxDate}
-          onChange={(e) => setD(e.target.value)}
-          className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" />
-      </label>
+      <div className="flex items-center gap-2">
+        <label className="text-xs text-slate-400 flex items-center gap-2">
+          Date
+          <input type="date" value={d} min={minDate} max={maxDate}
+            onChange={(e) => setD(e.target.value)}
+            className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" />
+        </label>
+        <button onClick={() => step(-1)} disabled={!d || (minDate && d <= minDate)}
+          title="Previous day"
+          className="px-2.5 py-1.5 text-sm rounded bg-slate-800 border border-slate-600 text-slate-300 hover:text-white disabled:opacity-40">
+          ← Prev
+        </button>
+        <button onClick={() => step(1)} disabled={!d || (maxDate && d >= maxDate)}
+          title="Next day"
+          className="px-2.5 py-1.5 text-sm rounded bg-slate-800 border border-slate-600 text-slate-300 hover:text-white disabled:opacity-40">
+          Next →
+        </button>
+      </div>
 
       {error && <div className="text-sm text-red-300">{error}</div>}
 
@@ -390,6 +428,28 @@ function Section({ title, children }) {
   );
 }
 
+// ---------------- Trade chart modal ----------------
+
+function TradeChartModal({ runId, trade, onClose }) {
+  if (!trade) return null;
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+      onClick={onClose}>
+      <div className="bg-slate-900 border border-slate-700 rounded-lg max-w-5xl w-full max-h-[90vh] overflow-auto"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800">
+          <div className="text-sm font-semibold text-slate-200">
+            {trade.symbol} · trade #{trade.id} · {trade.status}
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-white text-sm px-2">✕</button>
+        </div>
+        <img src={backtestTradeChartUrl(runId, trade.id)} alt={`${trade.symbol} chart`}
+          className="w-full h-auto" />
+      </div>
+    </div>
+  );
+}
+
 // ---------------- Trade log ----------------
 
 function TradeLog({ runId }) {
@@ -397,6 +457,7 @@ function TradeLog({ runId }) {
   const [status, setStatus] = useState('');
   const [trades, setTrades] = useState([]);
   const [error, setError] = useState('');
+  const [chartTrade, setChartTrade] = useState(null);
 
   useEffect(() => {
     let alive = true;
@@ -427,7 +488,7 @@ function TradeLog({ runId }) {
       {error && <div className="text-sm text-red-300">{error}</div>}
 
       <div className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto">
-        <table className="w-full min-w-[980px]">
+        <table className="w-full min-w-[1020px]">
           <thead>
             <tr className="text-left text-[11px] text-slate-500 uppercase tracking-wide">
               <th className="py-2 px-3">Symbol</th>
@@ -441,6 +502,7 @@ function TradeLog({ runId }) {
               <th className="py-2 px-3">Unrealized P&amp;L</th>
               <th className="py-2 px-3">R</th>
               <th className="py-2 px-3">Status</th>
+              <th className="py-2 px-3"></th>
             </tr>
           </thead>
           <tbody>
@@ -460,12 +522,20 @@ function TradeLog({ runId }) {
                 <td className={`py-1.5 px-3 text-sm font-semibold ${pnlColor(t.unrealizedPnl)}`}>{t.status === 'OPEN' ? fmtInr(t.unrealizedPnl) : '—'}</td>
                 <td className="py-1.5 px-3 text-sm text-slate-300">{fmtR(t.rMultiple)}</td>
                 <td className={`py-1.5 px-3 text-sm ${TRADE_STATUS_COLOR[t.status]}`}>{t.status}</td>
+                <td className="py-1.5 px-3 text-sm">
+                  <button onClick={() => setChartTrade(t)} title="View chart"
+                    className="px-2 py-1 text-xs rounded bg-slate-800 border border-slate-600 text-slate-300 hover:text-white hover:bg-slate-700">
+                    📈 Chart
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
         {!trades.length && <div className="text-sm text-slate-500 px-3 py-4">No trades match these filters.</div>}
       </div>
+
+      <TradeChartModal runId={runId} trade={chartTrade} onClose={() => setChartTrade(null)} />
     </div>
   );
 }
