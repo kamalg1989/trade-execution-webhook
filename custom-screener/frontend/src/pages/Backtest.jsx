@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   createBacktestRun, listBacktestRuns, getBacktestRun, getBacktestSummary,
-  getBacktestTrades, getBacktestDay,
+  getBacktestTrades, getBacktestDay, cancelBacktestRun,
 } from '../api/client.js';
 
 const fmtInr = (n) =>
@@ -163,7 +163,7 @@ function RunConfigForm({ onCreated, blocked, blockedReason }) {
 
 // ---------------- Run list ----------------
 
-function RunRow({ run, selected, onSelect }) {
+function RunRow({ run, selected, onSelect, onCancel, cancelling }) {
   const pct = run.progressTotalDays ? Math.round((run.progressDay / run.progressTotalDays) * 100) : null;
   return (
     <tr onClick={() => onSelect(run.id)}
@@ -177,15 +177,23 @@ function RunRow({ run, selected, onSelect }) {
         {run.status === 'RUNNING' && pct != null && <span className="text-slate-400 font-normal"> · {pct}%</span>}
       </td>
       <td className="py-2 px-3 text-sm text-slate-300">{run.tradeCount ?? '—'}</td>
+      <td className="py-2 px-3 text-sm">
+        {run.status === 'RUNNING' && (
+          <button onClick={(e) => { e.stopPropagation(); onCancel(run.id); }} disabled={cancelling}
+            className="px-2 py-1 text-xs rounded bg-red-900/60 border border-red-700 text-red-200 hover:bg-red-900 disabled:opacity-50">
+            {cancelling ? 'Stopping…' : 'Stop'}
+          </button>
+        )}
+      </td>
     </tr>
   );
 }
 
-function RunList({ runs, selectedId, onSelect }) {
+function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
   if (!runs.length) return <div className="text-sm text-slate-400 px-1">No backtest runs yet — configure one above.</div>;
   return (
     <div className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto">
-      <table className="w-full min-w-[560px]">
+      <table className="w-full min-w-[620px]">
         <thead>
           <tr className="text-left text-[11px] text-slate-500 uppercase tracking-wide">
             <th className="py-2 px-3">Run</th>
@@ -194,10 +202,14 @@ function RunList({ runs, selectedId, onSelect }) {
             <th className="py-2 px-3">Capital</th>
             <th className="py-2 px-3">Status</th>
             <th className="py-2 px-3">Trades</th>
+            <th className="py-2 px-3"></th>
           </tr>
         </thead>
         <tbody>
-          {runs.map((r) => <RunRow key={r.id} run={r} selected={r.id === selectedId} onSelect={onSelect} />)}
+          {runs.map((r) => (
+            <RunRow key={r.id} run={r} selected={r.id === selectedId} onSelect={onSelect}
+              onCancel={onCancel} cancelling={cancellingId === r.id} />
+          ))}
         </tbody>
       </table>
     </div>
@@ -471,6 +483,7 @@ export default function Backtest() {
   const [selectedId, setSelectedId] = useState(null);
   const [detailTab, setDetailTab] = useState('summary');
   const [error, setError] = useState('');
+  const [cancellingId, setCancellingId] = useState(null);
   const pollRef = useRef(null);
 
   const refresh = async () => {
@@ -490,6 +503,20 @@ export default function Backtest() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const cancel = async (id) => {
+    if (!confirm(`Stop run #${id}? This can't be resumed — you'd need to start a new run.`)) return;
+    setCancellingId(id);
+    setError('');
+    try {
+      await cancelBacktestRun(id);
+      await refresh();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setCancellingId(null);
+    }
+  };
+
   const running = runs.find((r) => r.status === 'RUNNING');
   const selected = runs.find((r) => r.id === selectedId);
 
@@ -498,12 +525,12 @@ export default function Backtest() {
       <RunConfigForm
         onCreated={(id) => { setSelectedId(id); refresh(); }}
         blocked={!!running}
-        blockedReason={running ? `Run #${running.id} is currently in progress — only one run at a time.` : ''}
+        blockedReason={running ? `Run #${running.id} is currently in progress — only one run at a time. Stuck? Use the Stop button on it below.` : ''}
       />
 
       {error && <div className="bg-red-900/40 border border-red-700 text-red-200 text-sm rounded px-3 py-2">{error}</div>}
 
-      <RunList runs={runs} selectedId={selectedId} onSelect={setSelectedId} />
+      <RunList runs={runs} selectedId={selectedId} onSelect={setSelectedId} onCancel={cancel} cancellingId={cancellingId} />
 
       {selected && (
         <div className="space-y-3">
@@ -515,7 +542,13 @@ export default function Backtest() {
                 : ''}
               {selected.error && <span className="text-red-300"> · {selected.error}</span>}
             </div>
-            <div className="flex gap-1">
+            <div className="flex items-center gap-1">
+              {selected.status === 'RUNNING' && (
+                <button onClick={() => cancel(selected.id)} disabled={cancellingId === selected.id}
+                  className="px-3 py-1.5 text-sm rounded bg-red-900/60 border border-red-700 text-red-200 hover:bg-red-900 disabled:opacity-50 mr-2">
+                  {cancellingId === selected.id ? 'Stopping…' : 'Stop run'}
+                </button>
+              )}
               {DETAIL_TABS.map((t) => (
                 <button key={t.id} onClick={() => setDetailTab(t.id)}
                   className={`px-3 py-1.5 text-sm rounded ${detailTab === t.id
@@ -527,7 +560,7 @@ export default function Backtest() {
           </div>
 
           {selected.status === 'RUNNING' && (
-            <div className="text-sm text-amber-300">Run in progress — results below will update once trades are simulated.</div>
+            <div className="text-sm text-amber-300">Run in progress — results below will update once trades are simulated. If progress hasn't moved in a while, use Stop to unblock the next run.</div>
           )}
 
           {detailTab === 'summary' && <RunSummary runId={selected.id} />}

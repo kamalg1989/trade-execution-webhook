@@ -82,6 +82,7 @@ export const createBacktestRun = (payload) =>
 
 export const listBacktestRuns = () => req('/backtest/runs');
 export const getBacktestRun = (id) => req(`/backtest/runs/${id}`);
+export const cancelBacktestRun = (id) => req(`/backtest/runs/${id}/cancel`, { method: 'POST' });
 export const getBacktestSummary = (id) => req(`/backtest/runs/${id}/summary`);
 export const getBacktestTrades = (id, track, status) => {
   const qs = new URLSearchParams();

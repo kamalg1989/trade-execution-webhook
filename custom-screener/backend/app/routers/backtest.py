@@ -121,6 +121,34 @@ async def get_run(run_id: int, request: Request):
     return _run_to_json(row)
 
 
+@router.post("/backtest/runs/{run_id}/cancel")
+async def cancel_run(run_id: int, request: Request):
+    """Stop a RUNNING run (user-requested, or to clear a stuck one). Best-effort
+    kills the detached subprocess by cmdline match, then unconditionally marks
+    the row FAILED — a run can be stuck at RUNNING with no process actually
+    alive (e.g. a `systemctl restart custom-screener-api` during a deploy
+    kills it too: systemd's default KillMode=control-group tears down the
+    whole service cgroup, including detached children, on restart), so the
+    DB update must not depend on the kill finding anything."""
+    pool = _pool(request)
+    row = await pool.fetchrow("SELECT status FROM backtest_runs WHERE id = $1", run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if row["status"] != "RUNNING":
+        raise HTTPException(status_code=400, detail=f"Run #{run_id} is {row['status']}, not RUNNING")
+
+    proc = await asyncio.create_subprocess_exec(
+        "pkill", "-9", "-f", f"backtest.runner --run-id {run_id}"
+    )
+    await proc.wait()
+
+    await pool.execute(
+        "UPDATE backtest_runs SET status='FAILED', error=$2, completed_at=NOW() WHERE id=$1",
+        run_id, "Cancelled by user",
+    )
+    return {"id": run_id, "status": "FAILED"}
+
+
 def _run_to_json(r) -> dict:
     d = dict(r)
     exit_cfg = d.get("exit_config")
