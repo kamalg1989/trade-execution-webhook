@@ -7,6 +7,17 @@ things NOT precomputed there — base-stage classification and entry-technique
 detection, both of which need the raw OHLCV bars, not just that day's
 snapshot — fall through to the real screen_gpt.py functions for perfect
 parity with production (imported directly, not reimplemented).
+
+Performance: the per-symbol OHLCV load + base-stage/entry-technique/target
+computation is cached in backtest_quant_signals, keyed by (symbol,
+signal_date) — same idea as backtest_ai_signals for the AI track. A rerun of
+an already-computed date, or a new run whose window overlaps an old one,
+skips straight to a cache lookup for every symbol instead of re-querying
+OHLCV and re-running classify_base_stage()/resolve_entry() over it. The one
+thing deliberately NOT cached is quantity — it depends on the run's capital,
+so it's recomputed cheaply from cached entry/sl/base_stage at
+candidate-assembly time (_size_qty below) instead of being baked into the
+cached row.
 """
 from __future__ import annotations
 
@@ -31,7 +42,14 @@ GATE_SQL = """
       AND vol_dryup_ratio <= $7
       AND dist_20d_high_pct >= $8
       AND ifp_score >= $9
+    ORDER BY symbol
 """
+# ORDER BY symbol matters here, not just for tidiness: without it Postgres is
+# free to return survivor rows in a different order on every execution, and
+# since candidates.sort() below is a *stable* sort, a tie on (ifp_score,
+# base_range_pct) at the top-3 cutoff could silently flip which symbol wins
+# between two otherwise-identical runs. This makes the funnel's output fully
+# deterministic for a given day, independent of query-plan/row-order noise.
 
 
 async def funnel_survivors(pool, d: date) -> list[dict]:
@@ -66,6 +84,33 @@ async def load_ohlcv_frame(pool, symbol: str, upto: date, bars: int = 400) -> pd
         """,
         symbol, upto, bars,
     )
+    return _rows_to_frame(rows)
+
+
+async def load_ohlcv_frames_batch(pool, symbols: list[str], upto: date, bars: int = 400) -> dict[str, pd.DataFrame]:
+    """Same as load_ohlcv_frame but for many symbols in one round trip
+    (partitioned window function) instead of N sequential per-symbol
+    queries — this was the dominant cost of a quant-track backtest day
+    (dozens of sequential awaited DB calls before this)."""
+    if not symbols:
+        return {}
+    rows = await pool.fetch(
+        """
+        SELECT symbol, time, open, high, low, close, volume FROM (
+          SELECT symbol, time, open, high, low, close, volume,
+                 row_number() OVER (PARTITION BY symbol ORDER BY time DESC) AS rn
+          FROM ohlcv_data WHERE symbol = ANY($1) AND time::date <= $2
+        ) t WHERE rn <= $3 ORDER BY symbol, time ASC
+        """,
+        symbols, upto, bars,
+    )
+    by_symbol: dict[str, list] = {}
+    for r in rows:
+        by_symbol.setdefault(r["symbol"], []).append(r)
+    return {sym: f for sym, rs in by_symbol.items() if (f := _rows_to_frame(rs)) is not None}
+
+
+def _rows_to_frame(rows) -> pd.DataFrame | None:
     if len(rows) < 50:
         return None
     df = pd.DataFrame([dict(r) for r in rows])
@@ -78,35 +123,108 @@ async def load_ohlcv_frame(pool, symbol: str, upto: date, bars: int = 400) -> pd
     return df
 
 
+def _compute_signal(df: pd.DataFrame | None, symbol: str, indicators_row: dict) -> dict:
+    """Everything about a (symbol, day) funnel result that's independent of
+    capital: base-stage classification + entry-technique resolution (via
+    screen_gpt.resolve_entry(), NOT screen_gpt.create_trade() — the latter
+    also gates on qty>0, which depends on CAPITAL and would make a cached
+    'rejected' wrongly sticky across runs with a different capital)."""
+    if df is None or len(df) < 200:
+        return {"passed": False}
+    sym_ns = symbol + ".NS"
+    stage, _ = screen_gpt.classify_base_stage(df, symbol=sym_ns)
+    if stage > screen_gpt.BASE_STAGE_MAX_ALLOWED:
+        return {"passed": False}
+    trigger = screen_gpt.resolve_entry(df, sym_ns)
+    if trigger is None:
+        return {"passed": False}
+    entry, sl = trigger["entry"], trigger["sl"]
+    risk_per_share = entry - sl
+    if risk_per_share <= 0:
+        return {"passed": False}
+    target = screen_gpt.compute_target(entry, sl, symbol=sym_ns)
+    return {
+        "passed": True, "entry": entry, "sl": sl, "entry_type": trigger["type"],
+        "base_stage": stage, "risk_per_share": round(risk_per_share, 2), "target": target,
+        "ifp_score": float(indicators_row["ifp_score"] or 0),
+        "base_range_pct": float(indicators_row["base_range_20d_pct"] or 0),
+    }
+
+
+def _size_qty(capital: float, base_stage: int, entry: float, risk_per_share: float) -> int:
+    """Mirrors screen_gpt.create_trade()'s sizing formula exactly (its two
+    hardcoded literals: 0.25% risk-per-trade, 10% max-capital-per-trade) —
+    kept here instead of calling create_trade() so quantity can be computed
+    per-run from a cached, capital-independent signal. Must stay in sync if
+    those literals ever change in screen_gpt.py."""
+    stage_mult = screen_gpt.BASE_STAGE_SIZE_MULTIPLIER.get(base_stage, screen_gpt.BASE_STAGE_DEFAULT_MULTIPLIER)
+    qty_risk = int(capital * 0.0025 * stage_mult / risk_per_share)
+    qty_cap = int(capital * 0.10 * stage_mult / entry)
+    return min(qty_risk, qty_cap)
+
+
 async def build_candidates(pool, d: date, capital: float) -> list[dict]:
     """Full per-day candidate build: funnel survivors -> base-stage classify
-    -> entry-technique/trigger resolve -> position size. Returns only the
-    stocks that pass every remaining gate, ranked (best first) same as
-    screen_gpt.rank_candidates(): -ifp_score, then base_range_pct (the
-    base_quality_score tie-break is skipped — every SQL survivor already has
-    a perfect 1.0 base_quality_score by construction, same as production)."""
-    screen_gpt.CAPITAL = capital
+    -> entry-technique/trigger resolve (cached) -> position size (not
+    cached, capital-dependent). Returns only the stocks that pass every
+    remaining gate, ranked (best first) same as screen_gpt.rank_candidates():
+    -ifp_score, then base_range_pct (the base_quality_score tie-break is
+    skipped — every SQL survivor already has a perfect 1.0 base_quality_score
+    by construction, same as production)."""
     survivors = await funnel_survivors(pool, d)
+    if not survivors:
+        return []
+    indicators_by_symbol = {row["symbol"]: row for row in survivors}
+    symbols = list(indicators_by_symbol)
+
+    cached_rows = await pool.fetch(
+        "SELECT * FROM backtest_quant_signals WHERE signal_date = $1 AND symbol = ANY($2)",
+        d, symbols,
+    )
+    signals: dict[str, dict] = {r["symbol"]: dict(r) for r in cached_rows}
+    todo = [s for s in symbols if s not in signals]
+
+    if todo:
+        frames = await load_ohlcv_frames_batch(pool, todo, d)
+        to_insert = []
+        for sym in todo:
+            result = _compute_signal(frames.get(sym), sym, indicators_by_symbol[sym])
+            signals[sym] = result
+            to_insert.append((
+                sym, d, result["passed"], result.get("entry"), result.get("sl"),
+                result.get("entry_type"), result.get("base_stage"),
+                result.get("risk_per_share"), result.get("target"),
+                result.get("ifp_score"), result.get("base_range_pct"),
+            ))
+        await pool.executemany(
+            """
+            INSERT INTO backtest_quant_signals
+              (symbol, signal_date, passed, entry, sl, entry_type, base_stage,
+               risk_per_share, target, ifp_score, base_range_pct)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            ON CONFLICT (symbol, signal_date) DO NOTHING
+            """,
+            to_insert,
+        )
+
     candidates = []
-    for row in survivors:
-        sym_ns = row["symbol"] + ".NS"
-        df = await load_ohlcv_frame(pool, row["symbol"], d)
-        if df is None or len(df) < 200:
+    for sym in symbols:
+        sig = signals.get(sym)
+        if not sig or not sig["passed"]:
             continue
-        stage, _ = screen_gpt.classify_base_stage(df, symbol=sym_ns)
-        if stage > screen_gpt.BASE_STAGE_MAX_ALLOWED:
+        entry, sl = float(sig["entry"]), float(sig["sl"])
+        risk_per_share = float(sig["risk_per_share"])
+        base_stage = sig["base_stage"]
+        qty = _size_qty(capital, base_stage, entry, risk_per_share)
+        if qty <= 0:
             continue
-        trade = screen_gpt.create_trade(df, sym_ns, stage)
-        if trade is None:
-            continue
-        target = screen_gpt.compute_target(trade["entry"], trade["sl"], symbol=sym_ns)
         candidates.append({
-            "symbol": row["symbol"],
-            "entry": trade["entry"], "sl": trade["sl"], "qty": trade["qty"],
-            "entry_type": trade["entry_type"], "base_stage": stage,
-            "risk_per_share": trade["risk_per_share"], "target": target,
-            "ifp_score": float(row["ifp_score"] or 0),
-            "base_range_pct": float(row["base_range_20d_pct"] or 0),
+            "symbol": sym, "entry": entry, "sl": sl, "qty": qty,
+            "entry_type": sig["entry_type"], "base_stage": base_stage,
+            "risk_per_share": risk_per_share,
+            "target": float(sig["target"]) if sig.get("target") is not None else 0.0,
+            "ifp_score": float(sig["ifp_score"] or 0),
+            "base_range_pct": float(sig["base_range_pct"] or 0),
         })
     candidates.sort(key=lambda c: (-c["ifp_score"], c["base_range_pct"]))
     return candidates

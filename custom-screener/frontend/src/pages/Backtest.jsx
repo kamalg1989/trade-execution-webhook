@@ -218,25 +218,72 @@ function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
 
 // ---------------- Equity curve (lightweight inline SVG, no chart lib) ----------------
 
-function EquityCurve({ points }) {
+// Compact ₹ formatting for axis ticks — e.g. ₹1.2L, ₹45k, -₹2.1L.
+const fmtInrCompact = (n) => {
+  const sign = n < 0 ? '-' : '';
+  const abs = Math.abs(n);
+  if (abs >= 100000) return `${sign}₹${(abs / 100000).toFixed(abs >= 1000000 ? 0 : 1)}L`;
+  if (abs >= 1000) return `${sign}₹${(abs / 1000).toFixed(1)}k`;
+  return `${sign}₹${Math.round(abs)}`;
+};
+const fmtAxisDate = (d) => (d ? `${d.slice(8, 10)}-${d.slice(5, 7)}` : '');
+const niceTicks = (min, max, count = 5) => {
+  if (min === max) return [min];
+  const span = max - min;
+  const step = span / (count - 1);
+  return Array.from({ length: count }, (_, i) => min + step * i);
+};
+
+function EquityCurve({ points, capital }) {
   if (!points.length) return <div className="text-sm text-slate-500 py-8 text-center">No closed trades yet.</div>;
-  const W = 700, H = 220, PAD = 32;
+  const W = 760, H = 260;
+  const M = { top: 28, right: 16, bottom: 30, left: 68 };
+  const plotW = W - M.left - M.right, plotH = H - M.top - M.bottom;
+
   const all = points.flatMap((p) => [p.quantCumPnl, p.aiCumPnl]).filter((v) => v != null);
   const min = Math.min(0, ...all), max = Math.max(0, ...all);
-  const range = max - min || 1;
-  const x = (i) => PAD + (i / Math.max(points.length - 1, 1)) * (W - 2 * PAD);
-  const y = (v) => H - PAD - ((v - min) / range) * (H - 2 * PAD);
+  const span = max - min || 1;
+  const pad = span * 0.08; // breathing room so lines don't hug the top/bottom
+  const yMin = min - pad, yMax = max + pad;
+  const yRange = yMax - yMin || 1;
+
+  const x = (i) => M.left + (i / Math.max(points.length - 1, 1)) * plotW;
+  const y = (v) => M.top + plotH - ((v - yMin) / yRange) * plotH;
   const path = (key) => points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(p[key])}`).join(' ');
   const zeroY = y(0);
 
+  const yTicks = niceTicks(yMin, yMax, 5);
+  const xTickCount = Math.min(6, points.length);
+  const xTickIdx = Array.from({ length: xTickCount }, (_, i) =>
+    Math.round((i / Math.max(xTickCount - 1, 1)) * (points.length - 1)));
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-56">
-      <line x1={PAD} y1={zeroY} x2={W - PAD} y2={zeroY} stroke="#475569" strokeDasharray="3,3" />
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-64">
+      {/* Y gridlines + ₹ / % labels */}
+      {yTicks.map((v, i) => (
+        <g key={i}>
+          <line x1={M.left} y1={y(v)} x2={W - M.right} y2={y(v)}
+            stroke="#334155" strokeWidth="1" strokeDasharray={Math.abs(v) < 1e-6 ? '0' : '3,3'} />
+          <text x={M.left - 8} y={y(v) + 3} fontSize="10" fill="#94a3b8" textAnchor="end">
+            {fmtInrCompact(v)}
+          </text>
+          {capital ? (
+            <text x={W - M.right + 4} y={y(v) + 3} fontSize="9" fill="#64748b" textAnchor="start">
+              {((v / capital) * 100).toFixed(1)}%
+            </text>
+          ) : null}
+        </g>
+      ))}
+      {/* X date labels */}
+      {xTickIdx.map((idx) => (
+        <text key={idx} x={x(idx)} y={H - M.bottom + 16} fontSize="10" fill="#94a3b8" textAnchor="middle">
+          {fmtAxisDate(points[idx].date)}
+        </text>
+      ))}
       <path d={path('quantCumPnl')} fill="none" stroke="#38bdf8" strokeWidth="2" />
       <path d={path('aiCumPnl')} fill="none" stroke="#c084fc" strokeWidth="2" />
-      <text x={PAD} y={16} fontSize="10" fill="#38bdf8">● Quant</text>
-      <text x={PAD + 60} y={16} fontSize="10" fill="#c084fc">● AI</text>
-      <text x={W - PAD} y={16} fontSize="10" fill="#94a3b8" textAnchor="end">{points[points.length - 1]?.date}</text>
+      <text x={M.left} y={16} fontSize="10" fill="#38bdf8">● Quant</text>
+      <text x={M.left + 60} y={16} fontSize="10" fill="#c084fc">● AI</text>
     </svg>
   );
 }
@@ -297,7 +344,7 @@ function RunSummary({ runId }) {
       </div>
       <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-4">
         <div className="text-sm font-semibold text-slate-200 mb-2">Equity curve (cumulative realized P&amp;L)</div>
-        <EquityCurve points={summary.equityCurve} />
+        <EquityCurve points={summary.equityCurve} capital={summary.capital} />
       </div>
       <div className="flex flex-wrap gap-4 text-sm text-slate-300">
         <span>Open positions: <b className="text-blue-300">{summary.openCount}</b></span>
@@ -560,7 +607,11 @@ export default function Backtest() {
     try {
       const rs = await listBacktestRuns();
       setRuns(rs);
-      if (!selectedId && rs.length) setSelectedId(rs[0].id);
+      // Functional form — the 5s poll interval below is only ever set up
+      // once (empty deps), so this closure's `selectedId` would otherwise
+      // always be its initial `null` and keep snapping selection back to
+      // the newest run on every poll, overriding whatever the user clicked.
+      setSelectedId((prev) => (prev == null && rs.length ? rs[0].id : prev));
     } catch (e) {
       setError(e.message);
     }
