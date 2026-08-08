@@ -230,15 +230,24 @@ function EquityCurve({ points }) {
 }
 
 function KpiCard({ title, stats, color }) {
+  const totalWithOpen = (stats.totalPnl || 0) + (stats.unrealizedPnl || 0);
   return (
     <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-4">
       <div className={`text-sm font-semibold mb-2 ${color}`}>{title}</div>
       <div className="grid grid-cols-2 gap-3">
-        <div><div className="text-lg font-bold text-slate-100">{stats.count}</div><div className="text-[10px] text-slate-400 uppercase">Trades</div></div>
+        <div><div className="text-lg font-bold text-slate-100">{stats.count}</div><div className="text-[10px] text-slate-400 uppercase">Closed trades</div></div>
         <div><div className="text-lg font-bold text-slate-100">{stats.winRate}%</div><div className="text-[10px] text-slate-400 uppercase">Win rate</div></div>
-        <div><div className={`text-lg font-bold ${pnlColor(stats.totalPnl)}`}>{fmtInr(stats.totalPnl)}</div><div className="text-[10px] text-slate-400 uppercase">Total P&amp;L</div></div>
+        <div><div className={`text-lg font-bold ${pnlColor(stats.totalPnl)}`}>{fmtInr(stats.totalPnl)}</div><div className="text-[10px] text-slate-400 uppercase">Realized P&amp;L</div></div>
         <div><div className="text-lg font-bold text-slate-100">{fmtR(stats.avgR)}</div><div className="text-[10px] text-slate-400 uppercase">Avg R</div></div>
-        <div className="col-span-2"><div className="text-lg font-bold text-amber-300">{fmtInr(stats.maxDrawdown)}</div><div className="text-[10px] text-slate-400 uppercase">Max drawdown</div></div>
+        <div>
+          <div className={`text-lg font-bold ${pnlColor(stats.unrealizedPnl)}`}>{fmtInr(stats.unrealizedPnl)}</div>
+          <div className="text-[10px] text-slate-400 uppercase">Unrealized ({stats.openPositionCount ?? 0} open)</div>
+        </div>
+        <div><div className="text-lg font-bold text-amber-300">{fmtInr(stats.maxDrawdown)}</div><div className="text-[10px] text-slate-400 uppercase">Max drawdown</div></div>
+        <div className="col-span-2 pt-1 border-t border-slate-800">
+          <div className={`text-lg font-bold ${pnlColor(totalWithOpen)}`}>{fmtInr(totalWithOpen)}</div>
+          <div className="text-[10px] text-slate-400 uppercase">Total P&amp;L (realized + unrealized)</div>
+        </div>
       </div>
     </div>
   );
@@ -406,7 +415,7 @@ function TradeLog({ runId }) {
       {error && <div className="text-sm text-red-300">{error}</div>}
 
       <div className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto">
-        <table className="w-full min-w-[880px]">
+        <table className="w-full min-w-[980px]">
           <thead>
             <tr className="text-left text-[11px] text-slate-500 uppercase tracking-wide">
               <th className="py-2 px-3">Symbol</th>
@@ -416,7 +425,8 @@ function TradeLog({ runId }) {
               <th className="py-2 px-3">Fill</th>
               <th className="py-2 px-3">Exit</th>
               <th className="py-2 px-3">Reason</th>
-              <th className="py-2 px-3">P&amp;L</th>
+              <th className="py-2 px-3">Realized P&amp;L</th>
+              <th className="py-2 px-3">Unrealized P&amp;L</th>
               <th className="py-2 px-3">R</th>
               <th className="py-2 px-3">Status</th>
             </tr>
@@ -435,6 +445,7 @@ function TradeLog({ runId }) {
                 <td className="py-1.5 px-3 text-sm text-slate-300">{t.exitDate ? `${fmtInr(t.exitPrice)} (${t.exitDate})` : '—'}</td>
                 <td className="py-1.5 px-3 text-xs text-slate-400">{t.exitReason || '—'}</td>
                 <td className={`py-1.5 px-3 text-sm font-semibold ${pnlColor(t.realizedPnl)}`}>{fmtInr(t.realizedPnl)}</td>
+                <td className={`py-1.5 px-3 text-sm font-semibold ${pnlColor(t.unrealizedPnl)}`}>{t.status === 'OPEN' ? fmtInr(t.unrealizedPnl) : '—'}</td>
                 <td className="py-1.5 px-3 text-sm text-slate-300">{fmtR(t.rMultiple)}</td>
                 <td className={`py-1.5 px-3 text-sm ${TRADE_STATUS_COLOR[t.status]}`}>{t.status}</td>
               </tr>

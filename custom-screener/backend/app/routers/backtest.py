@@ -141,11 +141,42 @@ def _run_to_json(r) -> dict:
     }
 
 
-def _track_stats(trades: list[dict], rank_key: str) -> dict:
-    ts = [t for t in trades if t.get(rank_key) is not None]
+async def _latest_close_map(pool, symbols: list[str], upto: date) -> dict[str, float]:
+    """Latest close on or before `upto` per symbol — used to mark OPEN
+    positions to market for unrealized P&L (in trade log / summary, "now"
+    is the run's end_date since the simulation doesn't extend past it)."""
+    if not symbols:
+        return {}
+    rows = await pool.fetch(
+        """
+        SELECT DISTINCT ON (symbol) symbol, close
+        FROM ohlcv_data
+        WHERE symbol = ANY($1) AND time::date <= $2
+        ORDER BY symbol, time DESC
+        """,
+        symbols, upto,
+    )
+    return {r["symbol"]: float(r["close"]) for r in rows}
+
+
+def _unrealized(t: dict, current_price: float | None) -> float | None:
+    if t["status"] != "OPEN" or current_price is None or not t.get("entry_fill_price"):
+        return None
+    return round((current_price - float(t["entry_fill_price"])) * t["quantity"], 2)
+
+
+def _track_stats(closed: list[dict], open_trades: list[dict], price_map: dict, rank_key: str) -> dict:
+    ts = [t for t in closed if t.get(rank_key) is not None]
+    open_ts = [t for t in open_trades if t.get(rank_key) is not None]
+    unrealized = sum(
+        (u for u in (_unrealized(t, price_map.get(t["symbol"])) for t in open_ts) if u is not None)
+    )
     n = len(ts)
     if n == 0:
-        return {"count": 0, "winRate": 0.0, "totalPnl": 0.0, "avgR": None, "maxDrawdown": 0.0}
+        return {
+            "count": 0, "winRate": 0.0, "totalPnl": 0.0, "avgR": None, "maxDrawdown": 0.0,
+            "unrealizedPnl": round(unrealized, 2), "openPositionCount": len(open_ts),
+        }
     wins = len([t for t in ts if (t["realized_pnl"] or 0) > 0])
     r_vals = [float(t["r_multiple"]) for t in ts if t.get("r_multiple") is not None]
     by_day: dict = {}
@@ -157,21 +188,29 @@ def _track_stats(trades: list[dict], rank_key: str) -> dict:
         cum += by_day[d]
         peak = max(peak, cum)
         max_dd = max(max_dd, peak - cum)
+    total_pnl = round(sum(float(t["realized_pnl"] or 0) for t in ts), 2)
     return {
         "count": n, "winRate": round(wins / n * 100, 1),
-        "totalPnl": round(sum(float(t["realized_pnl"] or 0) for t in ts), 2),
+        "totalPnl": total_pnl,
         "avgR": round(sum(r_vals) / len(r_vals), 2) if r_vals else None,
         "maxDrawdown": round(max_dd, 2),
+        "unrealizedPnl": round(unrealized, 2),
+        "openPositionCount": len(open_ts),
     }
 
 
 @router.get("/backtest/runs/{run_id}/summary")
 async def get_summary(run_id: int, request: Request):
     pool = _pool(request)
+    run = await pool.fetchrow("SELECT end_date FROM backtest_runs WHERE id = $1", run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
     trades = [dict(r) for r in await pool.fetch(
         "SELECT * FROM backtest_trades WHERE run_id = $1", run_id
     )]
     closed = [t for t in trades if t["status"] == "CLOSED" and t.get("exit_date")]
+    open_trades = [t for t in trades if t["status"] == "OPEN"]
+    price_map = await _latest_close_map(pool, list({t["symbol"] for t in open_trades}), run["end_date"])
 
     by_day: dict = {}
     for t in closed:
@@ -192,9 +231,9 @@ async def get_summary(run_id: int, request: Request):
     return {
         "runId": run_id,
         "equityCurve": equity_curve,
-        "quant": _track_stats(closed, "quant_rank"),
-        "ai": _track_stats(closed, "ai_rank"),
-        "openCount": len([t for t in trades if t["status"] == "OPEN"]),
+        "quant": _track_stats(closed, open_trades, price_map, "quant_rank"),
+        "ai": _track_stats(closed, open_trades, price_map, "ai_rank"),
+        "openCount": len(open_trades),
         "pendingCount": len([t for t in trades if t["status"] == "PENDING"]),
     }
 
@@ -202,6 +241,9 @@ async def get_summary(run_id: int, request: Request):
 @router.get("/backtest/runs/{run_id}/trades")
 async def get_trades(run_id: int, request: Request, track: str | None = None, status: str | None = None):
     pool = _pool(request)
+    run = await pool.fetchrow("SELECT end_date FROM backtest_runs WHERE id = $1", run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
     q = "SELECT * FROM backtest_trades WHERE run_id = $1"
     params = [run_id]
     if status:
@@ -213,10 +255,12 @@ async def get_trades(run_id: int, request: Request, track: str | None = None, st
         rows = [r for r in rows if r.get("quant_rank") is not None]
     elif track == "ai":
         rows = [r for r in rows if r.get("ai_rank") is not None]
-    return [_trade_to_json(r) for r in rows]
+    open_symbols = list({r["symbol"] for r in rows if r["status"] == "OPEN"})
+    price_map = await _latest_close_map(pool, open_symbols, run["end_date"])
+    return [_trade_to_json(r, price_map.get(r["symbol"])) for r in rows]
 
 
-def _trade_to_json(t: dict) -> dict:
+def _trade_to_json(t: dict, current_price: float | None = None) -> dict:
     return {
         "id": t["id"], "symbol": t["symbol"], "quantRank": t["quant_rank"], "aiRank": t["ai_rank"],
         "signalDate": str(t["signal_date"]), "entryTriggerPrice": float(t["entry_trigger_price"]),
@@ -230,6 +274,7 @@ def _trade_to_json(t: dict) -> dict:
         "exitPrice": float(t["exit_price"]) if t["exit_price"] is not None else None,
         "exitReason": t["exit_reason"],
         "realizedPnl": float(t["realized_pnl"]) if t["realized_pnl"] is not None else None,
+        "unrealizedPnl": _unrealized(t, current_price),
         "rMultiple": float(t["r_multiple"]) if t["r_multiple"] is not None else None,
         "holdingDays": t["holding_days"],
     }
@@ -257,22 +302,8 @@ async def get_day(run_id: int, d: date, request: Request):
         run_id, d,
     )]
     open_symbols = list({r["symbol"] for r in open_rows if r["status"] == "OPEN"})
-    closes_today: dict[str, float] = {}
-    if open_symbols:
-        rows = await pool.fetch(
-            "SELECT symbol, close FROM ohlcv_data WHERE symbol = ANY($1) AND time::date = $2",
-            open_symbols, d,
-        )
-        closes_today = {r["symbol"]: float(r["close"]) for r in rows}
-
-    open_positions = []
-    for r in open_rows:
-        if r["status"] != "OPEN":
-            open_positions.append({**_trade_to_json(r), "unrealizedPnl": None})
-            continue
-        close = closes_today.get(r["symbol"])
-        unrealized = round((close - float(r["entry_fill_price"])) * r["quantity"], 2) if close is not None and r["entry_fill_price"] else None
-        open_positions.append({**_trade_to_json(r), "unrealizedPnl": unrealized})
+    closes_today = await _latest_close_map(pool, open_symbols, d)
+    open_positions = [_trade_to_json(r, closes_today.get(r["symbol"])) for r in open_rows]
 
     realized_row = await pool.fetchrow(
         "SELECT COALESCE(SUM(realized_pnl), 0) AS s FROM backtest_trades "
