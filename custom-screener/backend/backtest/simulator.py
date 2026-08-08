@@ -54,6 +54,19 @@ class SimTrade:
     exit_reason: str | None = None
     partial_exits: list = field(default_factory=list)  # [{date, qty, price, reason}]
 
+    # Identity fields owned by the engine's persistence/expiry logic. These
+    # used to live in dicts keyed by Python's id(trade) (object memory
+    # address) in engine.py -- a real bug: once a trade is dropped from the
+    # `active` list and garbage-collected, CPython can reuse its address for
+    # a *later, unrelated* trade, which would then silently match the old
+    # trade's dict entry and overwrite its DB row / signal-day index instead
+    # of getting its own. Keeping these as fields on the object itself (a
+    # strong reference for its whole lifetime) makes that collision
+    # impossible. See backtest post-mortem in git history for a real
+    # instance of this (two unrelated symbols' fill data merged into one row).
+    db_id: int | None = None
+    signal_day_idx: int | None = None
+
 
 def try_fill(trade: SimTrade, day: object, bar: dict, resting_window_days: int | None,
              trading_days_since_signal: int) -> None:

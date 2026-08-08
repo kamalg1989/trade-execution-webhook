@@ -62,8 +62,6 @@ async def _run(run: dict, pool) -> None:
     ai_repo = BacktestAiRepo(pool)
 
     active: list[SimTrade] = []          # PENDING or OPEN trades, not yet persisted-final
-    db_id: dict[int, int] = {}           # id(trade) -> backtest_trades.id
-    signal_day_index: dict[int, int] = {}  # id(trade) -> trading_days index of signal_date
 
     for day_idx, day in enumerate(trading_days):
         symbols_today = {t.symbol for t in active}
@@ -86,11 +84,11 @@ async def _run(run: dict, pool) -> None:
             bar = bars_by_symbol.get(t.symbol)
             if bar is not None:
                 if t.status == "PENDING":
-                    since = day_idx - signal_day_index[id(t)]
+                    since = day_idx - t.signal_day_idx
                     try_fill(t, day, bar, resting_window_days, since)
                 if t.status == "OPEN":
                     step_exit(t, day, bar, exit_config)
-            await _persist(pool, run_id, t, db_id)
+            await _persist(pool, run_id, t)
             if t.status in ("PENDING", "OPEN"):
                 still_active.append(t)
         active = still_active
@@ -149,7 +147,7 @@ async def _run(run: dict, pool) -> None:
                         for t in pending_ones:
                             t.status = "SUPERSEDED"
                             t.exit_reason = "SUPERSEDED"
-                            await _persist(pool, run_id, t, db_id)
+                            await _persist(pool, run_id, t)
                             active.remove(t)
                     else:  # SKIP (default)
                         continue
@@ -163,8 +161,8 @@ async def _run(run: dict, pool) -> None:
                 quant_rank=info.get("quant_rank"), ai_rank=info.get("ai_rank"),
                 ai_confidence=info.get("ai_confidence"), ai_recommendation=info.get("ai_recommendation"),
             )
-            signal_day_index[id(trade)] = day_idx
-            await _persist(pool, run_id, trade, db_id)
+            trade.signal_day_idx = day_idx
+            await _persist(pool, run_id, trade)
             active.append(trade)
 
         await pool.execute(
@@ -178,11 +176,15 @@ async def _run(run: dict, pool) -> None:
     )
 
 
-async def _persist(pool, run_id: int, t: SimTrade, db_id: dict[int, int]) -> None:
+async def _persist(pool, run_id: int, t: SimTrade) -> None:
     """Insert on first sight of a trade, update on every subsequent state
-    change. Keyed by python id() for this run's in-memory objects only."""
-    key = id(t)
-    if key not in db_id:
+    change. Tracked via t.db_id (set on the object itself once INSERTed) —
+    NOT a dict keyed by Python's id(t)/object memory address, which was a
+    real bug: a garbage-collected trade's address can be reused by a later,
+    unrelated trade, silently redirecting its updates into the old trade's
+    row instead of getting a new one (confirmed to have actually happened —
+    merged two different symbols' data into a single backtest_trades row)."""
+    if t.db_id is None:
         row = await pool.fetchrow(
             """
             INSERT INTO backtest_trades
@@ -196,7 +198,7 @@ async def _persist(pool, run_id: int, t: SimTrade, db_id: dict[int, int]) -> Non
             t.structural_sl, t.target_price, t.risk_per_share, t.quantity, t.entry_type,
             t.base_stage, t.ai_confidence, t.ai_recommendation, t.status,
         )
-        db_id[key] = row["id"]
+        t.db_id = row["id"]
         return
 
     await pool.execute(
@@ -207,7 +209,7 @@ async def _persist(pool, run_id: int, t: SimTrade, db_id: dict[int, int]) -> Non
           r_multiple=$11, holding_days=$12
         WHERE id=$1
         """,
-        db_id[key], t.status, t.entry_fill_date, t.entry_fill_price, t.half_booked, t.current_sl,
+        t.db_id, t.status, t.entry_fill_date, t.entry_fill_price, t.half_booked, t.current_sl,
         t.exit_date, t.exit_price, t.exit_reason, t.realized_pnl,
         (round(t.realized_pnl / (t.risk_per_share * t.quantity), 3)
          if t.status == "CLOSED" and t.risk_per_share and t.quantity else None),
