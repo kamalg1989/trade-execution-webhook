@@ -16,6 +16,15 @@ const TRADE_STATUS_COLOR = {
   PENDING: 'text-slate-400', OPEN: 'text-blue-300', CLOSED: 'text-slate-200', SUPERSEDED: 'text-slate-500',
 };
 
+// Light transparent row tint by track — quant (sky), AI (purple), both (indigo blend).
+const trackRowClass = (t) => {
+  const q = t.quantRank != null, a = t.aiRank != null;
+  if (q && a) return 'bg-indigo-500/10';
+  if (q) return 'bg-sky-500/10';
+  if (a) return 'bg-purple-500/10';
+  return '';
+};
+
 // ---------------- Run config form ----------------
 
 const DEFAULT_FORM = {
@@ -609,7 +618,7 @@ function TradeLog({ runId }) {
           </thead>
           <tbody>
             {trades.map((t) => (
-              <tr key={t.id} className="border-t border-slate-800">
+              <tr key={t.id} className={`border-t border-slate-800 ${trackRowClass(t)}`}>
                 <td className="py-1.5 px-3 text-sm text-slate-200">{t.symbol}</td>
                 <td className="py-1.5 px-3 text-xs text-slate-400">
                   {t.quantRank && <span className="text-sky-300 mr-1">Q{t.quantRank}</span>}
