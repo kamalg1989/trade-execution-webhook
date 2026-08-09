@@ -8,13 +8,18 @@ import logging
 import traceback
 from datetime import date
 
+import pandas as pd
+
 from ai_analysis import config as ai_config
+from ai_analysis.features.swings import last_swing_low
 from ai_analysis.pipeline import analyze_symbols
 from app.db import PgRepo
 
 from . import funnel
 from .ai_repo import BacktestAiRepo
 from .simulator import SimTrade, step_exit, try_fill
+
+SWING_LOOKBACK_DAYS = 80  # trailing window fed to last_swing_low() — plenty for a 5-bar pivot
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +52,20 @@ async def _run(run: dict, pool) -> None:
     if isinstance(run["exit_config"], str):
         exit_config = _json.loads(run["exit_config"])
 
+    # Numeric cost/safety-SL settings live as their own backtest_runs columns
+    # (see sql/004_backtest_costs_and_rules.sql) — merge them into the same
+    # exit_config dict so simulator.py's functions only need one param.
+    exit_config = {
+        **exit_config,
+        "safety_sl_pct": float(run["safety_sl_pct"]),
+        "slippage_pct": float(run["slippage_pct"]),
+        "brokerage_per_order": float(run["brokerage_per_order"]),
+        "chandelier_atr_mult": float(run["chandelier_atr_mult"]),
+    }
+    needs_ema_atr = any(exit_config.get(k) for k in
+                         ("ema10_trail", "ema21_trail", "ema50_trail", "chandelier_trail"))
+    needs_swing = any(exit_config.get(k) for k in ("swing_trail", "swing_break_exit"))
+
     day_rows = await pool.fetch(
         "SELECT DISTINCT time::date AS d FROM ohlcv_data "
         "WHERE time::date BETWEEN $1 AND $2 ORDER BY d",
@@ -68,15 +87,51 @@ async def _run(run: dict, pool) -> None:
         bars_by_symbol = {}
         if symbols_today:
             rows = await pool.fetch(
-                "SELECT symbol, open, high, low, close FROM ohlcv_data "
-                "WHERE symbol = ANY($1) AND time::date = $2",
+                """
+                SELECT o.symbol, o.open, o.high, o.low, o.close,
+                       si.ema_10, si.ema_21, si.ema_50, si.atr_14
+                FROM ohlcv_data o
+                LEFT JOIN stock_indicators si
+                  ON si.symbol = o.symbol AND si.indicator_date = o.time::date
+                WHERE o.symbol = ANY($1) AND o.time::date = $2
+                """,
                 list(symbols_today), day,
             )
             bars_by_symbol = {
-                r["symbol"]: {"open": float(r["open"]), "high": float(r["high"]),
-                              "low": float(r["low"]), "close": float(r["close"])}
+                r["symbol"]: {
+                    "open": float(r["open"]), "high": float(r["high"]),
+                    "low": float(r["low"]), "close": float(r["close"]),
+                    "ema10": float(r["ema_10"]) if needs_ema_atr and r["ema_10"] is not None else None,
+                    "ema21": float(r["ema_21"]) if needs_ema_atr and r["ema_21"] is not None else None,
+                    "ema50": float(r["ema_50"]) if needs_ema_atr and r["ema_50"] is not None else None,
+                    "atr14": float(r["atr_14"]) if needs_ema_atr and r["atr_14"] is not None else None,
+                }
                 for r in rows
             }
+
+            if needs_swing:
+                swing_rows = await pool.fetch(
+                    """
+                    SELECT symbol, d, high, low FROM (
+                      SELECT symbol, time::date AS d, high, low,
+                             row_number() OVER (PARTITION BY symbol ORDER BY time DESC) AS rn
+                      FROM ohlcv_data
+                      WHERE symbol = ANY($1) AND time::date <= $2
+                    ) sub
+                    WHERE rn <= $3
+                    ORDER BY symbol, d
+                    """,
+                    list(symbols_today), day, SWING_LOOKBACK_DAYS,
+                )
+                by_symbol: dict[str, list] = {}
+                for r in swing_rows:
+                    by_symbol.setdefault(r["symbol"], []).append(
+                        {"high": float(r["high"]), "low": float(r["low"])}
+                    )
+                for sym, hist in by_symbol.items():
+                    if sym in bars_by_symbol and len(hist) >= 11:  # SWING_WIN=5 each side
+                        df = pd.DataFrame(hist)
+                        bars_by_symbol[sym]["swing_low"] = last_swing_low(df)
 
         # 1. fills + exits for everything already active
         still_active = []
@@ -85,7 +140,7 @@ async def _run(run: dict, pool) -> None:
             if bar is not None:
                 if t.status == "PENDING":
                     since = day_idx - t.signal_day_idx
-                    try_fill(t, day, bar, resting_window_days, since)
+                    try_fill(t, day, bar, resting_window_days, since, cfg=exit_config)
                 if t.status == "OPEN":
                     step_exit(t, day, bar, exit_config)
             await _persist(pool, run_id, t)
@@ -109,6 +164,11 @@ async def _run(run: dict, pool) -> None:
                 result = await analyze_symbols(
                     [c["symbol"] for c in candidates], day, screener_repo, ai_repo,
                     ai_mode="gemini", chart_scope="daily", prompt_version=ai_config.PROMPT_VERSION,
+                    # BacktestAiRepo never persists the annotated chart paths
+                    # (only "daily"/"weekly") and the Backtest UI shows its own
+                    # separate per-trade chart — so the level-annotated render
+                    # is pure wasted matplotlib work here. See pipeline.py.
+                    store_annotated=False,
                 )
                 for r in result.get("results", []):
                     if r.get("error") or r["symbol"] not in cand_by_symbol:
@@ -206,7 +266,7 @@ async def _persist(pool, run_id: int, t: SimTrade) -> None:
         UPDATE backtest_trades SET
           status=$2, entry_fill_date=$3, entry_fill_price=$4, half_booked=$5, trail_sl=$6,
           exit_date=$7, exit_price=$8, exit_reason=$9, realized_pnl=$10,
-          r_multiple=$11, holding_days=$12
+          r_multiple=$11, holding_days=$12, gross_pnl=$13
         WHERE id=$1
         """,
         t.db_id, t.status, t.entry_fill_date, t.entry_fill_price, t.half_booked, t.current_sl,
@@ -215,4 +275,5 @@ async def _persist(pool, run_id: int, t: SimTrade) -> None:
          if t.status == "CLOSED" and t.risk_per_share and t.quantity else None),
         ((t.exit_date - t.entry_fill_date).days
          if t.status == "CLOSED" and t.exit_date and t.entry_fill_date else None),
+        t.gross_pnl,
     )

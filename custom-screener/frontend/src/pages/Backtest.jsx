@@ -32,6 +32,10 @@ const DEFAULT_FORM = {
   restIndefinite: true, resting_window_days: 5,
   stacking_guard: false, stacking_guard_mode: 'SKIP',
   breakeven: true, half_booking: true, trailing: true, fixed_target: true,
+  ema10_trail: false, ema21_trail: false, ema50_trail: false,
+  chandelier_trail: false, swing_trail: false,
+  failed_breakout_exit: false, swing_break_exit: false,
+  safety_sl_pct: 8.0, slippage_pct: 0.10, brokerage_per_order: 20.0, chandelier_atr_mult: 3.0,
   notes: '',
 };
 
@@ -69,7 +73,14 @@ function RunConfigForm({ onCreated, blocked, blockedReason }) {
         exit_config: {
           breakeven: f.breakeven, half_booking: f.half_booking,
           trailing: f.trailing, fixed_target: f.fixed_target,
+          ema10_trail: f.ema10_trail, ema21_trail: f.ema21_trail, ema50_trail: f.ema50_trail,
+          chandelier_trail: f.chandelier_trail, swing_trail: f.swing_trail,
+          failed_breakout_exit: f.failed_breakout_exit, swing_break_exit: f.swing_break_exit,
         },
+        safety_sl_pct: Number(f.safety_sl_pct) || 8.0,
+        slippage_pct: Number(f.slippage_pct) || 0,
+        brokerage_per_order: Number(f.brokerage_per_order) || 0,
+        chandelier_atr_mult: Number(f.chandelier_atr_mult) || 3.0,
         notes: f.notes || null,
       };
       const res = await createBacktestRun(payload);
@@ -142,11 +153,66 @@ function RunConfigForm({ onCreated, blocked, blockedReason }) {
         </div>
 
         <div className="space-y-2 pt-3">
-          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Exit rules (always-on: −8% intraday + close-based structural SL)</div>
+          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+            Exit rules (always-on floor: custom % intraday + close-based structural SL)
+          </div>
+          <label className="text-xs text-slate-400 flex items-center gap-2">
+            Safety SL floor
+            <input type="number" min="1" max="30" step="0.5" value={f.safety_sl_pct}
+              onChange={(e) => set('safety_sl_pct')(e.target.value)}
+              className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
+            % below entry (gap-realistic fill)
+          </label>
           <Toggle label="Breakeven move at +1R" checked={f.breakeven} onChange={set('breakeven')} />
           <Toggle label="Half-book + trail rest at +2R" checked={f.half_booking} onChange={set('half_booking')} />
           <Toggle label="Trailing stop ladder" checked={f.trailing} onChange={set('trailing')} />
           <Toggle label="Fixed target exit (2R)" checked={f.fixed_target} onChange={set('fixed_target')} />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1 border-t border-slate-800">
+        <div className="space-y-2 pt-3">
+          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Trend-following trail</div>
+          <Toggle label="EMA10 trail" checked={f.ema10_trail} onChange={set('ema10_trail')}
+            hint="SL ratchets up to EMA10 (never down)." />
+          <Toggle label="EMA21 trail" checked={f.ema21_trail} onChange={set('ema21_trail')} />
+          <Toggle label="EMA50 trail" checked={f.ema50_trail} onChange={set('ema50_trail')} />
+          <Toggle label="Chandelier trail (ATR)" checked={f.chandelier_trail} onChange={set('chandelier_trail')}
+            hint="Highest high since entry, minus ATR × multiple." />
+          {f.chandelier_trail && (
+            <label className="text-xs text-slate-400 flex items-center gap-2 ml-6">
+              ATR multiple
+              <input type="number" min="1" max="8" step="0.5" value={f.chandelier_atr_mult}
+                onChange={(e) => set('chandelier_atr_mult')(e.target.value)}
+                className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
+            </label>
+          )}
+          <Toggle label="Swing-low trail" checked={f.swing_trail} onChange={set('swing_trail')}
+            hint="SL ratchets up to the most recent confirmed swing low." />
+        </div>
+
+        <div className="space-y-2 pt-3">
+          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Structural/technical exits</div>
+          <Toggle label="Failed-breakout exit" checked={f.failed_breakout_exit} onChange={set('failed_breakout_exit')}
+            hint="Closes back below the entry trigger, before breakeven/half-book, exits immediately." />
+          <Toggle label="Swing-low break exit" checked={f.swing_break_exit} onChange={set('swing_break_exit')}
+            hint="Close below the most recent confirmed swing low exits immediately." />
+
+          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-3">Realism — costs</div>
+          <label className="text-xs text-slate-400 flex items-center gap-2">
+            Slippage
+            <input type="number" min="0" max="2" step="0.01" value={f.slippage_pct}
+              onChange={(e) => set('slippage_pct')(e.target.value)}
+              className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
+            % per fill (flat rate)
+          </label>
+          <label className="text-xs text-slate-400 flex items-center gap-2">
+            Brokerage
+            <input type="number" min="0" step="1" value={f.brokerage_per_order}
+              onChange={(e) => set('brokerage_per_order')(e.target.value)}
+              className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
+            ₹ per order (flat)
+          </label>
         </div>
       </div>
 
@@ -366,7 +432,10 @@ function KpiCard({ title, stats, color, capital }) {
         <div><div className="text-lg font-bold text-slate-100">{stats.winRate}%</div><div className="text-[10px] text-slate-400 uppercase">Win rate</div></div>
         <div>
           <div className={`text-lg font-bold ${pnlColor(stats.totalPnl)}`}>{fmtInr(stats.totalPnl)}<span className="text-sm">{fmtPct(stats.totalPnlPct)}</span></div>
-          <div className="text-[10px] text-slate-400 uppercase">Realized P&amp;L</div>
+          <div className="text-[10px] text-slate-400 uppercase">Realized P&amp;L (net)</div>
+          {!!stats.costDrag && (
+            <div className="text-[10px] text-slate-500">gross {fmtInr(stats.totalGrossPnl)} · costs −{fmtInr(stats.costDrag)}</div>
+          )}
         </div>
         <div><div className="text-lg font-bold text-slate-100">{fmtR(stats.avgR)}</div><div className="text-[10px] text-slate-400 uppercase">Avg R</div></div>
         <div>
@@ -599,7 +668,7 @@ function TradeLog({ runId }) {
       {error && <div className="text-sm text-red-300">{error}</div>}
 
       <div className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto">
-        <table className="w-full min-w-[1020px]">
+        <table className="w-full min-w-[1120px]">
           <thead>
             <tr className="text-left text-[11px] text-slate-500 uppercase tracking-wide">
               <th className="py-2 px-3">Symbol</th>
@@ -609,6 +678,7 @@ function TradeLog({ runId }) {
               <th className="py-2 px-3">Fill</th>
               <th className="py-2 px-3">Exit</th>
               <th className="py-2 px-3">Reason</th>
+              <th className="py-2 px-3">Allocation</th>
               <th className="py-2 px-3">Realized P&amp;L</th>
               <th className="py-2 px-3">Unrealized P&amp;L</th>
               <th className="py-2 px-3">R</th>
@@ -629,6 +699,7 @@ function TradeLog({ runId }) {
                 <td className="py-1.5 px-3 text-sm text-slate-300">{t.entryFillDate ? `${fmtInr(t.entryFillPrice)} (${t.entryFillDate})` : '—'}</td>
                 <td className="py-1.5 px-3 text-sm text-slate-300">{t.exitDate ? `${fmtInr(t.exitPrice)} (${t.exitDate})` : '—'}</td>
                 <td className="py-1.5 px-3 text-xs text-slate-400">{t.exitReason || '—'}</td>
+                <td className="py-1.5 px-3 text-sm text-slate-300">{fmtInr(t.allocation)}</td>
                 <td className={`py-1.5 px-3 text-sm font-semibold ${pnlColor(t.realizedPnl)}`}>{fmtInr(t.realizedPnl)}</td>
                 <td className={`py-1.5 px-3 text-sm font-semibold ${pnlColor(t.unrealizedPnl)}`}>{t.status === 'OPEN' ? fmtInr(t.unrealizedPnl) : '—'}</td>
                 <td className="py-1.5 px-3 text-sm text-slate-300">{fmtR(t.rMultiple)}</td>

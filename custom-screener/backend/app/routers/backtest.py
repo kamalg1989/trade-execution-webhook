@@ -28,6 +28,15 @@ class ExitConfig(BaseModel):
     half_booking: bool = True
     trailing: bool = True
     fixed_target: bool = True
+    # Trend-following trails — each an independent toggle (see simulator.py).
+    ema10_trail: bool = False
+    ema21_trail: bool = False
+    ema50_trail: bool = False
+    chandelier_trail: bool = False
+    swing_trail: bool = False
+    # Structural/technical hard exits.
+    failed_breakout_exit: bool = False
+    swing_break_exit: bool = False
 
 
 class RunCreate(BaseModel):
@@ -40,6 +49,12 @@ class RunCreate(BaseModel):
     stacking_guard_mode: str | None = Field(None, pattern="^(SKIP|OVERRIDE)$")
     exit_config: ExitConfig = ExitConfig()
     notes: str | None = None
+    # Cost realism + custom safety-SL (backtest_runs columns, see
+    # sql/004_backtest_costs_and_rules.sql — defaults mirror the DB defaults).
+    safety_sl_pct: float = 8.0
+    slippage_pct: float = 0.10
+    brokerage_per_order: float = 20.0
+    chandelier_atr_mult: float = 3.0
 
 
 def _pool(request: Request):
@@ -68,21 +83,25 @@ async def create_run(body: RunCreate, request: Request):
         """
         INSERT INTO backtest_runs
           (start_date, end_date, track_mode, capital, resting_window_days,
-           stacking_guard, stacking_guard_mode, exit_config, status, params)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9)
+           stacking_guard, stacking_guard_mode, exit_config, status, params,
+           safety_sl_pct, slippage_pct, brokerage_per_order, chandelier_atr_mult)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9,$10,$11,$12,$13)
         RETURNING id
         """,
         body.start_date, body.end_date, body.track_mode, body.capital,
         body.resting_window_days, body.stacking_guard, body.stacking_guard_mode,
         json.dumps(body.exit_config.model_dump()),
         json.dumps({"notes": body.notes}),
+        body.safety_sl_pct, body.slippage_pct, body.brokerage_per_order, body.chandelier_atr_mult,
     )
     run_id = row["id"]
 
-    # VPS is 961MB RAM total — cap AI concurrency hard for this subprocess
-    # regardless of the service-wide default (which OOM-killed the process
-    # in testing at the default of 5 concurrent daily+weekly chart renders).
-    env = {**os.environ, "MAX_CONCURRENT_AI": "1"}
+    # VPS is 961MB RAM total. Chart rendering (matplotlib) is what actually
+    # OOM-killed the process in testing, not the Gemini network call itself —
+    # so MAX_CONCURRENT_RENDER stays at 1 (serialize renders) while
+    # MAX_CONCURRENT_AI can go higher than before to let more symbols overlap
+    # while they're just waiting on Gemini. Revert both to "1" if a run OOMs.
+    env = {**os.environ, "MAX_CONCURRENT_AI": "4", "MAX_CONCURRENT_RENDER": "1"}
 
     log_path = LOG_DIR / f"run_{run_id}.log"
     with open(log_path, "wb") as logf:
@@ -166,6 +185,10 @@ def _run_to_json(r) -> dict:
         "stackingGuardMode": d["stacking_guard_mode"], "exitConfig": exit_cfg,
         "status": d["status"], "progressDay": d["progress_day"], "progressTotalDays": d["progress_total_days"],
         "error": d["error"], "params": params, "tradeCount": d.get("trade_count"),
+        "safetySlPct": float(d["safety_sl_pct"]) if d.get("safety_sl_pct") is not None else None,
+        "slippagePct": float(d["slippage_pct"]) if d.get("slippage_pct") is not None else None,
+        "brokeragePerOrder": float(d["brokerage_per_order"]) if d.get("brokerage_per_order") is not None else None,
+        "chandelierAtrMult": float(d["chandelier_atr_mult"]) if d.get("chandelier_atr_mult") is not None else None,
     }
 
 
@@ -210,7 +233,9 @@ def _track_stats(closed: list[dict], open_trades: list[dict], price_map: dict, r
     n = len(ts)
     if n == 0:
         return {
-            "count": 0, "winRate": 0.0, "totalPnl": 0.0, "totalPnlPct": 0.0, "avgR": None, "maxDrawdown": 0.0,
+            "count": 0, "winRate": 0.0, "totalPnl": 0.0, "totalPnlPct": 0.0,
+            "totalGrossPnl": 0.0, "costDrag": 0.0,
+            "avgR": None, "maxDrawdown": 0.0,
             "unrealizedPnl": round(unrealized, 2), "unrealizedPnlPct": unrealized_pct,
             "deployed": deployed, "openPositionCount": len(open_ts),
         }
@@ -226,10 +251,13 @@ def _track_stats(closed: list[dict], open_trades: list[dict], price_map: dict, r
         peak = max(peak, cum)
         max_dd = max(max_dd, peak - cum)
     total_pnl = round(sum(float(t["realized_pnl"] or 0) for t in ts), 2)
+    total_gross_pnl = round(sum(float(t["gross_pnl"] or 0) for t in ts if t.get("gross_pnl") is not None), 2)
     return {
         "count": n, "winRate": round(wins / n * 100, 1),
         "totalPnl": total_pnl,
         "totalPnlPct": round(total_pnl / capital * 100, 2) if capital else 0.0,
+        "totalGrossPnl": total_gross_pnl,
+        "costDrag": round(total_gross_pnl - total_pnl, 2),  # slippage + brokerage, in rupees
         "avgR": round(sum(r_vals) / len(r_vals), 2) if r_vals else None,
         "maxDrawdown": round(max_dd, 2),
         "unrealizedPnl": round(unrealized, 2),
@@ -362,10 +390,21 @@ def _trade_to_json(t: dict, current_price: float | None = None) -> dict:
         "exitPrice": float(t["exit_price"]) if t["exit_price"] is not None else None,
         "exitReason": t["exit_reason"],
         "realizedPnl": float(t["realized_pnl"]) if t["realized_pnl"] is not None else None,
+        "grossPnl": float(t["gross_pnl"]) if t.get("gross_pnl") is not None else None,
         "unrealizedPnl": _unrealized(t, current_price),
         "rMultiple": float(t["r_multiple"]) if t["r_multiple"] is not None else None,
         "holdingDays": t["holding_days"],
+        "allocation": _allocation(t),
     }
+
+
+def _allocation(t: dict) -> float:
+    """Capital committed to this stock — actual fill price once filled,
+    else the theoretical trigger price (for still-PENDING rows)."""
+    price = t.get("entry_fill_price") if t.get("entry_fill_price") is not None else t.get("entry_trigger_price")
+    if price is None or t.get("quantity") is None:
+        return 0.0
+    return round(float(price) * t["quantity"], 2)
 
 
 @router.get("/backtest/runs/{run_id}/trades/{trade_id}/chart")
