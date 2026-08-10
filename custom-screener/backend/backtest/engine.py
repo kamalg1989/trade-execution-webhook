@@ -72,8 +72,10 @@ async def _run(run: dict, pool) -> None:
     ai_respect_recommendation = bool(run.get("ai_respect_recommendation"))
     # Stage 2 (base-stage + entry-technique) overrides (sql/008) — monkeypatches
     # screen_gpt's constants for this subprocess's lifetime; see funnel_stage2.py
-    # docstring for why this must bypass the shared quant-signal cache.
+    # docstring for why this must use its own config-hash-keyed cache (sql/010)
+    # instead of the shared (non-config-aware) quant-signal cache.
     stage2_active = funnel_stage2.apply_overrides(run)
+    stage2_config_hash = funnel_stage2.config_hash() if stage2_active else None
     exit_config = run["exit_config"] if isinstance(run["exit_config"], dict) else {}
     import json as _json
     if isinstance(run["exit_config"], str):
@@ -189,7 +191,7 @@ async def _run(run: dict, pool) -> None:
 
         # 2. today's candidates (quant funnel, always computed — cheap/local)
         if stage2_active:
-            candidates = await funnel_stage2.build_candidates_uncached(pool, day, capital)
+            candidates = await funnel_stage2.build_candidates(pool, day, capital, stage2_config_hash)
         elif use_funnel_v2:
             candidates = await funnel_v2.build_candidates(
                 pool, day, capital, gate_overrides, use_v2_ranking
