@@ -824,6 +824,7 @@ export default function Backtest() {
   const [error, setError] = useState('');
   const [cancellingId, setCancellingId] = useState(null);
   const [formOpen, setFormOpen] = useState(false);
+  const [selectionNonce, setSelectionNonce] = useState(0);
   const pollRef = useRef(null);
 
   const refresh = async () => {
@@ -864,58 +865,78 @@ export default function Backtest() {
   const running = runs.find((r) => r.status === 'RUNNING');
   const selected = runs.find((r) => r.id === selectedId);
 
+  // Selecting a run always jumps to the Summary tab and forces a fresh fetch
+  // (via the RunSummary `key` below, which remounts it) — even re-clicking
+  // the already-selected run refreshes it, rather than relying on the 5s poll.
+  const selectRun = (id) => {
+    setSelectedId(id);
+    setDetailTab('summary');
+    setSelectionNonce((n) => n + 1);
+    refresh();
+  };
+
   return (
-    <div className="space-y-3">
-      {/* Run list + new-run form pinned at the top, collapsed by default, so
-          results are reachable without scrolling past a tall form first. */}
-      <RunConfigForm
-        open={formOpen}
-        onToggleOpen={setFormOpen}
-        onCreated={(id) => { setSelectedId(id); refresh(); }}
-        blocked={!!running}
-        blockedReason={running ? `Run #${running.id} is currently in progress — only one run at a time. Stuck? Use the Stop button on it below.` : ''}
-      />
+    <div className="grid grid-cols-1 lg:grid-cols-[420px_1fr] gap-4 items-start">
+      {/* Left: new-run form + run list — pinned so it stays visible while
+          the right-hand detail panel is what scrolls. */}
+      <div className="space-y-3 lg:sticky lg:top-4">
+        <RunConfigForm
+          open={formOpen}
+          onToggleOpen={setFormOpen}
+          onCreated={(id) => { selectRun(id); refresh(); }}
+          blocked={!!running}
+          blockedReason={running ? `Run #${running.id} is currently in progress — only one run at a time. Stuck? Use the Stop button on it below.` : ''}
+        />
 
-      {error && <div className="bg-red-900/40 border border-red-700 text-red-200 text-sm rounded px-3 py-2">{error}</div>}
+        {error && <div className="bg-red-900/40 border border-red-700 text-red-200 text-sm rounded px-3 py-2">{error}</div>}
 
-      <RunList runs={runs} selectedId={selectedId} onSelect={setSelectedId} onCancel={cancel} cancellingId={cancellingId} />
+        <RunList runs={runs} selectedId={selectedId} onSelect={selectRun} onCancel={cancel} cancellingId={cancellingId} />
+      </div>
 
-      {selected && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between flex-wrap gap-2 sticky top-0 bg-slate-950/95 backdrop-blur z-10 py-2 -mx-1 px-1">
-            <div className="text-sm text-slate-300">
-              Run #{selected.id} · {selected.startDate} → {selected.endDate} · {selected.trackMode}
-              {selected.status === 'RUNNING' && selected.progressTotalDays
-                ? ` · day ${selected.progressDay}/${selected.progressTotalDays}`
-                : ''}
-              {selected.error && <span className="text-red-300"> · {selected.error}</span>}
-            </div>
-            <div className="flex items-center gap-1">
-              {selected.status === 'RUNNING' && (
-                <button onClick={() => cancel(selected.id)} disabled={cancellingId === selected.id}
-                  className="px-3 py-1.5 text-sm rounded bg-red-900/60 border border-red-700 text-red-200 hover:bg-red-900 disabled:opacity-50 mr-2">
-                  {cancellingId === selected.id ? 'Stopping…' : 'Stop run'}
-                </button>
-              )}
-              {DETAIL_TABS.map((t) => (
-                <button key={t.id} onClick={() => setDetailTab(t.id)}
-                  className={`px-3 py-1.5 text-sm rounded ${detailTab === t.id
-                    ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300 hover:text-white'}`}>
-                  {t.label}
-                </button>
-              ))}
-            </div>
+      {/* Right: selected run's details, side by side with the list instead
+          of stacked below it. */}
+      <div className="space-y-3 min-w-0">
+        {!selected ? (
+          <div className="text-sm text-slate-400 px-1 py-8 text-center border border-dashed border-slate-700 rounded-lg">
+            Select a run on the left to see its summary.
           </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="text-sm text-slate-300">
+                Run #{selected.id} · {selected.startDate} → {selected.endDate} · {selected.trackMode}
+                {selected.status === 'RUNNING' && selected.progressTotalDays
+                  ? ` · day ${selected.progressDay}/${selected.progressTotalDays}`
+                  : ''}
+                {selected.error && <span className="text-red-300"> · {selected.error}</span>}
+              </div>
+              <div className="flex items-center gap-1">
+                {selected.status === 'RUNNING' && (
+                  <button onClick={() => cancel(selected.id)} disabled={cancellingId === selected.id}
+                    className="px-3 py-1.5 text-sm rounded bg-red-900/60 border border-red-700 text-red-200 hover:bg-red-900 disabled:opacity-50 mr-2">
+                    {cancellingId === selected.id ? 'Stopping…' : 'Stop run'}
+                  </button>
+                )}
+                {DETAIL_TABS.map((t) => (
+                  <button key={t.id} onClick={() => setDetailTab(t.id)}
+                    className={`px-3 py-1.5 text-sm rounded ${detailTab === t.id
+                      ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300 hover:text-white'}`}>
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-          {selected.status === 'RUNNING' && (
-            <div className="text-sm text-amber-300">Run in progress — results below will update once trades are simulated. If progress hasn't moved in a while, use Stop to unblock the next run.</div>
-          )}
+            {selected.status === 'RUNNING' && (
+              <div className="text-sm text-amber-300">Run in progress — results below will update once trades are simulated. If progress hasn't moved in a while, use Stop to unblock the next run.</div>
+            )}
 
-          {detailTab === 'summary' && <RunSummary runId={selected.id} status={selected.status} />}
-          {detailTab === 'day' && <DayDrilldown runId={selected.id} minDate={selected.startDate} maxDate={selected.endDate} />}
-          {detailTab === 'trades' && <TradeLog runId={selected.id} />}
-        </div>
-      )}
+            {detailTab === 'summary' && <RunSummary key={`${selected.id}-${selectionNonce}`} runId={selected.id} status={selected.status} />}
+            {detailTab === 'day' && <DayDrilldown runId={selected.id} minDate={selected.startDate} maxDate={selected.endDate} />}
+            {detailTab === 'trades' && <TradeLog runId={selected.id} />}
+          </>
+        )}
+      </div>
     </div>
   );
 }
