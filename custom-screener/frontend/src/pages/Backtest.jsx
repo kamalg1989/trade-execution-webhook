@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   createBacktestRun, listBacktestRuns, getBacktestRun, getBacktestSummary,
   getBacktestTrades, getBacktestDay, cancelBacktestRun, backtestTradeChartUrl,
@@ -437,8 +437,20 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
 
 // ---------------- Run list ----------------
 
-// Drop the year for the compact run-list column — "2026-01-01" -> "01-01".
-const fmtWindowShort = (s, e) => `${s?.slice(5) ?? ''}→${e?.slice(5) ?? ''}`;
+// Run-list window column. Keeps the year (runs now span 2024/2025/2026, so
+// dropping it made rows ambiguous) but trims the century: "2026-01-01" ->
+// "26-01-01".
+const fmtWindowShort = (s, e) => `${s?.slice(2) ?? ''} → ${e?.slice(2) ?? ''}`;
+
+// Compact signed rupee for the P&L columns: 38856.71 -> "+38.9k", -3200 -> "-3.2k"
+const fmtPnl = (v) => {
+  if (v == null) return '—';
+  const a = Math.abs(v);
+  const s0 = v < 0 ? '-' : '+';
+  if (a >= 1e5) return `${s0}${(a / 1e5).toFixed(2)}L`;
+  if (a >= 1e3) return `${s0}${(a / 1e3).toFixed(1)}k`;
+  return `${s0}${Math.round(a)}`;
+};
 
 function RunRow({ run, selected, onSelect, onCancel, cancelling, rowRef, onKeyDown }) {
   const pct = run.progressTotalDays ? Math.round((run.progressDay / run.progressTotalDays) * 100) : null;
@@ -456,6 +468,18 @@ function RunRow({ run, selected, onSelect, onCancel, cancelling, rowRef, onKeyDo
         {run.status === 'RUNNING' && pct != null && <span className="text-slate-400 font-normal"> · {pct}%</span>}
       </td>
       <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap">{run.tradeCount ?? '—'}</td>
+      <td className={`py-1.5 px-2 text-xs font-medium whitespace-nowrap tabular-nums ${pnlColor(run.realizedPnl)}`}
+        title={run.realizedPnl != null ? `Realized ₹${run.realizedPnl.toLocaleString('en-IN')}` : undefined}>
+        {fmtPnl(run.realizedPnl)}
+      </td>
+      <td className={`py-1.5 px-2 text-xs whitespace-nowrap tabular-nums ${pnlColor(run.unrealizedPnl)}`}
+        title={run.unrealizedPnl != null ? `Unrealized (open positions marked to run end) ₹${run.unrealizedPnl.toLocaleString('en-IN')}` : undefined}>
+        {fmtPnl(run.unrealizedPnl)}
+      </td>
+      <td className={`py-1.5 px-2 text-xs font-semibold whitespace-nowrap tabular-nums ${pnlColor(run.totalPnl)}`}
+        title={run.totalPnl != null ? `Total ₹${run.totalPnl.toLocaleString('en-IN')}` : undefined}>
+        {fmtPnl(run.totalPnl)}
+      </td>
       <SettingsCell run={run} />
       <td className="py-1.5 px-2 text-xs">
         {run.status === 'RUNNING' && (
@@ -469,16 +493,42 @@ function RunRow({ run, selected, onSelect, onCancel, cancelling, rowRef, onKeyDo
   );
 }
 
+const SORTS = {
+  newest:    { label: 'Newest first',   fn: (a, b) => b.id - a.id },
+  oldest:    { label: 'Oldest first',   fn: (a, b) => a.id - b.id },
+  totalDesc: { label: 'Total P&L ↓',    fn: (a, b) => (b.totalPnl ?? -Infinity) - (a.totalPnl ?? -Infinity) },
+  totalAsc:  { label: 'Total P&L ↑',    fn: (a, b) => (a.totalPnl ?? Infinity) - (b.totalPnl ?? Infinity) },
+  realDesc:  { label: 'Realized P&L ↓', fn: (a, b) => (b.realizedPnl ?? -Infinity) - (a.realizedPnl ?? -Infinity) },
+  tradesDesc:{ label: 'Trades ↓',       fn: (a, b) => (b.tradeCount ?? 0) - (a.tradeCount ?? 0) },
+};
+
 function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
   const rowRefs = useRef({});
-  if (!runs.length) return <div className="text-sm text-slate-400 px-1">No backtest runs yet — configure one above.</div>;
+  const [sortKey, setSortKey] = useState('newest');
+  const [statusFilter, setStatusFilter] = useState('ALL');
+  const [trackFilter, setTrackFilter] = useState('ALL');
+  const [query, setQuery] = useState('');
+  const [winnersOnly, setWinnersOnly] = useState(false);
 
-  // Arrow-key navigation between rows — preventDefault stops the browser's
-  // default behavior of scrolling this (overflow-y-auto) container instead
-  // of moving the selection, then we move focus to the newly-selected row
-  // so repeated presses keep working and it scrolls into view.
+  // Filter first, then sort — so the arrow-key index below always refers to
+  // the list actually rendered.
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return runs
+      .filter((r) => statusFilter === 'ALL' || r.status === statusFilter)
+      .filter((r) => trackFilter === 'ALL' || r.trackMode === trackFilter)
+      .filter((r) => !winnersOnly || (r.totalPnl ?? 0) > 0)
+      .filter((r) => {
+        if (!q) return true;
+        const hay = [r.params?.notes, `#${r.id}`, r.startDate, r.endDate,
+          ...summarizeRunSettings(r)].filter(Boolean).join(' ').toLowerCase();
+        return hay.includes(q);
+      })
+      .sort(SORTS[sortKey].fn);
+  }, [runs, sortKey, statusFilter, trackFilter, query, winnersOnly]);
+
   const move = (idx, delta) => {
-    const target = runs[idx + delta];
+    const target = visible[idx + delta];
     if (!target) return;
     onSelect(target.id);
     rowRefs.current[target.id]?.focus();
@@ -488,7 +538,44 @@ function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
     else if (e.key === 'ArrowUp') { e.preventDefault(); move(idx, -1); }
   };
 
+  const selCls = 'bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-200 text-xs';
+
   return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <input type="search" value={query} onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search notes / settings / #id…"
+          className="flex-1 min-w-[180px] bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-xs" />
+        <select value={sortKey} onChange={(e) => setSortKey(e.target.value)} className={selCls} title="Sort">
+          {Object.entries(SORTS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+        </select>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className={selCls} title="Status">
+          <option value="ALL">All status</option>
+          <option value="COMPLETED">Completed</option>
+          <option value="RUNNING">Running</option>
+          <option value="FAILED">Failed</option>
+        </select>
+        <select value={trackFilter} onChange={(e) => setTrackFilter(e.target.value)} className={selCls} title="Track">
+          <option value="ALL">All tracks</option>
+          <option value="QUANT">Quant</option>
+          <option value="AI">AI</option>
+          <option value="BOTH">Both</option>
+        </select>
+        <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none">
+          <input type="checkbox" checked={winnersOnly} onChange={(e) => setWinnersOnly(e.target.checked)}
+            className="accent-emerald-500" />
+          Profitable only
+        </label>
+        {visible.length !== runs.length && (
+          <span className="text-[11px] text-slate-500">{visible.length}/{runs.length}</span>
+        )}
+      </div>
+
+      {!runs.length ? (
+        <div className="text-sm text-slate-400 px-1">No backtest runs yet — configure one above.</div>
+      ) : !visible.length ? (
+        <div className="text-sm text-slate-400 px-1">No runs match these filters.</div>
+      ) : (
     <div className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto max-h-[480px] overflow-y-auto">
       <table className="w-full table-auto">
         <thead className="sticky top-0 bg-slate-900 z-10">
@@ -499,12 +586,15 @@ function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
             <th className="py-1.5 px-2">Capital</th>
             <th className="py-1.5 px-2">Status</th>
             <th className="py-1.5 px-2">Trades</th>
+            <th className="py-1.5 px-2" title="Banked P&L from closed trades">Realized</th>
+            <th className="py-1.5 px-2" title="Open positions marked to the run's end date">Unreal.</th>
+            <th className="py-1.5 px-2" title="Realized + unrealized">Total</th>
             <th className="py-1.5 px-2">Settings</th>
             <th className="py-1.5 px-2"></th>
           </tr>
         </thead>
         <tbody>
-          {runs.map((r, idx) => (
+          {visible.map((r, idx) => (
             <RunRow key={r.id} run={r} selected={r.id === selectedId} onSelect={onSelect}
               onCancel={onCancel} cancelling={cancellingId === r.id}
               rowRef={(el) => { rowRefs.current[r.id] = el; }}
@@ -512,6 +602,8 @@ function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
           ))}
         </tbody>
       </table>
+    </div>
+      )}
     </div>
   );
 }

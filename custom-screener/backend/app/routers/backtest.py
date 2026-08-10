@@ -225,10 +225,26 @@ async def create_run(body: RunCreate, request: Request):
 @router.get("/backtest/runs")
 async def list_runs(request: Request):
     pool = _pool(request)
+    # Realized + unrealized P&L are aggregated here so the run list can show
+    # them directly — previously you had to open each run's summary to see how
+    # it did. Unrealized marks still-OPEN positions to the last close on or
+    # before the run's end_date (same convention as get_summary()), via a
+    # LATERAL so it stays one pass rather than a per-row subquery.
     rows = await pool.fetch(
         """
         SELECT r.*,
-          (SELECT count(*) FROM backtest_trades t WHERE t.run_id = r.id) AS trade_count
+          (SELECT count(*) FROM backtest_trades t WHERE t.run_id = r.id) AS trade_count,
+          (SELECT COALESCE(SUM(t.realized_pnl), 0) FROM backtest_trades t
+            WHERE t.run_id = r.id AND t.status = 'CLOSED') AS realized_pnl,
+          (SELECT COALESCE(SUM((lc.close - t.entry_fill_price) * t.quantity), 0)
+             FROM backtest_trades t
+             CROSS JOIN LATERAL (
+               SELECT o.close FROM ohlcv_data o
+               WHERE o.symbol = t.symbol AND o.time::date <= r.end_date
+               ORDER BY o.time DESC LIMIT 1
+             ) lc
+            WHERE t.run_id = r.id AND t.status = 'OPEN'
+              AND t.entry_fill_price IS NOT NULL) AS unrealized_pnl
         FROM backtest_runs r ORDER BY r.created_at DESC LIMIT 50
         """
     )
@@ -289,6 +305,11 @@ def _run_to_json(r) -> dict:
         "stackingGuardMode": d["stacking_guard_mode"], "exitConfig": exit_cfg,
         "status": d["status"], "progressDay": d["progress_day"], "progressTotalDays": d["progress_total_days"],
         "error": d["error"], "params": params, "tradeCount": d.get("trade_count"),
+        # Present only on the list endpoint (see list_runs) — null elsewhere.
+        "realizedPnl": float(d["realized_pnl"]) if d.get("realized_pnl") is not None else None,
+        "unrealizedPnl": float(d["unrealized_pnl"]) if d.get("unrealized_pnl") is not None else None,
+        "totalPnl": (float(d["realized_pnl"]) + float(d["unrealized_pnl"]))
+                    if d.get("realized_pnl") is not None and d.get("unrealized_pnl") is not None else None,
         "safetySlPct": float(d["safety_sl_pct"]) if d.get("safety_sl_pct") is not None else None,
         "slippagePct": float(d["slippage_pct"]) if d.get("slippage_pct") is not None else None,
         "brokeragePerOrder": float(d["brokerage_per_order"]) if d.get("brokerage_per_order") is not None else None,

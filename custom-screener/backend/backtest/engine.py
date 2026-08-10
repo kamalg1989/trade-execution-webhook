@@ -42,7 +42,45 @@ async def run_backtest(run_id: int, pool) -> None:
         )
 
 
+def _prepare_screen_gpt_for_backtest() -> None:
+    """Two backtest-only speedups applied to the in-memory screen_gpt module
+    (never to screen_gpt.py on disk, and never to the live screener — this
+    runs inside the run's own throwaway subprocess).
+
+    1. Warm the tick-size cache ONCE, single-threaded, before anything else.
+       screen_gpt.load_tick_sizes() downloads a ~10k-row CSV over the network
+       (images.dhan.co/api-data/api-scrip-master.csv) and builds its cache with
+       a row-by-row iterrows() loop. It's guarded by `if TICK_SIZE_CACHE:` —
+       fine single-threaded, but _compute_signals_concurrent() calls into it
+       from a thread pool, so on a cold cache several threads all see it empty
+       at once and each kicks off its own download+parse. Profiling a cold run
+       showed that banner printing repeatedly, i.e. the CSV was being fetched
+       and parsed several times per run. Priming it here makes the guard hit
+       on every subsequent call.
+
+    2. Silence screen_gpt's verbose per-symbol debug logging. DEBUG=True emits
+       several print() lines per symbol per day (base-stage counts, entry
+       detection, tick rounding, target). Across ~70 survivors x ~150 days
+       that's tens of thousands of lines written to the run's log file, all of
+       it noise for a backtest — the run's results live in Postgres, not the
+       log. Errors/tracebacks still surface: they go through the logging
+       module and engine-level exception handling, not dbg().
+    """
+    # Imported lazily, NOT at module scope: funnel.py is what inserts
+    # /root/trade-execution-webhook onto sys.path, so a top-level
+    # `import screen_gpt` here runs before that path exists and dies with
+    # ModuleNotFoundError. By this point funnel has been imported.
+    import screen_gpt
+
+    try:
+        screen_gpt.load_tick_sizes()
+    except Exception:
+        logger.warning("tick-size cache warm-up failed; continuing", exc_info=True)
+    screen_gpt.DEBUG = False
+
+
 async def _run(run: dict, pool) -> None:
+    _prepare_screen_gpt_for_backtest()
     run_id = run["id"]
     start_date, end_date = run["start_date"], run["end_date"]
     track_mode = run["track_mode"]

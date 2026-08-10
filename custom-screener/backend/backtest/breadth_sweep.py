@@ -30,17 +30,22 @@ WINDOWS = [("2025", "2025-01-01", "2025-08-08"), ("2026", "2026-01-01", "2026-08
 # pre-breadth-filter baseline and the optima may have shifted.
 BEST = {"entry_breadth_max_pct": 40.0, "entry_breadth_require_rising": True}
 
-# Round 3: VCP-style base-contraction gate (sql/014), layered on the best
-# breadth config, at the risk/trade level that won the sizing sweep.
-BEST3 = {**BEST, "risk_per_trade_pct": 1.0}
+# Round 4: trailing-mechanism comparison on the CURRENT best config
+# (breadth lvl40+rising + VCP contraction 0.7 + risk 1%/trade). The earlier
+# R-ladder-vs-EMA21 test was run on the pre-filter baseline, so the trade
+# population has changed and it's worth re-asking.
+BEST4 = {**BEST, "risk_per_trade_pct": 1.0, "max_contraction_ratio": 0.7}
+EC = BASE["exit_config"]
 
 COMBOS = [
-    ("contraction0.7", {**BEST3, "max_contraction_ratio": 0.7}),
-    ("contraction0.85", {**BEST3, "max_contraction_ratio": 0.85}),
-    ("contraction0.6", {**BEST3, "max_contraction_ratio": 0.6}),
-    # contraction gate WITHOUT the breadth filter, to see how much of the
-    # breadth edge it already subsumes (both are "don't buy late/loose" ideas)
-    ("contraction0.7-noBreadth", {"risk_per_trade_pct": 1.0, "max_contraction_ratio": 0.7}),
+    # pure R-ladder: half-book at +2R then ratchet SL to +(N-1)R, no EMA anchor
+    ("Rladder-only", {**BEST4, "exit_config": {**EC, "ema21_trail": False}}),
+    # "trail full": no half-booking, whole position rides the R-ladder
+    ("Rladder-trailfull", {**BEST4,
+        "exit_config": {**EC, "ema21_trail": False, "half_booking": False}}),
+    # EMA21 + R-ladder together = the current best, re-run for a clean
+    # same-batch reference point
+    ("EMA21+Rladder(ref)", {**BEST4, "exit_config": {**EC}}),
 ]
 
 
