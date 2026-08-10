@@ -34,6 +34,22 @@ config still pays full price on its first run, same as before; a repeated
 or overlapping config (e.g. re-running the same combo, or combining a
 Stage 2 override with a different Stage 1 gate override) now reuses
 whatever was already computed.
+
+Stage 1 combo note (added when a Stage 2 run and a Stage 1 gate_overrides
+run were found not to compose — engine.py routed any Stage-2-active run
+straight through this module's survivor query, which always used
+funnel.py's production-fixed GATE_SQL and silently ignored gate_overrides
+even when a run supplied both): build_candidates() now takes the same
+gate_overrides/use_v2_ranking params funnel_v2.build_candidates() does and
+sources survivors via funnel_v2.funnel_survivors_v2() instead of
+v1.funnel_survivors() — same overridable-gate SQL funnel_v2 already uses,
+reused directly, not reimplemented. This doesn't affect the Stage 2 cache's
+correctness: the cached Stage 2 result for a given (symbol, date,
+config_hash) only depends on that symbol's own OHLCV history and its
+stock_indicators row (ifp_score/base_range_pct), not on which Stage 1 gate
+combination happened to let it through as a survivor that day — so the
+same cache is safely shared across runs that vary Stage 1 gates but agree
+on Stage 2 settings.
 """
 from __future__ import annotations
 
@@ -44,6 +60,7 @@ from datetime import date
 import screen_gpt
 
 from . import funnel as v1
+from . import funnel_v2 as v2
 
 # (run-config key, screen_gpt attribute, cast, scale-to-native-units)
 # Percent-style run fields are entered as whole numbers (e.g. 15 for 15%)
@@ -91,13 +108,20 @@ def config_hash() -> str:
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
-async def build_candidates(pool, d: date, capital: float, chash: str) -> list[dict]:
-    """Same shape/ranking as funnel.build_candidates() (Stage 1 gate and
-    Stage 4 ranking untouched) — Stage 2 results are read from/written to
-    backtest_stage2_signals_cache keyed by (symbol, signal_date, chash), see
-    module docstring. Computation itself (v1._compute_signal) is identical
-    to the plain funnel path; only the cache key differs."""
-    survivors = await v1.funnel_survivors(pool, d)
+async def build_candidates(
+    pool, d: date, capital: float, chash: str,
+    gate_overrides: dict | None = None,
+    use_v2_ranking: bool = False,
+) -> list[dict]:
+    """Stage 2 results are read from/written to backtest_stage2_signals_cache
+    keyed by (symbol, signal_date, chash) — see module docstring. Survivors
+    (Stage 1) come from funnel_v2.funnel_survivors_v2(), so gate_overrides
+    (any subset of the 8 SQL gate thresholds; None = production default,
+    same as funnel_v2) actually takes effect even when a Stage 2 override is
+    also active — see the "Stage 1 combo note" above. use_v2_ranking selects
+    the same alternate (already-known-worse) Stage 4 ranking funnel_v2
+    supports, for parity/completeness; defaults off."""
+    survivors = await v2.funnel_survivors_v2(pool, d, gate_overrides)
     if not survivors:
         return []
     indicators_by_symbol = {row["symbol"]: row for row in survivors}
@@ -152,6 +176,7 @@ async def build_candidates(pool, d: date, capital: float, chash: str) -> list[di
             "risk_per_share": risk_per_share,
             "target": float(sig["target"]) if sig.get("target") is not None else 0.0,
             "ifp_score": float(sig["ifp_score"] or 0), "base_range_pct": float(sig["base_range_pct"] or 0),
+            "turnover_1m_avg_cr": float(indicators_by_symbol[sym].get("turnover_1m_avg_cr") or 0),
         })
-    candidates.sort(key=lambda c: (-c["ifp_score"], c["base_range_pct"]))
+    candidates.sort(key=v2._rank_key_v2 if use_v2_ranking else v2._rank_key_v1)
     return candidates

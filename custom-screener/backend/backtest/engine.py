@@ -191,7 +191,9 @@ async def _run(run: dict, pool) -> None:
 
         # 2. today's candidates (quant funnel, always computed — cheap/local)
         if stage2_active:
-            candidates = await funnel_stage2.build_candidates(pool, day, capital, stage2_config_hash)
+            candidates = await funnel_stage2.build_candidates(
+                pool, day, capital, stage2_config_hash, gate_overrides, use_v2_ranking
+            )
         elif use_funnel_v2:
             candidates = await funnel_v2.build_candidates(
                 pool, day, capital, gate_overrides, use_v2_ranking
