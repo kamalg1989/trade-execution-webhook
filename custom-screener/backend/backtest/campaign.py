@@ -1,0 +1,221 @@
+"""Full validation campaign — every candidate config x 11 one-year windows.
+
+Motivation: every "edge" found so far was tuned on two windows (2025 + 2026)
+that turned out to be the SAME low-breadth regime, and the 2024 out-of-sample
+test exposed the consequence — an absolute 40%-breadth cap blocked 100% of
+days in a bull year. This runs the whole config set across a decade of
+independent one-year windows spanning very different regimes (measured avg
+%-above-200SMA per year: 2019 ~25%, 2021 ~85%) so each setting can be judged
+on regime robustness, not on a single lucky pair of windows.
+
+Two phases, both unattended:
+  1. WARM  — pre-populate the Stage 2 caches for every window, in parallel OS
+             processes (see warm_cache.py for why processes, not threads).
+             One pass per distinct config-hash: production defaults, and the
+             basemax=2 override every candidate config shares.
+  2. RUN   — submit each (config, window) to the backtest API sequentially
+             (the API enforces one run at a time) and record the summary.
+
+Resumable: a (config, window) whose notes tag already exists as a COMPLETED
+run is skipped, so the campaign can be killed and relaunched without redoing
+work. Progress is appended to the log as RESULT lines plus a final JSON blob.
+
+Run:  nohup python3 -m backtest.campaign > /root/campaign.log 2>&1 &
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import multiprocessing as mp
+import sys
+import time
+import urllib.request
+from datetime import datetime
+
+sys.path.insert(0, "/root/trade-execution-webhook")
+
+API = "http://localhost:8005/api"
+TAG = "campaign-v1"
+
+# One-year windows. 2026 is year-to-date (data ends ~2026-08-10).
+WINDOWS = [(str(y), f"{y}-01-01", f"{y}-12-31") for y in range(2016, 2026)]
+WINDOWS.append(("2026ytd", "2026-01-01", "2026-08-08"))
+
+EXITS = {
+    "trailing": True, "breakeven": True, "half_booking": True, "fixed_target": False,
+    "ema10_trail": False, "ema21_trail": True, "ema50_trail": False,
+    "chandelier_trail": False, "swing_trail": False,
+    "failed_breakout_exit": False, "swing_break_exit": False,
+}
+
+BASE = {
+    "track_mode": "QUANT", "capital": 400000, "max_picks_per_track": 2,
+    "safety_sl_pct": 10.0, "stacking_guard": True, "stacking_guard_mode": "OVERRIDE",
+    "exit_config": EXITS,
+}
+
+# Each entry is what gets ADDED to BASE. Ordered cheapest-hypothesis-first so a
+# partial campaign still answers the most important questions.
+CONFIGS = [
+    # Isolate each validated edge, then stack them. All of these share the
+    # basemax=2 Stage 2 config-hash, so one warm pass covers the lot.
+    ("B-basemax2", {"stage2_base_stage_max_allowed": 2}),
+    ("C-basemax2+rising", {"stage2_base_stage_max_allowed": 2,
+                           "entry_breadth_require_rising": True}),
+    ("D-basemax2+vcp", {"stage2_base_stage_max_allowed": 2,
+                        "max_contraction_ratio": 0.7}),
+    ("E-basemax2+rising+vcp", {"stage2_base_stage_max_allowed": 2,
+                               "entry_breadth_require_rising": True,
+                               "max_contraction_ratio": 0.7}),
+    ("F-full+risk1", {"stage2_base_stage_max_allowed": 2,
+                      "entry_breadth_require_rising": True,
+                      "max_contraction_ratio": 0.7, "risk_per_trade_pct": 1.0}),
+    # The regime-dependent variant, kept in deliberately: it should FAIL in the
+    # high-breadth years (2021 ~85% above 200SMA), documenting why an absolute
+    # breadth cap must not be shipped.
+    ("G-full+lvl40cap", {"stage2_base_stage_max_allowed": 2,
+                         "entry_breadth_max_pct": 40.0,
+                         "entry_breadth_require_rising": True,
+                         "max_contraction_ratio": 0.7, "risk_per_trade_pct": 1.0}),
+    # Production-as-it-runs-today. Deliberately LAST: it is the only config
+    # with no Stage 2 override, so it reads a different cache (the shared
+    # backtest_quant_signals table) and its windows are cold. Putting it at the
+    # end means the six comparable configs above finish first.
+    ("A-production", {"max_picks_per_track": 3, "safety_sl_pct": 8.0,
+                      "exit_config": {**EXITS, "fixed_target": True, "ema21_trail": False}}),
+]
+
+
+def post(path, body):
+    req = urllib.request.Request(f"{API}{path}", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.load(r)
+
+
+def get(path):
+    with urllib.request.urlopen(f"{API}{path}", timeout=60) as r:
+        return json.load(r)
+
+
+# ---------------------------------------------------------------- warm phase
+
+def _warm_worker(args):
+    days_iso, base_stage_max = args
+    import screen_gpt
+    from app.db import create_pool
+    from backtest import funnel, funnel_stage2
+
+    screen_gpt.load_tick_sizes()
+    screen_gpt.DEBUG = False
+    cfg = {} if base_stage_max is None else {"stage2_base_stage_max_allowed": base_stage_max}
+    active = funnel_stage2.apply_overrides(cfg)
+    chash = funnel_stage2.config_hash() if active else None
+
+    async def go():
+        pool = await create_pool()
+        try:
+            for iso in days_iso:
+                d = datetime.strptime(iso, "%Y-%m-%d").date()
+                if active:
+                    await funnel_stage2.build_candidates(pool, d, 400000, chash)
+                else:
+                    await funnel.build_candidates(pool, d, 400000)
+        finally:
+            await pool.close()
+
+    asyncio.run(go())
+    return len(days_iso)
+
+
+async def _all_days():
+    from app.db import create_pool
+    pool = await create_pool()
+    try:
+        rows = await pool.fetch(
+            "SELECT DISTINCT time::date AS d FROM ohlcv_data "
+            "WHERE time::date BETWEEN $1 AND $2 ORDER BY d",
+            datetime.strptime(WINDOWS[0][1], "%Y-%m-%d").date(),
+            datetime.strptime(WINDOWS[-1][2], "%Y-%m-%d").date())
+        return [r["d"].isoformat() for r in rows]
+    finally:
+        await pool.close()
+
+
+def warm(days, base_stage_max, workers=2):
+    label = "production-default" if base_stage_max is None else f"basemax={base_stage_max}"
+    print(f"[warm] {label}: {len(days)} days across {workers} procs", flush=True)
+    t0 = time.time()
+    slices = [days[i::workers] for i in range(workers)]
+    with mp.Pool(workers) as p:
+        p.map(_warm_worker, [(s, base_stage_max) for s in slices])
+    print(f"[warm] {label} done in {(time.time()-t0)/60:.1f} min", flush=True)
+
+
+# ----------------------------------------------------------------- run phase
+
+def existing_done() -> set[str]:
+    """Notes tags of runs already COMPLETED, so a relaunch skips them."""
+    done = set()
+    try:
+        for r in get("/backtest/runs"):
+            n = (r.get("params") or {}).get("notes") or ""
+            if n.startswith(TAG) and r.get("status") == "COMPLETED":
+                done.add(n)
+    except Exception:
+        pass
+    return done
+
+
+def main():
+    days = asyncio.run(_all_days())
+    print(f"campaign: {len(CONFIGS)} configs x {len(WINDOWS)} windows, {len(days)} trading days",
+          flush=True)
+
+    warm(days, base_stage_max=2)      # shared by configs B..G
+    # NOTE: deliberately not warming the production-default hash. Config A is
+    # last and only 11 runs; warming its 2,625 days costs more wall-clock than
+    # letting those 11 runs populate the cache themselves.
+
+    done = existing_done()
+    results = []
+    for label, over in CONFIGS:
+        for wname, start, end in WINDOWS:
+            note = f"{TAG}: {label} [{wname}]"
+            if note in done:
+                print(f"SKIP (already done) {note}", flush=True)
+                continue
+            body = {**BASE, "start_date": start, "end_date": end, "notes": note}
+            body.update(over)
+            try:
+                run_id = post("/backtest/runs", body)["id"]
+            except Exception as e:
+                print(f"SUBMIT FAILED {note}: {e}", flush=True)
+                continue
+            while True:
+                time.sleep(6)
+                try:
+                    r = get(f"/backtest/runs/{run_id}")
+                except Exception:
+                    continue
+                if r["status"] != "RUNNING":
+                    break
+            if r["status"] != "COMPLETED":
+                print(f"FAILED {note} run {run_id}: {r.get('error')}", flush=True)
+                continue
+            q = get(f"/backtest/runs/{run_id}/summary")["quant"]
+            row = {"config": label, "window": wname, "run_id": run_id,
+                   "trades": q["count"], "winRate": q["winRate"],
+                   "realized": q["totalPnl"], "unrealized": q["unrealizedPnl"],
+                   "total": round(q["totalPnl"] + q["unrealizedPnl"], 2),
+                   "avgR": q["avgR"], "maxDD": q["maxDrawdown"],
+                   "costDrag": q["costDrag"]}
+            results.append(row)
+            print("RESULT " + json.dumps(row), flush=True)
+
+    print("CAMPAIGN DONE", flush=True)
+    print(json.dumps(results), flush=True)
+
+
+if __name__ == "__main__":
+    main()
