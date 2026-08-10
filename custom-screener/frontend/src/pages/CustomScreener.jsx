@@ -20,7 +20,7 @@ const applyTheme = (t) => {
 export default function CustomScreener() {
   const [theme, setTheme] = useState(getTheme);
   useEffect(() => { applyTheme(theme); }, [theme]);
-  const [tab, setTab] = useState('screener');
+  const [tab, setTab] = useState('backtest');
   const [date, setDate] = useState('');
   const [snap, setSnap] = useState(null);
   const [filters, setFilters] = useState(EMPTY);

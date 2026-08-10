@@ -25,6 +25,66 @@ const trackRowClass = (t) => {
   return '';
 };
 
+// ---------------- Run settings summary (for the run list "Settings" column) ----------------
+
+const EXIT_LABELS = [
+  ['ema10_trail', 'EMA10 trail'], ['ema21_trail', 'EMA21 trail'], ['ema50_trail', 'EMA50 trail'],
+  ['chandelier_trail', 'Chandelier trail'], ['swing_trail', 'Swing trail'],
+  ['failed_breakout_exit', 'Failed-breakout exit'], ['swing_break_exit', 'Swing-break exit'],
+];
+const GATE_LABELS = [
+  ['gateMinTurnoverCr', (v) => `turnover≥${v}cr`],
+  ['gateMaxBaseRangePct', (v) => `baseRange<${v}%`],
+  ['gateMinVolMult', (v) => `volMult>${v}x`],
+  ['gateMinPriorUpmovePct', (v) => `upmove≥${v}%`],
+  ['gateMaxGivebackPct', (v) => `giveback≤${v}%`],
+  ['gateMaxVolDryupRatio', (v) => `dryup≤${v}x`],
+  ['gateMaxDistFromHighPct', (v) => `distFromHigh≥${v}%`],
+  ['gateMinIfpScore', (v) => `ifp≥${v}`],
+];
+
+// Compact list of tags describing what actually differs from stock defaults
+// on this run — shown as the "Settings" column in the run list, and as a
+// fuller tooltip (title attr) on hover. Intentionally omits anything at its
+// default value so the column stays scannable across many runs.
+function summarizeRunSettings(run) {
+  const tags = [];
+  if (run.maxPicksPerTrack != null && run.maxPicksPerTrack !== 3) tags.push(`top${run.maxPicksPerTrack}/track`);
+  if (run.quantFunnelVariant === 'v2') tags.push('rank:v2');
+  for (const [key, fmt] of GATE_LABELS) {
+    if (run[key] != null) tags.push(fmt(run[key]));
+  }
+  const ec = run.exitConfig || {};
+  for (const [key, label] of EXIT_LABELS) {
+    if (ec[key]) tags.push(label);
+  }
+  if (ec.fixed_target === false) tags.push('no fixed target');
+  if (ec.half_booking === false) tags.push('no half-book');
+  if (ec.breakeven === false) tags.push('no breakeven');
+  if (ec.trailing === false) tags.push('no trailing');
+  if (run.safetySlPct != null) tags.push(`SL${run.safetySlPct}%`);
+  if (run.stackingGuard) tags.push(`stack:${run.stackingGuardMode}`);
+  if (run.restingWindowDays != null) tags.push(`rest:${run.restingWindowDays}d`);
+  if (run.minPositionValue) tags.push(`min₹${run.minPositionValue}`);
+  return tags;
+}
+
+function SettingsCell({ run }) {
+  const tags = summarizeRunSettings(run);
+  const notes = run.params?.notes;
+  const full = [notes, ...tags].filter(Boolean).join(' · ');
+  return (
+    <td className="py-2 px-3 text-xs text-slate-400 max-w-[280px]" title={full || undefined}>
+      {notes && <div className="text-slate-300 truncate">{notes}</div>}
+      <div className="flex flex-wrap gap-1 mt-0.5">
+        {tags.length ? tags.map((t, i) => (
+          <span key={i} className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 whitespace-nowrap">{t}</span>
+        )) : !notes ? <span className="text-slate-600">defaults</span> : null}
+      </div>
+    </td>
+  );
+}
+
 // ---------------- Run config form ----------------
 
 const DEFAULT_FORM = {
@@ -35,7 +95,7 @@ const DEFAULT_FORM = {
   ema10_trail: false, ema21_trail: false, ema50_trail: false,
   chandelier_trail: false, swing_trail: false,
   failed_breakout_exit: false, swing_break_exit: false,
-  safety_sl_pct: 8.0, slippage_pct: 0.10, brokerage_per_order: 20.0, chandelier_atr_mult: 3.0,
+  safety_sl_pct: 8.0, slippage_pct: 0.10, brokerage_per_order: 0.0, chandelier_atr_mult: 3.0,
   notes: '',
 };
 
@@ -52,7 +112,7 @@ function Toggle({ label, checked, onChange, hint }) {
   );
 }
 
-function RunConfigForm({ onCreated, blocked, blockedReason }) {
+function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }) {
   const [f, setF] = useState(DEFAULT_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -85,6 +145,7 @@ function RunConfigForm({ onCreated, blocked, blockedReason }) {
       };
       const res = await createBacktestRun(payload);
       onCreated(res.id);
+      onToggleOpen(false);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -92,9 +153,23 @@ function RunConfigForm({ onCreated, blocked, blockedReason }) {
     }
   };
 
+  if (!open) {
+    return (
+      <button onClick={() => onToggleOpen(true)}
+        className="w-full flex items-center justify-between bg-slate-900/60 border border-slate-700 rounded-lg px-4 py-2.5 text-left hover:bg-slate-900">
+        <span className="text-sm font-semibold text-slate-200">+ New Backtest Run</span>
+        {blocked && <span className="text-xs text-amber-300">{blockedReason}</span>}
+      </button>
+    );
+  }
+
   return (
     <form onSubmit={submit} className="bg-slate-900/60 border border-slate-700 rounded-lg p-4 space-y-4">
-      <div className="text-sm font-semibold text-slate-200">New Backtest Run</div>
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-semibold text-slate-200">New Backtest Run</div>
+        <button type="button" onClick={() => onToggleOpen(false)}
+          className="text-xs text-slate-400 hover:text-white px-2 py-1">Collapse ✕</button>
+      </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <label className="text-xs text-slate-400 flex flex-col gap-1">
@@ -199,6 +274,11 @@ function RunConfigForm({ onCreated, blocked, blockedReason }) {
             hint="Close below the most recent confirmed swing low exits immediately." />
 
           <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-3">Realism — costs</div>
+          <div className="text-[11px] text-slate-500">
+            STT (0.1% both legs), stamp duty (0.015% buy), exchange/SEBI charges (~0.003%)
+            and DP charge (~₹14.75 per exit) are applied automatically, matching Dhan's real
+            equity-delivery charges (Dhan brokerage on delivery is ₹0).
+          </div>
           <label className="text-xs text-slate-400 flex items-center gap-2">
             Slippage
             <input type="number" min="0" max="2" step="0.01" value={f.slippage_pct}
@@ -207,11 +287,11 @@ function RunConfigForm({ onCreated, blocked, blockedReason }) {
             % per fill (flat rate)
           </label>
           <label className="text-xs text-slate-400 flex items-center gap-2">
-            Brokerage
+            Brokerage override
             <input type="number" min="0" step="1" value={f.brokerage_per_order}
               onChange={(e) => set('brokerage_per_order')(e.target.value)}
               className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
-            ₹ per order (flat)
+            ₹ per order (0 = Dhan delivery default)
           </label>
         </div>
       </div>
@@ -252,6 +332,7 @@ function RunRow({ run, selected, onSelect, onCancel, cancelling }) {
         {run.status === 'RUNNING' && pct != null && <span className="text-slate-400 font-normal"> · {pct}%</span>}
       </td>
       <td className="py-2 px-3 text-sm text-slate-300">{run.tradeCount ?? '—'}</td>
+      <SettingsCell run={run} />
       <td className="py-2 px-3 text-sm">
         {run.status === 'RUNNING' && (
           <button onClick={(e) => { e.stopPropagation(); onCancel(run.id); }} disabled={cancelling}
@@ -267,9 +348,9 @@ function RunRow({ run, selected, onSelect, onCancel, cancelling }) {
 function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
   if (!runs.length) return <div className="text-sm text-slate-400 px-1">No backtest runs yet — configure one above.</div>;
   return (
-    <div className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto">
-      <table className="w-full min-w-[620px]">
-        <thead>
+    <div className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto max-h-[420px] overflow-y-auto">
+      <table className="w-full min-w-[900px]">
+        <thead className="sticky top-0 bg-slate-900 z-10">
           <tr className="text-left text-[11px] text-slate-500 uppercase tracking-wide">
             <th className="py-2 px-3">Run</th>
             <th className="py-2 px-3">Window</th>
@@ -277,6 +358,7 @@ function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
             <th className="py-2 px-3">Capital</th>
             <th className="py-2 px-3">Status</th>
             <th className="py-2 px-3">Trades</th>
+            <th className="py-2 px-3">Settings</th>
             <th className="py-2 px-3"></th>
           </tr>
         </thead>
@@ -456,15 +538,20 @@ function KpiCard({ title, stats, color, capital }) {
   );
 }
 
-function RunSummary({ runId }) {
+function RunSummary({ runId, status }) {
   const [summary, setSummary] = useState(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
     let alive = true;
+    // Refetch on `status` transitions too (e.g. RUNNING -> COMPLETED), not
+    // just when runId itself changes — otherwise a summary fetched while a
+    // run was still RUNNING (mostly blank/zero) sits stale in state forever
+    // once the run finishes, since the runId prop never changed. Previously
+    // this only refreshed on remount (switching tabs away and back).
     getBacktestSummary(runId).then((s) => alive && setSummary(s)).catch((e) => alive && setError(e.message));
     return () => { alive = false; };
-  }, [runId]);
+  }, [runId, status]);
 
   if (error) return <div className="text-sm text-red-300">{error}</div>;
   if (!summary) return <div className="text-sm text-slate-400">Loading summary…</div>;
@@ -736,6 +823,7 @@ export default function Backtest() {
   const [detailTab, setDetailTab] = useState('summary');
   const [error, setError] = useState('');
   const [cancellingId, setCancellingId] = useState(null);
+  const [formOpen, setFormOpen] = useState(false);
   const pollRef = useRef(null);
 
   const refresh = async () => {
@@ -777,8 +865,12 @@ export default function Backtest() {
   const selected = runs.find((r) => r.id === selectedId);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
+      {/* Run list + new-run form pinned at the top, collapsed by default, so
+          results are reachable without scrolling past a tall form first. */}
       <RunConfigForm
+        open={formOpen}
+        onToggleOpen={setFormOpen}
         onCreated={(id) => { setSelectedId(id); refresh(); }}
         blocked={!!running}
         blockedReason={running ? `Run #${running.id} is currently in progress — only one run at a time. Stuck? Use the Stop button on it below.` : ''}
@@ -790,7 +882,7 @@ export default function Backtest() {
 
       {selected && (
         <div className="space-y-3">
-          <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center justify-between flex-wrap gap-2 sticky top-0 bg-slate-950/95 backdrop-blur z-10 py-2 -mx-1 px-1">
             <div className="text-sm text-slate-300">
               Run #{selected.id} · {selected.startDate} → {selected.endDate} · {selected.trackMode}
               {selected.status === 'RUNNING' && selected.progressTotalDays
@@ -819,7 +911,7 @@ export default function Backtest() {
             <div className="text-sm text-amber-300">Run in progress — results below will update once trades are simulated. If progress hasn't moved in a while, use Stop to unblock the next run.</div>
           )}
 
-          {detailTab === 'summary' && <RunSummary runId={selected.id} />}
+          {detailTab === 'summary' && <RunSummary runId={selected.id} status={selected.status} />}
           {detailTab === 'day' && <DayDrilldown runId={selected.id} minDate={selected.startDate} maxDate={selected.endDate} />}
           {detailTab === 'trades' && <TradeLog runId={selected.id} />}
         </div>
