@@ -1,0 +1,42 @@
+-- VCP-style base-contraction entry filter (backtest-only).
+--
+-- Why this exists: screen_gpt.py has NO pattern-shape detection at all --
+-- grepping the whole file for vcp/pennant/contraction/flag/wedge/triangle/cup
+-- returns nothing. What the funnel actually screens for is:
+--   * Stage 1 SQL gates: liquidity, close > SMA200/EMA50, base_range_20d < 20%,
+--     volume ratio, prior upmove, giveback, volume dry-up, distance from 20d
+--     high, IFP score
+--   * compute_ifp_score(): a genuine Wyckoff-style accumulation footprint --
+--     counts up-days closing strong on surging volume, plus down-days on
+--     below-average volume
+--   * assess_base_quality(): 4 binary checks (prior_upmove, giveback,
+--     vol_dryup, near_breakout)
+--
+-- That is a "high, tight, volume-dry base near highs after a prior advance"
+-- screen. It captures roughly half of what a VCP is (volume dry-up, proximity
+-- to highs, prior uptrend) but it measures the base as ONE aggregate 20-day
+-- range. It never checks the defining VCP property: PROGRESSIVE CONTRACTION,
+-- i.e. successively tighter swings into the pivot. A stock that chopped in a
+-- wide range then tightened, and one that has been uniformly wide, can score
+-- identically on base_range_20d_pct.
+--
+-- Measured on the existing trades (runs #98 2026 + #105 2025), defining
+--   contraction = range(last 10 sessions) / range(prior 15 sessions)
+-- the relationship is monotonic across all four buckets:
+--     <0.60  (strong contraction) -> 55 trades, avgR  0.430, +25,647, 49.1% win
+--     0.60-0.85 (mild)            -> 82 trades, avgR  0.053,  +3,771, 40.2% win
+--     0.85-1.10 (flat)            -> 69 trades, avgR -0.059,  -3,146, 29.0% win
+--     >1.10  (expanding)          -> 58 trades, avgR -0.252, -11,651, 27.6% win
+--
+-- and it reproduces in EACH window independently (not a pooling artifact):
+--     #98  (2026): <0.7 -> 33 trades avgR 0.661 +21,034 | else 96 trades avgR  0.177 +17,823
+--     #105 (2025): <0.7 -> 46 trades avgR 0.017  +2,639 | else 89 trades avgR -0.339 -26,874
+-- i.e. in the losing window, the contracting-base trades were collectively
+-- PROFITABLE and the non-contracting ones accounted for essentially the whole
+-- loss -- which is exactly what VCP theory predicts and what the funnel
+-- currently has no way to express.
+--
+-- max_contraction_ratio = only take entries whose contraction ratio is <= this
+-- value. NULL (default) = no filter, existing behavior. Gates entries only.
+ALTER TABLE backtest_runs
+  ADD COLUMN IF NOT EXISTS max_contraction_ratio NUMERIC(5,3);

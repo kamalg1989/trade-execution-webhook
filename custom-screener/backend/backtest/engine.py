@@ -81,6 +81,18 @@ async def _run(run: dict, pool) -> None:
     # at/above its own trailing 20-session average (early in a recovery leg)
     # rather than still falling. See that migration for the measured split.
     entry_breadth_require_rising = bool(run.get("entry_breadth_require_rising"))
+    # Position sizing overrides (sql/013) — None keys fall back to production's
+    # hardcoded 0.25% risk / 10% max-capital per trade inside funnel._size_qty.
+    sizing = {
+        "risk_per_trade_pct": (float(run["risk_per_trade_pct"])
+                               if run.get("risk_per_trade_pct") is not None else None),
+        "max_capital_per_trade_pct": (float(run["max_capital_per_trade_pct"])
+                                      if run.get("max_capital_per_trade_pct") is not None else None),
+    }
+    # VCP-style contraction gate (sql/014) — see funnel.contraction_ratios()
+    # and that migration for the measured, cross-window edge.
+    max_contraction_ratio = (float(run["max_contraction_ratio"])
+                             if run.get("max_contraction_ratio") is not None else None)
     breadth_by_day: dict = {}
     if entry_breadth_max_pct is not None or entry_breadth_require_rising:
         # Window starts well before start_date so the 20-session average is
@@ -224,14 +236,24 @@ async def _run(run: dict, pool) -> None:
         # 2. today's candidates (quant funnel, always computed — cheap/local)
         if stage2_active:
             candidates = await funnel_stage2.build_candidates(
-                pool, day, capital, stage2_config_hash, gate_overrides, use_v2_ranking
+                pool, day, capital, stage2_config_hash, gate_overrides, use_v2_ranking, sizing
             )
         elif use_funnel_v2:
             candidates = await funnel_v2.build_candidates(
-                pool, day, capital, gate_overrides, use_v2_ranking
+                pool, day, capital, gate_overrides, use_v2_ranking, sizing
             )
         else:
-            candidates = await funnel.build_candidates(pool, day, capital)
+            candidates = await funnel.build_candidates(pool, day, capital, sizing)
+        # VCP contraction gate — drop candidates whose base isn't actually
+        # tightening into the pivot. Applied after the funnel builds/ranks
+        # candidates so it's uniform across all three funnel paths, and only
+        # ever removes rows (relative ranking of survivors is preserved).
+        # A symbol missing from the map (data gap) is kept, not dropped.
+        if max_contraction_ratio is not None and candidates:
+            ratios = await funnel.contraction_ratios(
+                pool, [c["symbol"] for c in candidates], day)
+            candidates = [c for c in candidates
+                          if ratios.get(c["symbol"], 0.0) <= max_contraction_ratio]
         cand_by_symbol = {c["symbol"]: c for c in candidates}
 
         quant_top3 = candidates[:max_picks_per_track] if track_mode in ("QUANT", "BOTH") else []

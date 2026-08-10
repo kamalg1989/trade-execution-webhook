@@ -170,19 +170,75 @@ async def _compute_signals_concurrent(
     return dict(pairs)
 
 
-def _size_qty(capital: float, base_stage: int, entry: float, risk_per_share: float) -> int:
-    """Mirrors screen_gpt.create_trade()'s sizing formula exactly (its two
-    hardcoded literals: 0.25% risk-per-trade, 10% max-capital-per-trade) —
-    kept here instead of calling create_trade() so quantity can be computed
-    per-run from a cached, capital-independent signal. Must stay in sync if
-    those literals ever change in screen_gpt.py."""
+# Production's two hardcoded sizing literals from screen_gpt.create_trade().
+# Used whenever a run doesn't override them (sql/013), so default behavior is
+# byte-identical to before those knobs existed.
+PROD_RISK_PER_TRADE_PCT = 0.25
+PROD_MAX_CAPITAL_PER_TRADE_PCT = 10.0
+
+
+CONTRACTION_RECENT_BARS = 10   # the "current, tightest" leg of the base
+CONTRACTION_PRIOR_BARS = 15    # the wider leg immediately before it
+
+
+async def contraction_ratios(pool, symbols: list[str], d: date) -> dict[str, float]:
+    """VCP-style progressive-contraction measure per symbol as of day `d`
+    (see sql/014 for the motivation and the measured edge).
+
+        ratio = high-low range of the last 10 sessions
+              / high-low range of the 15 sessions before those
+
+    < 1 means the base is tightening into the pivot (what a VCP/pennant
+    actually looks like); >= 1 means it's flat or widening. Computed in one
+    round trip for every symbol, entirely from ohlcv_data — screen_gpt.py
+    itself is untouched, so this can never affect live screening.
+
+    Symbols with no usable prior range are simply omitted, and the caller
+    treats "missing" as "don't filter it out" so a data gap can never
+    silently suppress an entry."""
+    if not symbols:
+        return {}
+    rows = await pool.fetch(
+        """
+        SELECT symbol,
+               (MAX(high) FILTER (WHERE rn <= $3) - MIN(low) FILTER (WHERE rn <= $3))
+             / NULLIF(MAX(high) FILTER (WHERE rn > $3) - MIN(low) FILTER (WHERE rn > $3), 0)
+               AS ratio
+        FROM (
+          SELECT symbol, high, low,
+                 row_number() OVER (PARTITION BY symbol ORDER BY time DESC) AS rn
+          FROM ohlcv_data
+          WHERE symbol = ANY($1) AND time::date < $2
+        ) t
+        WHERE rn <= $4
+        GROUP BY symbol
+        """,
+        symbols, d, CONTRACTION_RECENT_BARS,
+        CONTRACTION_RECENT_BARS + CONTRACTION_PRIOR_BARS,
+    )
+    return {r["symbol"]: float(r["ratio"]) for r in rows if r["ratio"] is not None}
+
+
+def _size_qty(capital: float, base_stage: int, entry: float, risk_per_share: float,
+              sizing: dict | None = None) -> int:
+    """Mirrors screen_gpt.create_trade()'s sizing formula — kept here instead
+    of calling create_trade() so quantity can be computed per-run from a
+    cached, capital-independent signal. Must stay in sync if those literals
+    ever change in screen_gpt.py.
+
+    `sizing` (optional, backtest-only — see sql/013) may override either
+    literal: {"risk_per_trade_pct": 0.5, "max_capital_per_trade_pct": 15}.
+    Omitted/None keys fall back to production's values."""
+    s = sizing or {}
+    risk_pct = s.get("risk_per_trade_pct") or PROD_RISK_PER_TRADE_PCT
+    cap_pct = s.get("max_capital_per_trade_pct") or PROD_MAX_CAPITAL_PER_TRADE_PCT
     stage_mult = screen_gpt.BASE_STAGE_SIZE_MULTIPLIER.get(base_stage, screen_gpt.BASE_STAGE_DEFAULT_MULTIPLIER)
-    qty_risk = int(capital * 0.0025 * stage_mult / risk_per_share)
-    qty_cap = int(capital * 0.10 * stage_mult / entry)
+    qty_risk = int(capital * (risk_pct / 100) * stage_mult / risk_per_share)
+    qty_cap = int(capital * (cap_pct / 100) * stage_mult / entry)
     return min(qty_risk, qty_cap)
 
 
-async def build_candidates(pool, d: date, capital: float) -> list[dict]:
+async def build_candidates(pool, d: date, capital: float, sizing: dict | None = None) -> list[dict]:
     """Full per-day candidate build: funnel survivors -> base-stage classify
     -> entry-technique/trigger resolve (cached) -> position size (not
     cached, capital-dependent). Returns only the stocks that pass every
@@ -235,7 +291,7 @@ async def build_candidates(pool, d: date, capital: float) -> list[dict]:
         entry, sl = float(sig["entry"]), float(sig["sl"])
         risk_per_share = float(sig["risk_per_share"])
         base_stage = sig["base_stage"]
-        qty = _size_qty(capital, base_stage, entry, risk_per_share)
+        qty = _size_qty(capital, base_stage, entry, risk_per_share, sizing)
         if qty <= 0:
             continue
         candidates.append({

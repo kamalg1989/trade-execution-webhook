@@ -30,15 +30,17 @@ WINDOWS = [("2025", "2025-01-01", "2025-08-08"), ("2026", "2026-01-01", "2026-08
 # pre-breadth-filter baseline and the optima may have shifted.
 BEST = {"entry_breadth_max_pct": 40.0, "entry_breadth_require_rising": True}
 
+# Round 3: VCP-style base-contraction gate (sql/014), layered on the best
+# breadth config, at the risk/trade level that won the sizing sweep.
+BEST3 = {**BEST, "risk_per_trade_pct": 1.0}
+
 COMBOS = [
-    ("best-basemax1", {**BEST, "stage2_base_stage_max_allowed": 1}),
-    ("best-basemax3", {**BEST, "stage2_base_stage_max_allowed": 3}),
-    ("best-basemax4", {**BEST, "stage2_base_stage_max_allowed": 4}),
-    ("best-gate-ifp-tighten", {**BEST, "gate_min_ifp_score": 0.75}),
-    ("best-gate-baserange-15", {**BEST, "gate_max_base_range_pct": 15.0}),
-    ("best-gate-turnover-tighten", {**BEST, "gate_min_turnover_cr": 10.0}),
-    ("best-gate-upmove-tighten", {**BEST, "gate_min_prior_upmove_pct": 30.0}),
-    ("best-sl8pct", {**BEST, "safety_sl_pct": 8.0}),
+    ("contraction0.7", {**BEST3, "max_contraction_ratio": 0.7}),
+    ("contraction0.85", {**BEST3, "max_contraction_ratio": 0.85}),
+    ("contraction0.6", {**BEST3, "max_contraction_ratio": 0.6}),
+    # contraction gate WITHOUT the breadth filter, to see how much of the
+    # breadth edge it already subsumes (both are "don't buy late/loose" ideas)
+    ("contraction0.7-noBreadth", {"risk_per_trade_pct": 1.0, "max_contraction_ratio": 0.7}),
 ]
 
 

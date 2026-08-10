@@ -51,6 +51,13 @@ function summarizeRunSettings(run) {
   const tags = [];
   if (run.maxPicksPerTrack != null && run.maxPicksPerTrack !== 3) tags.push(`top${run.maxPicksPerTrack}/track`);
   if (run.quantFunnelVariant === 'v2') tags.push('rank:v2');
+  // The validated edges — shown first-class so a run's identity is obvious
+  if (run.stage2BaseStageMaxAllowed != null) tags.push(`baseStage≤${run.stage2BaseStageMaxAllowed}`);
+  if (run.entryBreadthMaxPct != null) tags.push(`breadth<${run.entryBreadthMaxPct}%`);
+  if (run.entryBreadthRequireRising) tags.push('breadth↑');
+  if (run.maxContractionRatio != null) tags.push(`VCP≤${run.maxContractionRatio}`);
+  if (run.riskPerTradePct != null) tags.push(`risk${run.riskPerTradePct}%`);
+  if (run.maxCapitalPerTradePct != null) tags.push(`cap${run.maxCapitalPerTradePct}%`);
   for (const [key, fmt] of GATE_LABELS) {
     if (run[key] != null) tags.push(fmt(run[key]));
   }
@@ -88,15 +95,56 @@ function SettingsCell({ run }) {
 // ---------------- Run config form ----------------
 
 const DEFAULT_FORM = {
-  start_date: '', end_date: '', track_mode: 'BOTH', capital: 400000,
+  start_date: '', end_date: '', track_mode: 'QUANT', capital: 400000,
   restIndefinite: true, resting_window_days: 5,
-  stacking_guard: false, stacking_guard_mode: 'SKIP',
-  breakeven: true, half_booking: true, trailing: true, fixed_target: true,
-  ema10_trail: false, ema21_trail: false, ema50_trail: false,
-  chandelier_trail: false, swing_trail: false,
+  stacking_guard: true, stacking_guard_mode: 'OVERRIDE',
+  max_picks_per_track: 2,
+  // Validated edges (see PRESETS below / sql/011-014 migration comments)
+  stage2_base_stage_max_allowed: 2,
+  entry_breadth_max_pct: 40,
+  entry_breadth_require_rising: true,
+  max_contraction_ratio: '',
+  risk_per_trade_pct: '',
+  // Exits — defaults are the combination that won every sweep so far
+  breakeven: true, half_booking: true, trailing: true, fixed_target: false,
+  ema21_trail: true,
+  ema10_trail: false, ema50_trail: false, chandelier_trail: false, swing_trail: false,
   failed_breakout_exit: false, swing_break_exit: false,
-  safety_sl_pct: 8.0, slippage_pct: 0.10, brokerage_per_order: 0.0, chandelier_atr_mult: 3.0,
+  safety_sl_pct: 10.0, slippage_pct: 0.10, brokerage_per_order: 0.0, chandelier_atr_mult: 3.0,
+  max_capital_per_trade_pct: '', min_position_value: '',
   notes: '',
+};
+
+// One-click starting points. "Best known" is the configuration that came out
+// ahead across BOTH validation windows (2025 + 2026) in the sweeps; "Production
+// today" is what screen_gpt.py actually runs right now, for A/B comparison.
+const PRESETS = {
+  best: {
+    label: 'Best known', hint: 'Winner across both validation windows',
+    values: {
+      track_mode: 'QUANT', max_picks_per_track: 2, stage2_base_stage_max_allowed: 2,
+      entry_breadth_max_pct: 40, entry_breadth_require_rising: true,
+      max_contraction_ratio: 0.7, risk_per_trade_pct: 1.0,
+      stacking_guard: true, stacking_guard_mode: 'OVERRIDE', safety_sl_pct: 10,
+      breakeven: true, half_booking: true, trailing: true, fixed_target: false,
+      ema21_trail: true, ema10_trail: false, ema50_trail: false,
+      chandelier_trail: false, swing_trail: false,
+      failed_breakout_exit: false, swing_break_exit: false,
+    },
+  },
+  production: {
+    label: 'Production today', hint: 'What screen_gpt.py currently runs',
+    values: {
+      track_mode: 'QUANT', max_picks_per_track: 3, stage2_base_stage_max_allowed: '',
+      entry_breadth_max_pct: '', entry_breadth_require_rising: false,
+      max_contraction_ratio: '', risk_per_trade_pct: '',
+      stacking_guard: true, stacking_guard_mode: 'OVERRIDE', safety_sl_pct: 8,
+      breakeven: true, half_booking: true, trailing: true, fixed_target: true,
+      ema21_trail: false, ema10_trail: false, ema50_trail: false,
+      chandelier_trail: false, swing_trail: false,
+      failed_breakout_exit: false, swing_break_exit: false,
+    },
+  },
 };
 
 function Toggle({ label, checked, onChange, hint }) {
@@ -108,6 +156,17 @@ function Toggle({ label, checked, onChange, hint }) {
         <span className="text-sm text-slate-200">{label}</span>
         {hint && <span className="block text-[11px] text-slate-500">{hint}</span>}
       </span>
+    </label>
+  );
+}
+
+function Field({ label, hint, value, onChange, type = 'text', ...rest }) {
+  return (
+    <label className="text-xs text-slate-400 flex flex-col gap-1">
+      <span>{label}</span>
+      <input type={type} value={value} onChange={(e) => onChange(e.target.value)}
+        className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" {...rest} />
+      {hint && <span className="text-[11px] text-slate-500 leading-snug">{hint}</span>}
     </label>
   );
 }
@@ -124,12 +183,21 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
     setSubmitting(true);
     setError('');
     try {
+      const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
       const payload = {
         start_date: f.start_date, end_date: f.end_date, track_mode: f.track_mode,
         capital: Number(f.capital) || 400000,
         resting_window_days: f.restIndefinite ? null : Number(f.resting_window_days) || null,
         stacking_guard: f.stacking_guard,
         stacking_guard_mode: f.stacking_guard ? f.stacking_guard_mode : null,
+        max_picks_per_track: Number(f.max_picks_per_track) || 2,
+        stage2_base_stage_max_allowed: numOrNull(f.stage2_base_stage_max_allowed),
+        entry_breadth_max_pct: numOrNull(f.entry_breadth_max_pct),
+        entry_breadth_require_rising: f.entry_breadth_require_rising,
+        max_contraction_ratio: numOrNull(f.max_contraction_ratio),
+        risk_per_trade_pct: numOrNull(f.risk_per_trade_pct),
+        max_capital_per_trade_pct: numOrNull(f.max_capital_per_trade_pct),
+        min_position_value: Number(f.min_position_value) || 0,
         exit_config: {
           breakeven: f.breakeven, half_booking: f.half_booking,
           trailing: f.trailing, fixed_target: f.fixed_target,
@@ -137,7 +205,7 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
           chandelier_trail: f.chandelier_trail, swing_trail: f.swing_trail,
           failed_breakout_exit: f.failed_breakout_exit, swing_break_exit: f.swing_break_exit,
         },
-        safety_sl_pct: Number(f.safety_sl_pct) || 8.0,
+        safety_sl_pct: Number(f.safety_sl_pct) || 10.0,
         slippage_pct: Number(f.slippage_pct) || 0,
         brokerage_per_order: Number(f.brokerage_per_order) || 0,
         chandelier_atr_mult: Number(f.chandelier_atr_mult) || 3.0,
@@ -171,6 +239,18 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
           className="text-xs text-slate-400 hover:text-white px-2 py-1">Collapse ✕</button>
       </div>
 
+      <div className="flex flex-wrap items-center gap-2 pb-1">
+        <span className="text-[11px] uppercase tracking-wide text-slate-500">Start from</span>
+        {Object.entries(PRESETS).map(([key, p]) => (
+          <button key={key} type="button" title={p.hint}
+            onClick={() => setF((s0) => ({ ...s0, ...p.values }))}
+            className="text-xs px-2.5 py-1 rounded border border-slate-600 bg-slate-800 hover:bg-slate-700 text-slate-200">
+            {p.label}
+          </button>
+        ))}
+        <span className="text-[11px] text-slate-500">then tweak below</span>
+      </div>
+
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <label className="text-xs text-slate-400 flex flex-col gap-1">
           Start date
@@ -188,7 +268,7 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
             className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
             <option value="QUANT">Quant only</option>
             <option value="AI">AI only</option>
-            <option value="BOTH">Both (top-3 + top-3)</option>
+            <option value="BOTH">Both</option>
           </select>
         </label>
         <label className="text-xs text-slate-400 flex flex-col gap-1">
@@ -198,9 +278,50 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
         </label>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1 border-t border-slate-800">
-        <div className="space-y-2 pt-3">
-          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Entry order</div>
+      {/* ---- The four settings that actually moved the needle in testing ---- */}
+      <div className="pt-3 border-t border-slate-800">
+        <div className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-2">
+          Edges — validated on both 2025 &amp; 2026 windows
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
+          <Field label="Max base stage" hint="2 = only fresh 1st/2nd bases. Best on both windows; 4 = production."
+            value={f.stage2_base_stage_max_allowed} onChange={set('stage2_base_stage_max_allowed')}
+            type="number" min="1" max="6" placeholder="blank = production (4)" />
+          <Field label="Skip entries above breadth %" hint="Don't buy when this much of the market is already above its 200SMA. 40 tested best."
+            value={f.entry_breadth_max_pct} onChange={set('entry_breadth_max_pct')}
+            type="number" min="5" max="100" step="1" placeholder="blank = no filter" />
+          <Field label="Max contraction ratio (VCP)" hint="range(last 10 bars)/range(prior 15). ≤0.7 = base is tightening into the pivot."
+            value={f.max_contraction_ratio} onChange={set('max_contraction_ratio')}
+            type="number" min="0.2" max="2" step="0.05" placeholder="blank = no filter" />
+          <Field label="Risk per trade %" hint="Production is 0.25% (very conservative). 1.0% scaled returns more than drawdown."
+            value={f.risk_per_trade_pct} onChange={set('risk_per_trade_pct')}
+            type="number" min="0.05" max="3" step="0.05" placeholder="blank = production (0.25)" />
+          <div className="sm:col-span-2">
+            <Toggle label="Only enter while breadth is rising" checked={f.entry_breadth_require_rising}
+              onChange={set('entry_breadth_require_rising')}
+              hint="Breadth ≥ its own 20-session average — buy early in a recovery, not into a decline. Biggest single drawdown reducer found." />
+          </div>
+        </div>
+      </div>
+
+      {/* ---- Core, frequently-changed knobs ---- */}
+      <div className="pt-3 border-t border-slate-800 grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Position &amp; entry</div>
+          <label className="text-xs text-slate-400 flex items-center gap-2">
+            Picks per day
+            <input type="number" min="1" max="10" value={f.max_picks_per_track}
+              onChange={(e) => set('max_picks_per_track')(e.target.value)}
+              className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
+            <span className="text-slate-500">(2 tested best)</span>
+          </label>
+          <label className="text-xs text-slate-400 flex items-center gap-2">
+            Safety SL floor
+            <input type="number" min="1" max="30" step="0.5" value={f.safety_sl_pct}
+              onChange={(e) => set('safety_sl_pct')(e.target.value)}
+              className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
+            % below entry
+          </label>
           <Toggle label="Rest indefinitely until window ends" checked={f.restIndefinite}
             onChange={set('restIndefinite')} />
           {!f.restIndefinite && (
@@ -209,12 +330,12 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
               <input type="number" min="1" value={f.resting_window_days}
                 onChange={(e) => set('resting_window_days')(e.target.value)}
                 className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
-              trading days unfilled
+              days unfilled
             </label>
           )}
           <Toggle label="Position-stacking guard" checked={f.stacking_guard}
             onChange={set('stacking_guard')}
-            hint="OPEN positions in a symbol always skip a new pick; this controls the PENDING case." />
+            hint="Never stack a second buy into a symbol already held." />
           {f.stacking_guard && (
             <label className="text-xs text-slate-400 flex items-center gap-2 ml-6">
               If already PENDING
@@ -227,74 +348,72 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
           )}
         </div>
 
-        <div className="space-y-2 pt-3">
-          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
-            Exit rules (always-on floor: custom % intraday + close-based structural SL)
-          </div>
-          <label className="text-xs text-slate-400 flex items-center gap-2">
-            Safety SL floor
-            <input type="number" min="1" max="30" step="0.5" value={f.safety_sl_pct}
-              onChange={(e) => set('safety_sl_pct')(e.target.value)}
-              className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
-            % below entry (gap-realistic fill)
-          </label>
+        <div className="space-y-2">
+          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Exits</div>
           <Toggle label="Breakeven move at +1R" checked={f.breakeven} onChange={set('breakeven')} />
           <Toggle label="Half-book + trail rest at +2R" checked={f.half_booking} onChange={set('half_booking')} />
-          <Toggle label="Trailing stop ladder" checked={f.trailing} onChange={set('trailing')} />
-          <Toggle label="Fixed target exit (2R)" checked={f.fixed_target} onChange={set('fixed_target')} />
+          <Toggle label="Trailing stop ladder (R-based)" checked={f.trailing} onChange={set('trailing')} />
+          <Toggle label="EMA21 trail" checked={f.ema21_trail} onChange={set('ema21_trail')}
+            hint="Beat the pure R-ladder on both windows — recommended on." />
+          <Toggle label="Fixed target exit (2R)" checked={f.fixed_target} onChange={set('fixed_target')}
+            hint="Caps winners; testing favoured leaving this off." />
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1 border-t border-slate-800">
-        <div className="space-y-2 pt-3">
-          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Trend-following trail</div>
-          <Toggle label="EMA10 trail" checked={f.ema10_trail} onChange={set('ema10_trail')}
-            hint="SL ratchets up to EMA10 (never down)." />
-          <Toggle label="EMA21 trail" checked={f.ema21_trail} onChange={set('ema21_trail')} />
-          <Toggle label="EMA50 trail" checked={f.ema50_trail} onChange={set('ema50_trail')} />
-          <Toggle label="Chandelier trail (ATR)" checked={f.chandelier_trail} onChange={set('chandelier_trail')}
-            hint="Highest high since entry, minus ATR × multiple." />
-          {f.chandelier_trail && (
-            <label className="text-xs text-slate-400 flex items-center gap-2 ml-6">
-              ATR multiple
-              <input type="number" min="1" max="8" step="0.5" value={f.chandelier_atr_mult}
-                onChange={(e) => set('chandelier_atr_mult')(e.target.value)}
-                className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
-            </label>
-          )}
-          <Toggle label="Swing-low trail" checked={f.swing_trail} onChange={set('swing_trail')}
-            hint="SL ratchets up to the most recent confirmed swing low." />
-        </div>
-
-        <div className="space-y-2 pt-3">
-          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Structural/technical exits</div>
-          <Toggle label="Failed-breakout exit" checked={f.failed_breakout_exit} onChange={set('failed_breakout_exit')}
-            hint="Closes back below the entry trigger, before breakeven/half-book, exits immediately." />
-          <Toggle label="Swing-low break exit" checked={f.swing_break_exit} onChange={set('swing_break_exit')}
-            hint="Close below the most recent confirmed swing low exits immediately." />
-
-          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-3">Realism — costs</div>
-          <div className="text-[11px] text-slate-500">
-            STT (0.1% both legs), stamp duty (0.015% buy), exchange/SEBI charges (~0.003%)
-            and DP charge (~₹14.75 per exit) are applied automatically, matching Dhan's real
-            equity-delivery charges (Dhan brokerage on delivery is ₹0).
+      {/* ---- Everything that tested neutral-or-worse, tucked away ---- */}
+      <details className="pt-2 border-t border-slate-800">
+        <summary className="cursor-pointer text-xs font-semibold text-slate-400 uppercase tracking-wide py-2 hover:text-slate-200">
+          Advanced / experimental — tested neutral or worse
+        </summary>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+          <div className="space-y-2">
+            <div className="text-[11px] text-slate-500">Alternative trails (EMA21 above outperformed these)</div>
+            <Toggle label="EMA10 trail" checked={f.ema10_trail} onChange={set('ema10_trail')} />
+            <Toggle label="EMA50 trail" checked={f.ema50_trail} onChange={set('ema50_trail')} />
+            <Toggle label="Chandelier trail (ATR)" checked={f.chandelier_trail} onChange={set('chandelier_trail')}
+              hint="Tested identical to EMA21 — no measurable gain." />
+            {f.chandelier_trail && (
+              <label className="text-xs text-slate-400 flex items-center gap-2 ml-6">
+                ATR multiple
+                <input type="number" min="1" max="8" step="0.5" value={f.chandelier_atr_mult}
+                  onChange={(e) => set('chandelier_atr_mult')(e.target.value)}
+                  className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
+              </label>
+            )}
+            <Toggle label="Swing-low trail" checked={f.swing_trail} onChange={set('swing_trail')} />
+            <Toggle label="Failed-breakout exit" checked={f.failed_breakout_exit} onChange={set('failed_breakout_exit')}
+              hint="Helps a bad regime, but gave up ~65% of the good regime's gains." />
+            <Toggle label="Swing-low break exit" checked={f.swing_break_exit} onChange={set('swing_break_exit')} />
           </div>
-          <label className="text-xs text-slate-400 flex items-center gap-2">
-            Slippage
-            <input type="number" min="0" max="2" step="0.01" value={f.slippage_pct}
-              onChange={(e) => set('slippage_pct')(e.target.value)}
-              className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
-            % per fill (flat rate)
-          </label>
-          <label className="text-xs text-slate-400 flex items-center gap-2">
-            Brokerage override
-            <input type="number" min="0" step="1" value={f.brokerage_per_order}
-              onChange={(e) => set('brokerage_per_order')(e.target.value)}
-              className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
-            ₹ per order (0 = Dhan delivery default)
-          </label>
+          <div className="space-y-2">
+            <div className="text-[11px] text-slate-500">Sizing &amp; cost realism</div>
+            <Field label="Max capital per trade %" hint="Production 10%."
+              value={f.max_capital_per_trade_pct} onChange={set('max_capital_per_trade_pct')}
+              type="number" min="1" max="50" step="1" placeholder="blank = production (10)" />
+            <Field label="Min position value ₹" hint="Skip positions too small to absorb flat costs. Tested: hurt returns."
+              value={f.min_position_value} onChange={set('min_position_value')}
+              type="number" min="0" step="1000" placeholder="0 = off" />
+            <label className="text-xs text-slate-400 flex items-center gap-2">
+              Slippage
+              <input type="number" min="0" max="2" step="0.01" value={f.slippage_pct}
+                onChange={(e) => set('slippage_pct')(e.target.value)}
+                className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
+              % per fill
+            </label>
+            <label className="text-xs text-slate-400 flex items-center gap-2">
+              Brokerage override
+              <input type="number" min="0" step="1" value={f.brokerage_per_order}
+                onChange={(e) => set('brokerage_per_order')(e.target.value)}
+                className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
+              ₹/order
+            </label>
+            <div className="text-[11px] text-slate-500">
+              STT, stamp duty, exchange/SEBI charges and the ₹14.75 DP charge are always
+              applied automatically (Dhan delivery: ₹0 brokerage).
+            </div>
+          </div>
         </div>
-      </div>
+      </details>
 
       <label className="text-xs text-slate-400 flex flex-col gap-1">
         Notes (optional)

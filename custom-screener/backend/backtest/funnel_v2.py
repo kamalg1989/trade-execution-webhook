@@ -112,6 +112,7 @@ async def build_candidates(
     pool, d: date, capital: float,
     gate_overrides: dict | None = None,
     use_v2_ranking: bool = False,
+    sizing: dict | None = None,
 ) -> list[dict]:
     """Same entry/sizing/caching plumbing as funnel.py's build_candidates()
     (reused directly, not duplicated) -- only the survivor gate thresholds
@@ -161,7 +162,7 @@ async def build_candidates(
         entry, sl = float(sig["entry"]), float(sig["sl"])
         risk_per_share = float(sig["risk_per_share"])
         base_stage = sig["base_stage"]
-        qty = v1._size_qty(capital, base_stage, entry, risk_per_share)
+        qty = v1._size_qty(capital, base_stage, entry, risk_per_share, sizing)
         if qty <= 0:
             continue
         candidates.append({
