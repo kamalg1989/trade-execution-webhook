@@ -50,7 +50,20 @@ async def _run(run: dict, pool) -> None:
     stacking_guard_mode = run["stacking_guard_mode"]
     min_position_value = float(run.get("min_position_value") or 0)
     max_picks_per_track = int(run.get("max_picks_per_track") or 3)
-    quant_funnel = funnel_v2 if run.get("quant_funnel_variant") == "v2" else funnel
+    # Stage 1 gate-threshold overrides (sql/007_backtest_stage1_gates.sql) --
+    # any subset of the 8 SQL gate thresholds, NULL = production default.
+    # An empty dict means funnel_v2's gate reproduces funnel.py's exactly, so
+    # we only pay the funnel_v2 code path when there's something to override
+    # (a gate override and/or the separately-tested v2 ranking experiment).
+    gate_overrides = {
+        k: float(run[f"gate_{k}"]) for k in (
+            "min_turnover_cr", "max_base_range_pct", "min_vol_mult",
+            "min_prior_upmove_pct", "max_giveback_pct", "max_vol_dryup_ratio",
+            "max_dist_from_high_pct", "min_ifp_score",
+        ) if run.get(f"gate_{k}") is not None
+    }
+    use_v2_ranking = run.get("quant_funnel_variant") == "v2"
+    use_funnel_v2 = bool(gate_overrides) or use_v2_ranking
     exit_config = run["exit_config"] if isinstance(run["exit_config"], dict) else {}
     import json as _json
     if isinstance(run["exit_config"], str):
@@ -158,7 +171,12 @@ async def _run(run: dict, pool) -> None:
         active = still_active
 
         # 2. today's candidates (quant funnel, always computed — cheap/local)
-        candidates = await quant_funnel.build_candidates(pool, day, capital)
+        if use_funnel_v2:
+            candidates = await funnel_v2.build_candidates(
+                pool, day, capital, gate_overrides, use_v2_ranking
+            )
+        else:
+            candidates = await funnel.build_candidates(pool, day, capital)
         cand_by_symbol = {c["symbol"]: c for c in candidates}
 
         quant_top3 = candidates[:max_picks_per_track] if track_mode in ("QUANT", "BOTH") else []

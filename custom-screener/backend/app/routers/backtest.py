@@ -84,10 +84,23 @@ class RunCreate(BaseModel):
     # Cap picks/day/track (default 3 matches existing behavior) — lower it
     # to test "fewer, higher-conviction trades" against cost drag.
     max_picks_per_track: int = Field(3, ge=1, le=10)
-    # 'v1' = production-mirroring funnel.py (default, unchanged). 'v2' =
-    # experimental re-ranked/re-gated funnel_v2.py, backtest-only, for
-    # validating selection-criteria changes before touching screen_gpt.py.
+    # 'v1' = production ranking (-ifp_score, base_range_pct asc), unchanged.
+    # 'v2' = the already-tested-and-rejected alternate ranking from run
+    # #60/#61 (base-range-target distance, turnover asc) — kept available but
+    # off by default; independent of the gate_* overrides below.
     quant_funnel_variant: str = Field("v1", pattern="^(v1|v2)$")
+    # Stage 1 SQL gate threshold overrides (sql/007_backtest_stage1_gates.sql)
+    # — any subset; None (default) = use screen_gpt.py's current production
+    # value for that gate. Backtest-only, routed through funnel_v2.py, never
+    # touches production screen_gpt.py.
+    gate_min_turnover_cr: float | None = None
+    gate_max_base_range_pct: float | None = None
+    gate_min_vol_mult: float | None = None
+    gate_min_prior_upmove_pct: float | None = None
+    gate_max_giveback_pct: float | None = None
+    gate_max_vol_dryup_ratio: float | None = None
+    gate_max_dist_from_high_pct: float | None = None
+    gate_min_ifp_score: float | None = None
 
 
 def _pool(request: Request):
@@ -119,8 +132,12 @@ async def create_run(body: RunCreate, request: Request):
            stacking_guard, stacking_guard_mode, exit_config, status, params,
            safety_sl_pct, slippage_pct, brokerage_per_order, chandelier_atr_mult,
            stt_pct, stamp_duty_pct, exchange_charges_pct, dp_charge, min_position_value,
-           max_picks_per_track, quant_funnel_variant)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+           max_picks_per_track, quant_funnel_variant,
+           gate_min_turnover_cr, gate_max_base_range_pct, gate_min_vol_mult,
+           gate_min_prior_upmove_pct, gate_max_giveback_pct, gate_max_vol_dryup_ratio,
+           gate_max_dist_from_high_pct, gate_min_ifp_score)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+                $21,$22,$23,$24,$25,$26,$27,$28)
         RETURNING id
         """,
         body.start_date, body.end_date, body.track_mode, body.capital,
@@ -130,6 +147,9 @@ async def create_run(body: RunCreate, request: Request):
         body.safety_sl_pct, body.slippage_pct, body.brokerage_per_order, body.chandelier_atr_mult,
         body.stt_pct, body.stamp_duty_pct, body.exchange_charges_pct, body.dp_charge,
         body.min_position_value, body.max_picks_per_track, body.quant_funnel_variant,
+        body.gate_min_turnover_cr, body.gate_max_base_range_pct, body.gate_min_vol_mult,
+        body.gate_min_prior_upmove_pct, body.gate_max_giveback_pct, body.gate_max_vol_dryup_ratio,
+        body.gate_max_dist_from_high_pct, body.gate_min_ifp_score,
     )
     run_id = row["id"]
 
@@ -232,6 +252,14 @@ def _run_to_json(r) -> dict:
         "minPositionValue": float(d["min_position_value"]) if d.get("min_position_value") is not None else None,
         "maxPicksPerTrack": d.get("max_picks_per_track"),
         "quantFunnelVariant": d.get("quant_funnel_variant"),
+        "gateMinTurnoverCr": float(d["gate_min_turnover_cr"]) if d.get("gate_min_turnover_cr") is not None else None,
+        "gateMaxBaseRangePct": float(d["gate_max_base_range_pct"]) if d.get("gate_max_base_range_pct") is not None else None,
+        "gateMinVolMult": float(d["gate_min_vol_mult"]) if d.get("gate_min_vol_mult") is not None else None,
+        "gateMinPriorUpmovePct": float(d["gate_min_prior_upmove_pct"]) if d.get("gate_min_prior_upmove_pct") is not None else None,
+        "gateMaxGivebackPct": float(d["gate_max_giveback_pct"]) if d.get("gate_max_giveback_pct") is not None else None,
+        "gateMaxVolDryupRatio": float(d["gate_max_vol_dryup_ratio"]) if d.get("gate_max_vol_dryup_ratio") is not None else None,
+        "gateMaxDistFromHighPct": float(d["gate_max_dist_from_high_pct"]) if d.get("gate_max_dist_from_high_pct") is not None else None,
+        "gateMinIfpScore": float(d["gate_min_ifp_score"]) if d.get("gate_min_ifp_score") is not None else None,
     }
 
 
