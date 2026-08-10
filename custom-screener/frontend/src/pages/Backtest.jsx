@@ -74,11 +74,11 @@ function SettingsCell({ run }) {
   const notes = run.params?.notes;
   const full = [notes, ...tags].filter(Boolean).join(' · ');
   return (
-    <td className="py-2 px-3 text-xs text-slate-400 max-w-[280px]" title={full || undefined}>
-      {notes && <div className="text-slate-300 truncate">{notes}</div>}
+    <td className="py-1.5 px-2 text-[11px] text-slate-400 min-w-[220px]" title={full || undefined}>
+      {notes && <div className="text-slate-300 truncate max-w-[320px]">{notes}</div>}
       <div className="flex flex-wrap gap-1 mt-0.5">
         {tags.length ? tags.map((t, i) => (
-          <span key={i} className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 whitespace-nowrap">{t}</span>
+          <span key={i} className="px-1 py-0.5 rounded bg-slate-800 border border-slate-700 whitespace-nowrap leading-tight">{t}</span>
         )) : !notes ? <span className="text-slate-600">defaults</span> : null}
       </div>
     </td>
@@ -318,26 +318,31 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
 
 // ---------------- Run list ----------------
 
+// Drop the year for the compact run-list column — "2026-01-01" -> "01-01".
+const fmtWindowShort = (s, e) => `${s?.slice(5) ?? ''}→${e?.slice(5) ?? ''}`;
+
 function RunRow({ run, selected, onSelect, onCancel, cancelling }) {
   const pct = run.progressTotalDays ? Math.round((run.progressDay / run.progressTotalDays) * 100) : null;
   return (
     <tr onClick={() => onSelect(run.id)}
       className={`cursor-pointer border-t border-slate-800 hover:bg-slate-800/40 ${selected ? 'bg-slate-800/60' : ''}`}>
-      <td className="py-2 px-3 text-sm text-slate-200">#{run.id}</td>
-      <td className="py-2 px-3 text-sm text-slate-300">{run.startDate} → {run.endDate}</td>
-      <td className="py-2 px-3 text-sm text-slate-300">{run.trackMode}</td>
-      <td className="py-2 px-3 text-sm text-slate-300">{fmtInr(run.capital)}</td>
-      <td className={`py-2 px-3 text-sm font-semibold ${STATUS_COLOR[run.status] || 'text-slate-300'}`}>
+      <td className="py-1.5 px-2 text-xs text-slate-200 whitespace-nowrap">#{run.id}</td>
+      <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap" title={`${run.startDate} → ${run.endDate}`}>
+        {fmtWindowShort(run.startDate, run.endDate)}
+      </td>
+      <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap">{run.trackMode}</td>
+      <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap">{fmtInrCompact(run.capital)}</td>
+      <td className={`py-1.5 px-2 text-xs font-semibold whitespace-nowrap ${STATUS_COLOR[run.status] || 'text-slate-300'}`}>
         {run.status}
         {run.status === 'RUNNING' && pct != null && <span className="text-slate-400 font-normal"> · {pct}%</span>}
       </td>
-      <td className="py-2 px-3 text-sm text-slate-300">{run.tradeCount ?? '—'}</td>
+      <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap">{run.tradeCount ?? '—'}</td>
       <SettingsCell run={run} />
-      <td className="py-2 px-3 text-sm">
+      <td className="py-1.5 px-2 text-xs">
         {run.status === 'RUNNING' && (
           <button onClick={(e) => { e.stopPropagation(); onCancel(run.id); }} disabled={cancelling}
-            className="px-2 py-1 text-xs rounded bg-red-900/60 border border-red-700 text-red-200 hover:bg-red-900 disabled:opacity-50">
-            {cancelling ? 'Stopping…' : 'Stop'}
+            className="px-1.5 py-0.5 text-[11px] rounded bg-red-900/60 border border-red-700 text-red-200 hover:bg-red-900 disabled:opacity-50">
+            {cancelling ? '…' : 'Stop'}
           </button>
         )}
       </td>
@@ -348,18 +353,18 @@ function RunRow({ run, selected, onSelect, onCancel, cancelling }) {
 function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
   if (!runs.length) return <div className="text-sm text-slate-400 px-1">No backtest runs yet — configure one above.</div>;
   return (
-    <div className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto max-h-[420px] overflow-y-auto">
-      <table className="w-full min-w-[900px]">
+    <div className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto max-h-[480px] overflow-y-auto">
+      <table className="w-full table-auto">
         <thead className="sticky top-0 bg-slate-900 z-10">
-          <tr className="text-left text-[11px] text-slate-500 uppercase tracking-wide">
-            <th className="py-2 px-3">Run</th>
-            <th className="py-2 px-3">Window</th>
-            <th className="py-2 px-3">Track</th>
-            <th className="py-2 px-3">Capital</th>
-            <th className="py-2 px-3">Status</th>
-            <th className="py-2 px-3">Trades</th>
-            <th className="py-2 px-3">Settings</th>
-            <th className="py-2 px-3"></th>
+          <tr className="text-left text-[10px] text-slate-500 uppercase tracking-wide">
+            <th className="py-1.5 px-2">Run</th>
+            <th className="py-1.5 px-2">Window</th>
+            <th className="py-1.5 px-2">Track</th>
+            <th className="py-1.5 px-2">Capital</th>
+            <th className="py-1.5 px-2">Status</th>
+            <th className="py-1.5 px-2">Trades</th>
+            <th className="py-1.5 px-2">Settings</th>
+            <th className="py-1.5 px-2"></th>
           </tr>
         </thead>
         <tbody>
@@ -876,7 +881,7 @@ export default function Backtest() {
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[420px_1fr] gap-4 items-start">
+    <div className="grid grid-cols-1 lg:grid-cols-[760px_1fr] gap-4 items-start">
       {/* Left: new-run form + run list — pinned so it stays visible while
           the right-hand detail panel is what scrolls. */}
       <div className="space-y-3 lg:sticky lg:top-4">
