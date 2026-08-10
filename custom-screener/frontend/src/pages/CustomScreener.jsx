@@ -120,7 +120,7 @@ export default function CustomScreener() {
   useEffect(() => () => clearInterval(pollRef.current), []);
 
   return (
-    <div className="min-h-screen text-slate-100 p-4 sm:p-6 max-w-7xl mx-auto space-y-4">
+    <div className="min-h-screen text-slate-100 p-4 sm:p-6 max-w-[1800px] mx-auto space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-bold">Custom Screener</h1>

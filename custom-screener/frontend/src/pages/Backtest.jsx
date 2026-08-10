@@ -463,7 +463,7 @@ function EquityCurve({ points, capital }) {
       {!visible.length ? (
         <div className="text-sm text-slate-500 py-8 text-center">Toggle Realized or Unrealized to see the curve.</div>
       ) : (
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-64">
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="w-full h-64">
           {/* Y gridlines + ₹ / % labels — values are "nice" round steps, not raw min/max fractions */}
           {yTicks.map((v, i) => (
             <g key={i}>
