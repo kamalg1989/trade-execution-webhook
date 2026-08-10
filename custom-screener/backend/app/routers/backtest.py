@@ -22,6 +22,20 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]  # custom-screener/backend/
 LOG_DIR = Path("/tmp/ohm_backtest_logs")
 LOG_DIR.mkdir(exist_ok=True)
 
+# Backtest subprocess concurrency, tuned to the VPS's current RAM tier —
+# override via env instead of code edit if the droplet is resized again.
+# Chart rendering (matplotlib) is what actually OOM-killed the process in
+# testing, not the Gemini network call — so MAX_CONCURRENT_RENDER is the
+# tight one, MAX_CONCURRENT_AI (symbols overlapping while waiting on Gemini)
+# can run well ahead of it.
+#   961MB (old $6 droplet):  AI=4  RENDER=1  (verified stable, tested live)
+#   2GB   ($12 droplet):     AI=8  RENDER=2  (headroom estimate — watch
+#                             `free -h` / dmesg on the first real run after
+#                             the resize; dial back toward the 961MB values
+#                             if it swaps hard or OOMs)
+BACKTEST_MAX_CONCURRENT_AI = os.getenv("BACKTEST_MAX_CONCURRENT_AI", "8")
+BACKTEST_MAX_CONCURRENT_RENDER = os.getenv("BACKTEST_MAX_CONCURRENT_RENDER", "2")
+
 
 class ExitConfig(BaseModel):
     breakeven: bool = True
@@ -53,8 +67,27 @@ class RunCreate(BaseModel):
     # sql/004_backtest_costs_and_rules.sql — defaults mirror the DB defaults).
     safety_sl_pct: float = 8.0
     slippage_pct: float = 0.10
-    brokerage_per_order: float = 20.0
     chandelier_atr_mult: float = 3.0
+    # Real Dhan equity-delivery cost model (sql/005_backtest_dhan_costs.sql —
+    # Dhan charges zero brokerage on delivery; the old brokerage_per_order=20
+    # default was actually modeling Dhan's *intraday* rate). brokerage_per_order
+    # is kept at 0 by default and only exists as a knob for a different broker.
+    brokerage_per_order: float = 0.0
+    stt_pct: float = 0.100
+    stamp_duty_pct: float = 0.015
+    exchange_charges_pct: float = 0.0030
+    dp_charge: float = 14.75
+    # Skip a candidate whose position value (entry x qty) falls below this —
+    # flat per-trade costs (DP charge, stamp duty) disproportionately tax
+    # tiny positions. See sql/006_backtest_min_position.sql.
+    min_position_value: float = 0.0
+    # Cap picks/day/track (default 3 matches existing behavior) — lower it
+    # to test "fewer, higher-conviction trades" against cost drag.
+    max_picks_per_track: int = Field(3, ge=1, le=10)
+    # 'v1' = production-mirroring funnel.py (default, unchanged). 'v2' =
+    # experimental re-ranked/re-gated funnel_v2.py, backtest-only, for
+    # validating selection-criteria changes before touching screen_gpt.py.
+    quant_funnel_variant: str = Field("v1", pattern="^(v1|v2)$")
 
 
 def _pool(request: Request):
@@ -84,8 +117,10 @@ async def create_run(body: RunCreate, request: Request):
         INSERT INTO backtest_runs
           (start_date, end_date, track_mode, capital, resting_window_days,
            stacking_guard, stacking_guard_mode, exit_config, status, params,
-           safety_sl_pct, slippage_pct, brokerage_per_order, chandelier_atr_mult)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9,$10,$11,$12,$13)
+           safety_sl_pct, slippage_pct, brokerage_per_order, chandelier_atr_mult,
+           stt_pct, stamp_duty_pct, exchange_charges_pct, dp_charge, min_position_value,
+           max_picks_per_track, quant_funnel_variant)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
         RETURNING id
         """,
         body.start_date, body.end_date, body.track_mode, body.capital,
@@ -93,15 +128,16 @@ async def create_run(body: RunCreate, request: Request):
         json.dumps(body.exit_config.model_dump()),
         json.dumps({"notes": body.notes}),
         body.safety_sl_pct, body.slippage_pct, body.brokerage_per_order, body.chandelier_atr_mult,
+        body.stt_pct, body.stamp_duty_pct, body.exchange_charges_pct, body.dp_charge,
+        body.min_position_value, body.max_picks_per_track, body.quant_funnel_variant,
     )
     run_id = row["id"]
 
-    # VPS is 961MB RAM total. Chart rendering (matplotlib) is what actually
-    # OOM-killed the process in testing, not the Gemini network call itself —
-    # so MAX_CONCURRENT_RENDER stays at 1 (serialize renders) while
-    # MAX_CONCURRENT_AI can go higher than before to let more symbols overlap
-    # while they're just waiting on Gemini. Revert both to "1" if a run OOMs.
-    env = {**os.environ, "MAX_CONCURRENT_AI": "4", "MAX_CONCURRENT_RENDER": "1"}
+    env = {
+        **os.environ,
+        "MAX_CONCURRENT_AI": BACKTEST_MAX_CONCURRENT_AI,
+        "MAX_CONCURRENT_RENDER": BACKTEST_MAX_CONCURRENT_RENDER,
+    }
 
     log_path = LOG_DIR / f"run_{run_id}.log"
     with open(log_path, "wb") as logf:
@@ -189,6 +225,13 @@ def _run_to_json(r) -> dict:
         "slippagePct": float(d["slippage_pct"]) if d.get("slippage_pct") is not None else None,
         "brokeragePerOrder": float(d["brokerage_per_order"]) if d.get("brokerage_per_order") is not None else None,
         "chandelierAtrMult": float(d["chandelier_atr_mult"]) if d.get("chandelier_atr_mult") is not None else None,
+        "sttPct": float(d["stt_pct"]) if d.get("stt_pct") is not None else None,
+        "stampDutyPct": float(d["stamp_duty_pct"]) if d.get("stamp_duty_pct") is not None else None,
+        "exchangeChargesPct": float(d["exchange_charges_pct"]) if d.get("exchange_charges_pct") is not None else None,
+        "dpCharge": float(d["dp_charge"]) if d.get("dp_charge") is not None else None,
+        "minPositionValue": float(d["min_position_value"]) if d.get("min_position_value") is not None else None,
+        "maxPicksPerTrack": d.get("max_picks_per_track"),
+        "quantFunnelVariant": d.get("quant_funnel_variant"),
     }
 
 

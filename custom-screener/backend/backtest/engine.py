@@ -16,6 +16,7 @@ from ai_analysis.pipeline import analyze_symbols
 from app.db import PgRepo
 
 from . import funnel
+from . import funnel_v2
 from .ai_repo import BacktestAiRepo
 from .simulator import SimTrade, step_exit, try_fill
 
@@ -47,20 +48,28 @@ async def _run(run: dict, pool) -> None:
     resting_window_days = run["resting_window_days"]
     stacking_guard = run["stacking_guard"]
     stacking_guard_mode = run["stacking_guard_mode"]
+    min_position_value = float(run.get("min_position_value") or 0)
+    max_picks_per_track = int(run.get("max_picks_per_track") or 3)
+    quant_funnel = funnel_v2 if run.get("quant_funnel_variant") == "v2" else funnel
     exit_config = run["exit_config"] if isinstance(run["exit_config"], dict) else {}
     import json as _json
     if isinstance(run["exit_config"], str):
         exit_config = _json.loads(run["exit_config"])
 
     # Numeric cost/safety-SL settings live as their own backtest_runs columns
-    # (see sql/004_backtest_costs_and_rules.sql) — merge them into the same
-    # exit_config dict so simulator.py's functions only need one param.
+    # (see sql/004_backtest_costs_and_rules.sql, sql/005_backtest_dhan_costs.sql)
+    # — merge them into the same exit_config dict so simulator.py's functions
+    # only need one param.
     exit_config = {
         **exit_config,
         "safety_sl_pct": float(run["safety_sl_pct"]),
         "slippage_pct": float(run["slippage_pct"]),
         "brokerage_per_order": float(run["brokerage_per_order"]),
         "chandelier_atr_mult": float(run["chandelier_atr_mult"]),
+        "stt_pct": float(run["stt_pct"]),
+        "stamp_duty_pct": float(run["stamp_duty_pct"]),
+        "exchange_charges_pct": float(run["exchange_charges_pct"]),
+        "dp_charge": float(run["dp_charge"]),
     }
     needs_ema_atr = any(exit_config.get(k) for k in
                          ("ema10_trail", "ema21_trail", "ema50_trail", "chandelier_trail"))
@@ -149,10 +158,10 @@ async def _run(run: dict, pool) -> None:
         active = still_active
 
         # 2. today's candidates (quant funnel, always computed — cheap/local)
-        candidates = await funnel.build_candidates(pool, day, capital)
+        candidates = await quant_funnel.build_candidates(pool, day, capital)
         cand_by_symbol = {c["symbol"]: c for c in candidates}
 
-        quant_top3 = candidates[:3] if track_mode in ("QUANT", "BOTH") else []
+        quant_top3 = candidates[:max_picks_per_track] if track_mode in ("QUANT", "BOTH") else []
 
         ai_top3 = []
         if track_mode in ("AI", "BOTH") and candidates:
@@ -164,11 +173,11 @@ async def _run(run: dict, pool) -> None:
                 result = await analyze_symbols(
                     [c["symbol"] for c in candidates], day, screener_repo, ai_repo,
                     ai_mode="gemini", chart_scope="daily", prompt_version=ai_config.PROMPT_VERSION,
-                    # BacktestAiRepo never persists the annotated chart paths
-                    # (only "daily"/"weekly") and the Backtest UI shows its own
-                    # separate per-trade chart — so the level-annotated render
-                    # is pure wasted matplotlib work here. See pipeline.py.
-                    store_annotated=False,
+                    # Backtest UI never reads backtest_ai_signals' chart_*_path
+                    # columns — it shows its own separate per-trade chart (see
+                    # backtest/chart.py) — so both the annotated render AND
+                    # writing any chart file to disk are pure waste here.
+                    persist_charts=False,
                 )
                 for r in result.get("results", []):
                     if r.get("error") or r["symbol"] not in cand_by_symbol:
@@ -178,7 +187,7 @@ async def _run(run: dict, pool) -> None:
                         "ai_confidence": (r.get("analysis") or {}).get("confidence"),
                         "ai_recommendation": (r.get("analysis") or {}).get("recommendation"),
                     })
-                    if len(ai_top3) == 3:
+                    if len(ai_top3) == max_picks_per_track:
                         break
             except Exception:
                 logger.exception("AI analysis failed for %s — continuing quant-only that day", day)
@@ -196,6 +205,12 @@ async def _run(run: dict, pool) -> None:
 
         # 4. create new trades, respecting the stacking guard
         for sym, info in picks.items():
+            c0 = info["candidate"]
+            if min_position_value and c0["entry"] * c0["qty"] < min_position_value:
+                # Flat per-trade costs (DP charge, stamp duty) disproportionately
+                # tax tiny positions — skip signals too small to size efficiently
+                # rather than take them anyway (see cost-drag comparison series).
+                continue
             existing = [t for t in active if t.symbol == sym]
             if stacking_guard and existing:
                 open_ones = [t for t in existing if t.status == "OPEN"]
