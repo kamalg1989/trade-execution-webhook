@@ -321,11 +321,11 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
 // Drop the year for the compact run-list column — "2026-01-01" -> "01-01".
 const fmtWindowShort = (s, e) => `${s?.slice(5) ?? ''}→${e?.slice(5) ?? ''}`;
 
-function RunRow({ run, selected, onSelect, onCancel, cancelling }) {
+function RunRow({ run, selected, onSelect, onCancel, cancelling, rowRef, onKeyDown }) {
   const pct = run.progressTotalDays ? Math.round((run.progressDay / run.progressTotalDays) * 100) : null;
   return (
-    <tr onClick={() => onSelect(run.id)}
-      className={`cursor-pointer border-t border-slate-800 hover:bg-slate-800/40 ${selected ? 'bg-slate-800/60' : ''}`}>
+    <tr ref={rowRef} tabIndex={0} onKeyDown={onKeyDown} onClick={() => onSelect(run.id)}
+      className={`cursor-pointer border-t border-slate-800 hover:bg-slate-800/40 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-emerald-500 ${selected ? 'bg-slate-800/60' : ''}`}>
       <td className="py-1.5 px-2 text-xs text-slate-200 whitespace-nowrap">#{run.id}</td>
       <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap" title={`${run.startDate} → ${run.endDate}`}>
         {fmtWindowShort(run.startDate, run.endDate)}
@@ -351,7 +351,24 @@ function RunRow({ run, selected, onSelect, onCancel, cancelling }) {
 }
 
 function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
+  const rowRefs = useRef({});
   if (!runs.length) return <div className="text-sm text-slate-400 px-1">No backtest runs yet — configure one above.</div>;
+
+  // Arrow-key navigation between rows — preventDefault stops the browser's
+  // default behavior of scrolling this (overflow-y-auto) container instead
+  // of moving the selection, then we move focus to the newly-selected row
+  // so repeated presses keep working and it scrolls into view.
+  const move = (idx, delta) => {
+    const target = runs[idx + delta];
+    if (!target) return;
+    onSelect(target.id);
+    rowRefs.current[target.id]?.focus();
+  };
+  const handleKeyDown = (e, idx) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); move(idx, 1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); move(idx, -1); }
+  };
+
   return (
     <div className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto max-h-[480px] overflow-y-auto">
       <table className="w-full table-auto">
@@ -368,9 +385,11 @@ function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
           </tr>
         </thead>
         <tbody>
-          {runs.map((r) => (
+          {runs.map((r, idx) => (
             <RunRow key={r.id} run={r} selected={r.id === selectedId} onSelect={onSelect}
-              onCancel={onCancel} cancelling={cancellingId === r.id} />
+              onCancel={onCancel} cancelling={cancellingId === r.id}
+              rowRef={(el) => { rowRefs.current[r.id] = el; }}
+              onKeyDown={(e) => handleKeyDown(e, idx)} />
           ))}
         </tbody>
       </table>
