@@ -1,0 +1,31 @@
+-- Second half of the market-breadth entry filter: breadth DIRECTION.
+--
+-- sql/011 added a breadth LEVEL cap (skip entries when too much of the market
+-- is already above its 200SMA). Measuring level x direction together showed
+-- the two interact strongly -- it's specifically "breadth low AND rising"
+-- (early in a recovery leg) that carries the edge, while "low and still
+-- falling" (catching the knife on the way down) is roughly flat:
+--
+--   pooled over runs #98 (2026) + #105 (2025), by signal-date breadth:
+--     level <35 & rising   ->  72 trades, +26,042, avgR  0.362, 44.4% win
+--     level <35 & falling  ->  98 trades,  +2,759, avgR -0.013, 37.8% win
+--     level >=35 & rising  ->  63 trades, -13,217, avgR -0.217, 28.6% win
+--     level >=35 & falling ->  31 trades,    -963, avgR -0.058, 29.0% win
+--
+--   and the combined "low+rising" bucket reproduces in EACH window separately
+--   (not a pooling artifact):
+--     #98 (2026): 36 trades, +23,667, avgR 0.671, 47.2% win
+--                 vs everything else: 93 trades, +15,190, avgR 0.157
+--     #105 (2025): 36 trades,  +2,375, avgR 0.054, 41.7% win
+--                 vs everything else: 99 trades, -26,610, avgR -0.317
+--
+--   i.e. restricting to low+rising is what flips the 2025 window from a large
+--   loss to positive, which is the "consistent across regimes" property the
+--   level filter alone did not achieve.
+--
+-- entry_breadth_require_rising = when true, only take NEW entries on days
+-- where breadth (% above 200SMA) is >= its own trailing 20-session average.
+-- Combines with entry_breadth_max_pct (sql/011); either can be used alone.
+-- Gates entries only -- never affects exits or already-open positions.
+ALTER TABLE backtest_runs
+  ADD COLUMN IF NOT EXISTS entry_breadth_require_rising BOOLEAN NOT NULL DEFAULT FALSE;

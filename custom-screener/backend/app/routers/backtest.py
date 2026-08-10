@@ -125,6 +125,9 @@ class RunCreate(BaseModel):
     # is >= this value (late-cycle entries underperform in both validation
     # windows). None = no filter. Gates entries only, never exits.
     entry_breadth_max_pct: float | None = None
+    # sql/012 — only enter while breadth is at/above its trailing 20-session
+    # average (rising) rather than still falling. Combines with the level cap.
+    entry_breadth_require_rising: bool = False
 
 
 def _pool(request: Request):
@@ -164,10 +167,10 @@ async def create_run(body: RunCreate, request: Request):
            stage2_trend_bar_close_threshold, stage2_pin_bar_max_body_pct,
            stage2_pin_bar_min_lower_wick_pct, stage2_min_bar_range_pct,
            stage2_enable_pullback_trigger, stage2_enable_breakout_retest_trigger,
-           ai_respect_recommendation, entry_breadth_max_pct)
+           ai_respect_recommendation, entry_breadth_max_pct, entry_breadth_require_rising)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
                 $21,$22,$23,$24,$25,$26,$27,$28,
-                $29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)
+                $29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40)
         RETURNING id
         """,
         body.start_date, body.end_date, body.track_mode, body.capital,
@@ -185,6 +188,7 @@ async def create_run(body: RunCreate, request: Request):
         body.stage2_pin_bar_min_lower_wick_pct, body.stage2_min_bar_range_pct,
         body.stage2_enable_pullback_trigger, body.stage2_enable_breakout_retest_trigger,
         body.ai_respect_recommendation, body.entry_breadth_max_pct,
+        body.entry_breadth_require_rising,
     )
     run_id = row["id"]
 
@@ -306,6 +310,7 @@ def _run_to_json(r) -> dict:
         "stage2EnableBreakoutRetestTrigger": d.get("stage2_enable_breakout_retest_trigger"),
         "aiRespectRecommendation": d.get("ai_respect_recommendation"),
         "entryBreadthMaxPct": float(d["entry_breadth_max_pct"]) if d.get("entry_breadth_max_pct") is not None else None,
+        "entryBreadthRequireRising": d.get("entry_breadth_require_rising"),
     }
 
 

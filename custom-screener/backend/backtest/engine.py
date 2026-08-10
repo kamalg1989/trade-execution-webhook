@@ -77,18 +77,31 @@ async def _run(run: dict, pool) -> None:
     # being managed/exited normally, so this can never strand a position.
     entry_breadth_max_pct = (float(run["entry_breadth_max_pct"])
                              if run.get("entry_breadth_max_pct") is not None else None)
+    # sql/012 — direction half of the same filter: only enter while breadth is
+    # at/above its own trailing 20-session average (early in a recovery leg)
+    # rather than still falling. See that migration for the measured split.
+    entry_breadth_require_rising = bool(run.get("entry_breadth_require_rising"))
     breadth_by_day: dict = {}
-    if entry_breadth_max_pct is not None:
+    if entry_breadth_max_pct is not None or entry_breadth_require_rising:
+        # Window starts well before start_date so the 20-session average is
+        # already fully formed on day 1 of the run (otherwise the first ~20
+        # days would compare against a partial, biased average).
         breadth_rows = await pool.fetch(
             """
-            SELECT snapshot_date,
-                   count_above_200sma::float / NULLIF(eligible_stocks, 0) * 100 AS pct200
-            FROM market_snapshot
-            WHERE snapshot_date BETWEEN $1 AND $2
+            SELECT snapshot_date, pct200,
+                   AVG(pct200) OVER (ORDER BY snapshot_date
+                                     ROWS BETWEEN 20 PRECEDING AND CURRENT ROW) AS ma20
+            FROM (
+              SELECT snapshot_date,
+                     count_above_200sma::float / NULLIF(eligible_stocks, 0) * 100 AS pct200
+              FROM market_snapshot
+              WHERE snapshot_date BETWEEN $1::date - 90 AND $2
+            ) s
+            WHERE pct200 IS NOT NULL
             """,
             run["start_date"], run["end_date"],
         )
-        breadth_by_day = {r["snapshot_date"]: r["pct200"] for r in breadth_rows if r["pct200"] is not None}
+        breadth_by_day = {r["snapshot_date"]: (r["pct200"], r["ma20"]) for r in breadth_rows}
     # Stage 2 (base-stage + entry-technique) overrides (sql/008) — monkeypatches
     # screen_gpt's constants for this subprocess's lifetime; see funnel_stage2.py
     # docstring for why this must use its own config-hash-keyed cache (sql/010)
@@ -272,10 +285,16 @@ async def _run(run: dict, pool) -> None:
         #    candidate list/ranking is unchanged — only acting on it stops).
         #    A day with no market_snapshot row is treated as "no data, don't
         #    block" so a missing snapshot can't silently halt the whole run.
-        if entry_breadth_max_pct is not None:
-            pct200_today = breadth_by_day.get(day)
-            if pct200_today is not None and pct200_today >= entry_breadth_max_pct:
-                picks = {}
+        if breadth_by_day:
+            today_breadth = breadth_by_day.get(day)
+            if today_breadth is not None:
+                pct200_today, ma20_today = today_breadth
+                too_extended = (entry_breadth_max_pct is not None
+                                and pct200_today >= entry_breadth_max_pct)
+                still_falling = (entry_breadth_require_rising and ma20_today is not None
+                                 and pct200_today < ma20_today)
+                if too_extended or still_falling:
+                    picks = {}
         for sym, info in picks.items():
             c0 = info["candidate"]
             if min_position_value and c0["entry"] * c0["qty"] < min_position_value:
