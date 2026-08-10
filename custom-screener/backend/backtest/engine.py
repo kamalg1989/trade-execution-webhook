@@ -70,6 +70,25 @@ async def _run(run: dict, pool) -> None:
     # docstring. Applied downstream of pipeline.analyze_symbols(), which is left
     # completely untouched, so this can never affect production/live trading.
     ai_respect_recommendation = bool(run.get("ai_respect_recommendation"))
+    # Market-breadth entry filter (sql/011) — skip NEW entries on days where
+    # too much of the market is already above its 200SMA (late-cycle entries
+    # measurably underperform in both validation windows; see the migration's
+    # comment for the numbers). Gates entries only — open positions keep
+    # being managed/exited normally, so this can never strand a position.
+    entry_breadth_max_pct = (float(run["entry_breadth_max_pct"])
+                             if run.get("entry_breadth_max_pct") is not None else None)
+    breadth_by_day: dict = {}
+    if entry_breadth_max_pct is not None:
+        breadth_rows = await pool.fetch(
+            """
+            SELECT snapshot_date,
+                   count_above_200sma::float / NULLIF(eligible_stocks, 0) * 100 AS pct200
+            FROM market_snapshot
+            WHERE snapshot_date BETWEEN $1 AND $2
+            """,
+            run["start_date"], run["end_date"],
+        )
+        breadth_by_day = {r["snapshot_date"]: r["pct200"] for r in breadth_rows if r["pct200"] is not None}
     # Stage 2 (base-stage + entry-technique) overrides (sql/008) — monkeypatches
     # screen_gpt's constants for this subprocess's lifetime; see funnel_stage2.py
     # docstring for why this must use its own config-hash-keyed cache (sql/010)
@@ -247,7 +266,16 @@ async def _run(run: dict, pool) -> None:
             d["ai_confidence"] = c.get("ai_confidence")
             d["ai_recommendation"] = c.get("ai_recommendation")
 
-        # 4. create new trades, respecting the stacking guard
+        # 4. create new trades, respecting the stacking guard.
+        #    Breadth gate first: on an over-extended-market day take no new
+        #    entries at all (picks are still computed above so the day's
+        #    candidate list/ranking is unchanged — only acting on it stops).
+        #    A day with no market_snapshot row is treated as "no data, don't
+        #    block" so a missing snapshot can't silently halt the whole run.
+        if entry_breadth_max_pct is not None:
+            pct200_today = breadth_by_day.get(day)
+            if pct200_today is not None and pct200_today >= entry_breadth_max_pct:
+                picks = {}
         for sym, info in picks.items():
             c0 = info["candidate"]
             if min_position_value and c0["entry"] * c0["qty"] < min_position_value:

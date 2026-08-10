@@ -1,0 +1,26 @@
+-- Market-breadth entry filter (backtest-only).
+--
+-- Motivation (measured, not assumed): joining backtest_trades to
+-- market_snapshot on signal_date across BOTH validation windows shows
+-- entries taken on high-breadth days are consistently the worst bucket:
+--
+--   run #105 (2025):  >=40% above-200SMA -> 38 trades, -21,935 net, avgR -0.62,
+--                     13.2% win  (that single bucket is ~90% of the window's
+--                     entire -24,235 loss)
+--                     <30%           -> 61 trades,  +1,226 net, avgR -0.02, 41.0% win
+--   run #98  (2026):  >=40%          -> 22 trades,  +3,850 net, avgR  0.20, 50.0% win
+--                     <30%           -> 64 trades, +23,758 net, avgR  0.35, 39.1% win
+--
+-- i.e. the ordering (low breadth better than high breadth) reproduces in two
+-- independent windows, which is why this is worth a real toggle rather than a
+-- one-window curve fit. Economic rationale: a base breakout taken when most of
+-- the market is already extended above its 200SMA is a late-cycle entry with
+-- little room left; the same setup taken while breadth is still washed out is
+-- early in a recovery leg.
+--
+-- entry_breadth_max_pct = skip taking NEW entries on any day where
+-- (count_above_200sma / eligible_stocks * 100) >= this value. NULL (default)
+-- = no filter, existing behavior. Positions already open are unaffected --
+-- this gates entries only, never exits.
+ALTER TABLE backtest_runs
+  ADD COLUMN IF NOT EXISTS entry_breadth_max_pct NUMERIC(5,2);
