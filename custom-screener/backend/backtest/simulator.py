@@ -116,6 +116,23 @@ def _sell_fill(gross_price: float, cfg: dict) -> float:
     return round(gross_price * (1 - cfg.get("slippage_pct", 0) / 100), 2)
 
 
+def _leg_costs(value: float, cfg: dict, is_sell: bool) -> float:
+    """Real Dhan equity-delivery cost of one fill leg (buy or sell), applied
+    on top of slippage. Dhan charges zero brokerage on delivery — the old
+    flat brokerage_per_order default (20) was actually Dhan's *intraday*
+    rate, not delivery. Real delivery costs: STT on both legs, stamp duty on
+    the buy leg only, small exchange+SEBI charges on both legs, and a flat
+    per-scrip DP charge on the sell leg only (₹12.50 + 18% GST ≈ ₹14.75).
+    `brokerage_per_order` is kept as a knob (defaults to 0) in case this is
+    ever pointed at a different broker. `value` = qty x fill price for this
+    leg. See sql/005_backtest_dhan_costs.sql for the sourced defaults."""
+    stt = value * cfg.get("stt_pct", 0.1) / 100
+    exch = value * cfg.get("exchange_charges_pct", 0.003) / 100
+    stamp = 0.0 if is_sell else value * cfg.get("stamp_duty_pct", 0.015) / 100
+    dp = cfg.get("dp_charge", 14.75) if is_sell else 0.0
+    return stt + exch + stamp + dp + cfg.get("brokerage_per_order", 0)
+
+
 def try_fill(trade: SimTrade, day: object, bar: dict, resting_window_days: int | None,
              trading_days_since_signal: int, cfg: dict | None = None) -> None:
     """Check one day's bar for a still-PENDING trade. Mutates trade in place."""
@@ -129,7 +146,9 @@ def try_fill(trade: SimTrade, day: object, bar: dict, resting_window_days: int |
         trade.qty_remaining = trade.quantity
         trade.current_sl = trade.structural_sl
         trade.peak_high = bar["high"]
-        trade.realized_pnl -= cfg.get("brokerage_per_order", 0)  # entry-leg brokerage, sunk immediately
+        # Entry-leg costs (STT + stamp duty + exchange charges; no DP charge
+        # on a buy), sunk immediately.
+        trade.realized_pnl -= _leg_costs(trade.entry_fill_price * trade.quantity, cfg, is_sell=False)
         return
     if resting_window_days is not None and trading_days_since_signal > resting_window_days:
         trade.status = "UNFILLED_EXPIRED"
@@ -195,7 +214,7 @@ def step_exit(trade: SimTrade, day: object, bar: dict, exit_config: dict) -> Non
                                              "price": book_net, "reason": "HALF_BOOK_2R"})
                 trade.gross_pnl += (book_gross - trade.entry_trigger_price) * half_qty
                 trade.realized_pnl += ((book_net - entry) * half_qty
-                                        - exit_config.get("brokerage_per_order", 0))
+                                        - _leg_costs(book_net * half_qty, exit_config, is_sell=True))
                 trade.qty_remaining -= half_qty
             trade.half_booked = True
             trade.highest_r_acted = 2
@@ -237,7 +256,8 @@ def step_exit(trade: SimTrade, day: object, bar: dict, exit_config: dict) -> Non
 def _close(trade: SimTrade, day: object, gross_price: float, reason: str, cfg: dict) -> None:
     net_price = _sell_fill(gross_price, cfg)
     trade.gross_pnl += (gross_price - trade.entry_trigger_price) * trade.qty_remaining
-    trade.realized_pnl += (net_price - trade.entry_fill_price) * trade.qty_remaining - cfg.get("brokerage_per_order", 0)
+    trade.realized_pnl += ((net_price - trade.entry_fill_price) * trade.qty_remaining
+                            - _leg_costs(net_price * trade.qty_remaining, cfg, is_sell=True))
     trade.qty_remaining = 0
     trade.status = "CLOSED"
     trade.exit_date = day

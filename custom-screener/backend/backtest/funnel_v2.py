@@ -131,9 +131,10 @@ async def build_candidates(
 
     if todo:
         frames = await v1.load_ohlcv_frames_batch(pool, todo, d)
+        computed = await v1._compute_signals_concurrent(todo, frames, indicators_by_symbol)
         to_insert = []
         for sym in todo:
-            result = v1._compute_signal(frames.get(sym), sym, indicators_by_symbol[sym])
+            result = computed[sym]
             signals[sym] = result
             to_insert.append((
                 sym, d, result["passed"], result.get("entry"), result.get("sl"),

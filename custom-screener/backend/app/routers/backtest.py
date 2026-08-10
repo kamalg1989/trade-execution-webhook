@@ -101,6 +101,26 @@ class RunCreate(BaseModel):
     gate_max_vol_dryup_ratio: float | None = None
     gate_max_dist_from_high_pct: float | None = None
     gate_min_ifp_score: float | None = None
+    # Stage 2 (base-stage classification + entry-technique) overrides
+    # (sql/008_backtest_stage2_overrides.sql) — any subset; None (default) =
+    # use screen_gpt.py's current production value. Routed through
+    # funnel_stage2.py, which bypasses the shared quant-signal cache when
+    # any of these are set (see that module's docstring). Never touches
+    # production screen_gpt.py.
+    stage2_base_stage_max_allowed: int | None = None
+    stage2_base_min_width_bars: int | None = None
+    stage2_base_bounce_min_pct: float | None = None
+    stage2_trend_bar_close_threshold: float | None = None
+    stage2_pin_bar_max_body_pct: float | None = None
+    stage2_pin_bar_min_lower_wick_pct: float | None = None
+    stage2_min_bar_range_pct: float | None = None
+    stage2_enable_pullback_trigger: bool | None = None
+    stage2_enable_breakout_retest_trigger: bool | None = None
+    # sql/009_backtest_ai_rec_rank.sql — when True, the AI track re-ranks
+    # Gemini's results by recommendation tier (SETUP_READY > EARLY_STAGE >
+    # NOT_READY > AVOID) then confidence, instead of confidence alone.
+    # Applied downstream of pipeline.py, which is untouched — backtest-only.
+    ai_respect_recommendation: bool = False
 
 
 def _pool(request: Request):
@@ -135,9 +155,15 @@ async def create_run(body: RunCreate, request: Request):
            max_picks_per_track, quant_funnel_variant,
            gate_min_turnover_cr, gate_max_base_range_pct, gate_min_vol_mult,
            gate_min_prior_upmove_pct, gate_max_giveback_pct, gate_max_vol_dryup_ratio,
-           gate_max_dist_from_high_pct, gate_min_ifp_score)
+           gate_max_dist_from_high_pct, gate_min_ifp_score,
+           stage2_base_stage_max_allowed, stage2_base_min_width_bars, stage2_base_bounce_min_pct,
+           stage2_trend_bar_close_threshold, stage2_pin_bar_max_body_pct,
+           stage2_pin_bar_min_lower_wick_pct, stage2_min_bar_range_pct,
+           stage2_enable_pullback_trigger, stage2_enable_breakout_retest_trigger,
+           ai_respect_recommendation)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-                $21,$22,$23,$24,$25,$26,$27,$28)
+                $21,$22,$23,$24,$25,$26,$27,$28,
+                $29,$30,$31,$32,$33,$34,$35,$36,$37,$38)
         RETURNING id
         """,
         body.start_date, body.end_date, body.track_mode, body.capital,
@@ -150,6 +176,11 @@ async def create_run(body: RunCreate, request: Request):
         body.gate_min_turnover_cr, body.gate_max_base_range_pct, body.gate_min_vol_mult,
         body.gate_min_prior_upmove_pct, body.gate_max_giveback_pct, body.gate_max_vol_dryup_ratio,
         body.gate_max_dist_from_high_pct, body.gate_min_ifp_score,
+        body.stage2_base_stage_max_allowed, body.stage2_base_min_width_bars, body.stage2_base_bounce_min_pct,
+        body.stage2_trend_bar_close_threshold, body.stage2_pin_bar_max_body_pct,
+        body.stage2_pin_bar_min_lower_wick_pct, body.stage2_min_bar_range_pct,
+        body.stage2_enable_pullback_trigger, body.stage2_enable_breakout_retest_trigger,
+        body.ai_respect_recommendation,
     )
     run_id = row["id"]
 
@@ -260,6 +291,16 @@ def _run_to_json(r) -> dict:
         "gateMaxVolDryupRatio": float(d["gate_max_vol_dryup_ratio"]) if d.get("gate_max_vol_dryup_ratio") is not None else None,
         "gateMaxDistFromHighPct": float(d["gate_max_dist_from_high_pct"]) if d.get("gate_max_dist_from_high_pct") is not None else None,
         "gateMinIfpScore": float(d["gate_min_ifp_score"]) if d.get("gate_min_ifp_score") is not None else None,
+        "stage2BaseStageMaxAllowed": d.get("stage2_base_stage_max_allowed"),
+        "stage2BaseMinWidthBars": d.get("stage2_base_min_width_bars"),
+        "stage2BaseBouncePct": float(d["stage2_base_bounce_min_pct"]) if d.get("stage2_base_bounce_min_pct") is not None else None,
+        "stage2TrendBarCloseThreshold": float(d["stage2_trend_bar_close_threshold"]) if d.get("stage2_trend_bar_close_threshold") is not None else None,
+        "stage2PinBarMaxBodyPct": float(d["stage2_pin_bar_max_body_pct"]) if d.get("stage2_pin_bar_max_body_pct") is not None else None,
+        "stage2PinBarMinLowerWickPct": float(d["stage2_pin_bar_min_lower_wick_pct"]) if d.get("stage2_pin_bar_min_lower_wick_pct") is not None else None,
+        "stage2MinBarRangePct": float(d["stage2_min_bar_range_pct"]) if d.get("stage2_min_bar_range_pct") is not None else None,
+        "stage2EnablePullbackTrigger": d.get("stage2_enable_pullback_trigger"),
+        "stage2EnableBreakoutRetestTrigger": d.get("stage2_enable_breakout_retest_trigger"),
+        "aiRespectRecommendation": d.get("ai_respect_recommendation"),
     }
 
 

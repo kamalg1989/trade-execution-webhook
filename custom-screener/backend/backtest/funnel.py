@@ -21,6 +21,7 @@ cached row.
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 from datetime import date
 
@@ -151,6 +152,24 @@ def _compute_signal(df: pd.DataFrame | None, symbol: str, indicators_row: dict) 
     }
 
 
+async def _compute_signals_concurrent(
+    symbols: list[str], frames: dict, indicators_by_symbol: dict, concurrency: int = 4,
+) -> dict[str, dict]:
+    """Run _compute_signal (CPU-bound pandas: base-stage classify + entry-
+    technique resolve) across symbols in a small thread pool instead of a
+    sequential Python for-loop — this was the dominant per-day cost on
+    dates with many not-yet-cached symbols. Concurrency kept low: the VPS
+    is a 2-vCPU, ~2GB box shared with several other always-on services."""
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _one(sym: str):
+        async with sem:
+            return sym, await asyncio.to_thread(_compute_signal, frames.get(sym), sym, indicators_by_symbol[sym])
+
+    pairs = await asyncio.gather(*(_one(s) for s in symbols))
+    return dict(pairs)
+
+
 def _size_qty(capital: float, base_stage: int, entry: float, risk_per_share: float) -> int:
     """Mirrors screen_gpt.create_trade()'s sizing formula exactly (its two
     hardcoded literals: 0.25% risk-per-trade, 10% max-capital-per-trade) —
@@ -186,9 +205,10 @@ async def build_candidates(pool, d: date, capital: float) -> list[dict]:
 
     if todo:
         frames = await load_ohlcv_frames_batch(pool, todo, d)
+        computed = await _compute_signals_concurrent(todo, frames, indicators_by_symbol)
         to_insert = []
         for sym in todo:
-            result = _compute_signal(frames.get(sym), sym, indicators_by_symbol[sym])
+            result = computed[sym]
             signals[sym] = result
             to_insert.append((
                 sym, d, result["passed"], result.get("entry"), result.get("sl"),

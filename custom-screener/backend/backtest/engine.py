@@ -4,6 +4,7 @@ exact per-day flow this implements.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import traceback
 from datetime import date
@@ -17,6 +18,7 @@ from app.db import PgRepo
 
 from . import funnel
 from . import funnel_v2
+from . import funnel_stage2
 from .ai_repo import BacktestAiRepo
 from .simulator import SimTrade, step_exit, try_fill
 
@@ -64,6 +66,14 @@ async def _run(run: dict, pool) -> None:
     }
     use_v2_ranking = run.get("quant_funnel_variant") == "v2"
     use_funnel_v2 = bool(gate_overrides) or use_v2_ranking
+    # Backtest-only AI re-ranking (sql/009) — see _rank_by_recommendation_then_confidence
+    # docstring. Applied downstream of pipeline.analyze_symbols(), which is left
+    # completely untouched, so this can never affect production/live trading.
+    ai_respect_recommendation = bool(run.get("ai_respect_recommendation"))
+    # Stage 2 (base-stage + entry-technique) overrides (sql/008) — monkeypatches
+    # screen_gpt's constants for this subprocess's lifetime; see funnel_stage2.py
+    # docstring for why this must bypass the shared quant-signal cache.
+    stage2_active = funnel_stage2.apply_overrides(run)
     exit_config = run["exit_config"] if isinstance(run["exit_config"], dict) else {}
     import json as _json
     if isinstance(run["exit_config"], str):
@@ -155,7 +165,13 @@ async def _run(run: dict, pool) -> None:
                         df = pd.DataFrame(hist)
                         bars_by_symbol[sym]["swing_low"] = last_swing_low(df)
 
-        # 1. fills + exits for everything already active
+        # 1. fills + exits for everything already active. State transitions
+        #    (try_fill/step_exit) are synchronous/local, so do those first,
+        #    then persist every trade CONCURRENTLY (asyncio.gather) instead
+        #    of one sequential awaited DB round-trip per trade — on days
+        #    with a dozen+ open positions this was the single biggest
+        #    contributor to per-day wall-clock time. Safe to parallelize:
+        #    each trade owns its own row (db_id), no shared mutable state.
         still_active = []
         for t in active:
             bar = bars_by_symbol.get(t.symbol)
@@ -165,13 +181,16 @@ async def _run(run: dict, pool) -> None:
                     try_fill(t, day, bar, resting_window_days, since, cfg=exit_config)
                 if t.status == "OPEN":
                     step_exit(t, day, bar, exit_config)
-            await _persist(pool, run_id, t)
             if t.status in ("PENDING", "OPEN"):
                 still_active.append(t)
+        if active:
+            await asyncio.gather(*(_persist(pool, run_id, t) for t in active))
         active = still_active
 
         # 2. today's candidates (quant funnel, always computed — cheap/local)
-        if use_funnel_v2:
+        if stage2_active:
+            candidates = await funnel_stage2.build_candidates_uncached(pool, day, capital)
+        elif use_funnel_v2:
             candidates = await funnel_v2.build_candidates(
                 pool, day, capital, gate_overrides, use_v2_ranking
             )
@@ -197,7 +216,10 @@ async def _run(run: dict, pool) -> None:
                     # writing any chart file to disk are pure waste here.
                     persist_charts=False,
                 )
-                for r in result.get("results", []):
+                ai_results = result.get("results", [])
+                if ai_respect_recommendation:
+                    ai_results = _rank_by_recommendation_then_confidence(ai_results)
+                for r in ai_results:
                     if r.get("error") or r["symbol"] not in cand_by_symbol:
                         continue
                     ai_top3.append({
@@ -267,6 +289,24 @@ async def _run(run: dict, pool) -> None:
     await pool.execute(
         "UPDATE backtest_runs SET status='COMPLETED', completed_at=NOW() WHERE id=$1", run_id
     )
+
+
+_AI_REC_TIER = {"SETUP_READY": 0, "EARLY_STAGE": 1, "NOT_READY": 2, "AVOID": 3}
+
+
+def _rank_by_recommendation_then_confidence(results: list[dict]) -> list[dict]:
+    """Re-rank pipeline.analyze_symbols()'s output by Gemini's own stated
+    recommendation tier first, confidence as the tie-break within a tier —
+    instead of production's current behavior (pipeline.py sorts by raw
+    confidence alone, recommendation-blind). Only ever called when a run
+    opts into ai_respect_recommendation=True; pipeline.py itself is
+    untouched, so this cannot affect production/live trading, only this
+    backtest run's own AI-track picks."""
+    def key(r):
+        rec = (r.get("analysis") or {}).get("recommendation")
+        conf = (r.get("analysis") or {}).get("confidence") or 0
+        return (_AI_REC_TIER.get(rec, 4), -conf)
+    return sorted(results, key=key)
 
 
 async def _persist(pool, run_id: int, t: SimTrade) -> None:

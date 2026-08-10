@@ -28,6 +28,30 @@ class BacktestAiRepo:
         )
         if not row:
             return None
+        return self._row_to_dict(row)
+
+    async def get_results_batch(self, symbols: list[str], analysis_date: date,
+                                 prompt_version: str | None = None,
+                                 model: str | None = None) -> dict[str, dict]:
+        """Same lookup as get_result(), but one query for every symbol in a
+        day's candidate list instead of N sequential round trips — this was
+        the store-first "already analyzed this date" check running as a
+        plain for-loop over every candidate, every day, for the life of a
+        run. Used only in analyze_symbols()'s single-model (gemini) fast
+        path; see there for why hybrid/sonnet/haiku still use get_result()."""
+        if not symbols:
+            return {}
+        rows = await self.pool.fetch(
+            """
+            SELECT * FROM backtest_ai_signals
+            WHERE symbol = ANY($1) AND signal_date = $2 AND prompt_version = $3
+            """,
+            symbols, analysis_date, prompt_version or "v2",
+        )
+        return {r["symbol"]: self._row_to_dict(r) for r in rows}
+
+    @staticmethod
+    def _row_to_dict(row) -> dict:
         d = dict(row)
         for k in ("features", "analysis"):
             if isinstance(d.get(k), str):
