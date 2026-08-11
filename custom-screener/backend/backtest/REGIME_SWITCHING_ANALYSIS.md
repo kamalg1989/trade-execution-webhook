@@ -112,3 +112,56 @@ wrong exactly when it matters. A second strategy would have to run ALWAYS-ON
 alongside the first, with diversification doing the work rather than timing.
 That is a materially different (and more honest) design than "detect regime,
 pick strategy".
+
+---
+
+# Positional sweep result: partially real, but the drawdown disqualifies it
+
+48 configs (3 momentum x 4 rebalance x 4 top_n) x 11 windows = 528 backtests,
+with true daily mark-to-market drawdown.
+
+## 1. Does the ranking transfer?  Spearman FIT->TEST = +0.39
+
+Better than noise, weaker than solid. And the top-5-on-FIT table shows exactly
+why a single "sweet spot" must not be trusted:
+
+    config                      FIT     TEST   TEST rank
+    (pct_chg_3m, 42, 5)        709k    -441k     48/48    <- BEST on fit, WORST on test
+    (pct_chg_6m, 63, 5)        686k     690k      1/48
+    (pct_chg_6m, 10, 5)        656k     275k     31/48
+    (pct_chg_6m, 63, 10)       576k     401k     22/48
+    (pct_chg_6m, 63, 15)       541k     461k     14/48
+
+Picking the single best config on 2016-20 would have selected the WORST config
+of all 48 on 2021-26, losing Rs 441k. That is the overfitting trap firing live.
+
+## 2. But the AXIS effects are real, and that is the useful finding
+
+The marginals are smooth plateaus, not spikes:
+
+    momentum:   1y 915k | 6m 862k | 3m 309k      <- 3m clearly broken
+    top_n:      5 637k | 10 673k | 15 719k | 20 753k   <- monotonic, more = better
+    rebalance:  10 709k | 21 672k | 42 596k | 63 805k  <- flat-ish, weakest axis
+
+So the transferable knowledge is NOT a magic triple. It is:
+  * use 6-month or 12-month momentum, never 3-month
+  * hold MORE names (20 > 15 > 10 > 5) — diversification, not concentration
+  * rebalance frequency barely matters, so pick the cheapest (least turnover)
+
+Those are exactly the conclusions that survive being averaged over everything
+else, which is what makes them believable where the single best cell is not.
+
+## 3. The disqualifying number: maxDD 42-50%
+
+Every robust config draws down 42-50% peak-to-trough, with worst YEARS of
+-Rs 100k to -Rs 152k on Rs 400k (-25% to -38%). The breakout book's worst year
+was -Rs 23.5k (-6%) with ~15k average drawdown.
+
+This is not a better strategy. It is a much higher-octane one: bigger returns,
+and losses roughly 6x deeper. Whether that is acceptable is a risk-tolerance
+decision, not a backtest result — and it should be made knowing that a ~45%
+drawdown is the normal case here, not the tail.
+
+Note also (pct_chg_6m, 63, 5) tops both total AND yrs-positive at 8/11, but it
+holds only 5 names and trades 9 times a year — with n that small, its 1376k is
+far more likely to be luck than the plateau-supported settings above.
