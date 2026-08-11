@@ -35,7 +35,7 @@ from datetime import datetime
 sys.path.insert(0, "/root/trade-execution-webhook")
 
 API = "http://localhost:8005/api"
-TAG = "campaign-v4"
+TAG = "campaign-v5"
 
 # One-year windows. 2026 is year-to-date (data ends ~2026-08-10).
 # v3 windows stop at 2024 ON PURPOSE. The harvested filing calendar
@@ -70,23 +70,31 @@ BASE = {
 # config: 6/11 years positive, lowest average drawdown).
 C = {"stage2_base_stage_max_allowed": 2, "entry_breadth_require_rising": True}
 
-# Campaign v4 — ENTRY TECHNIQUE, the one structural lever never tested at
-# scale. Production hard-codes ENABLE_PULLBACK_TRIGGER=False and
-# ENABLE_BREAKOUT_RETEST_TRIGGER=False, so the system only ever buys the
-# breakout itself. That is the likeliest source of the "bad trades" problem:
-# 1,425 of 2,230 trades lose, dying in ~8 days for -3.77% — the signature of
-# chasing breakouts that immediately fail. Buying the retest/pullback instead
-# is what an experienced positional trader does to avoid exactly that.
+# Campaign v5 — OPTION 1: sit out bad regimes, via the sql/019 state machine.
 #
-# These two knobs already exist (sql/008) and scored +7% and +15% in the
-# original single-window Stage 2 sweep, but that was ONE window on the old
-# baseline and was never re-validated. Given three prior "edges" died under
-# multi-window testing, this settles it across all 11 windows.
+# Everything before this tried to pick BETTER TRADES. This asks a different
+# question: can a forward-known regime signal tell us when to stop trading at
+# all? That is the only version of "don't always apply the same setup" that is
+# available without building a second, uncorrelated strategy.
+#
+# Baseline for comparison is B (basemax=2 alone), deliberately NOT C: C already
+# contains entry_breadth_require_rising, which is a crude daily version of the
+# same idea, and stacking them would confound whether the STATE MACHINE adds
+# anything over the naive daily gate. T..W therefore isolate the mechanism;
+# X checks whether it still adds once the daily gate is present.
+B = {"stage2_base_stage_max_allowed": 2}
+
 CONFIGS = [
-    ("Q-C+pullback", {**C, "stage2_enable_pullback_trigger": True}),
-    ("R-C+retest", {**C, "stage2_enable_breakout_retest_trigger": True}),
-    ("S-C+both-triggers", {**C, "stage2_enable_pullback_trigger": True,
-                           "stage2_enable_breakout_retest_trigger": True}),
+    ("T-B+regime50/3-block", {**B, "regime_ma_days": 50, "regime_confirm_days": 3,
+                              "regime_action": "block"}),
+    ("U-B+regime50/5-block", {**B, "regime_ma_days": 50, "regime_confirm_days": 5,
+                              "regime_action": "block"}),
+    ("V-B+regime50/3-half", {**B, "regime_ma_days": 50, "regime_confirm_days": 3,
+                             "regime_action": "half"}),
+    ("W-B+regime100/3-block", {**B, "regime_ma_days": 100, "regime_confirm_days": 3,
+                               "regime_action": "block"}),
+    ("X-C+regime50/3-block", {**C, "regime_ma_days": 50, "regime_confirm_days": 3,
+                              "regime_action": "block"}),
 ]
 
 

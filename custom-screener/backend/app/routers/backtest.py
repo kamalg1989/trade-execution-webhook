@@ -140,6 +140,10 @@ class RunCreate(BaseModel):
     # sql/017 — earnings-event rules (short lead times only; see migration).
     avoid_entry_days_before_earnings: int | None = None
     exit_days_before_earnings: int | None = None
+    # sql/019 — regime state machine (hysteresis). All three required together.
+    regime_ma_days: int | None = None
+    regime_confirm_days: int | None = None
+    regime_action: str | None = Field(None, pattern="^(block|half)$")
 
 
 def _pool(request: Request):
@@ -182,10 +186,11 @@ async def create_run(body: RunCreate, request: Request):
            ai_respect_recommendation, entry_breadth_max_pct, entry_breadth_require_rising,
            risk_per_trade_pct, max_capital_per_trade_pct, max_contraction_ratio,
            min_risk_pct_of_price, max_holding_days,
-           avoid_entry_days_before_earnings, exit_days_before_earnings)
+           avoid_entry_days_before_earnings, exit_days_before_earnings,
+           regime_ma_days, regime_confirm_days, regime_action)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
                 $21,$22,$23,$24,$25,$26,$27,$28,
-                $29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47)
+                $29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50)
         RETURNING id
         """,
         body.start_date, body.end_date, body.track_mode, body.capital,
@@ -208,6 +213,7 @@ async def create_run(body: RunCreate, request: Request):
         body.max_contraction_ratio,
         body.min_risk_pct_of_price, body.max_holding_days,
         body.avoid_entry_days_before_earnings, body.exit_days_before_earnings,
+        body.regime_ma_days, body.regime_confirm_days, body.regime_action,
     )
     run_id = row["id"]
 
@@ -358,6 +364,9 @@ def _run_to_json(r) -> dict:
         "maxHoldingDays": d.get("max_holding_days"),
         "avoidEntryDaysBeforeEarnings": d.get("avoid_entry_days_before_earnings"),
         "exitDaysBeforeEarnings": d.get("exit_days_before_earnings"),
+        "regimeMaDays": d.get("regime_ma_days"),
+        "regimeConfirmDays": d.get("regime_confirm_days"),
+        "regimeAction": d.get("regime_action"),
     }
 
 

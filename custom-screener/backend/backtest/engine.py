@@ -168,6 +168,41 @@ async def _run(run: dict, pool) -> None:
         )
         for row in er:
             earnings_by_symbol.setdefault(row["symbol"], []).append(row["broadcast_date"])
+    # sql/019 — regime state machine with hysteresis. Precomputed for the whole
+    # window into a {day: 'OFFENSIVE'|'DEFENSIVE'} map before the day loop.
+    regime_ma_days = run.get("regime_ma_days")
+    regime_confirm_days = run.get("regime_confirm_days")
+    regime_action = run.get("regime_action")
+    regime_by_day: dict = {}
+    if regime_ma_days and regime_confirm_days and regime_action:
+        rrows = await pool.fetch(
+            """
+            SELECT snapshot_date, pct200,
+                   AVG(pct200) OVER (ORDER BY snapshot_date
+                                     ROWS BETWEEN $3 PRECEDING AND CURRENT ROW) AS ma
+            FROM (
+              SELECT snapshot_date,
+                     count_above_200sma::float / NULLIF(eligible_stocks,0) * 100 AS pct200
+              FROM market_snapshot
+              WHERE snapshot_date BETWEEN $1::date - 400 AND $2
+            ) s
+            WHERE pct200 IS NOT NULL
+            ORDER BY snapshot_date
+            """,
+            run["start_date"], run["end_date"], int(regime_ma_days),
+        )
+        # Walk forward maintaining the state. Starts OFFENSIVE: assuming
+        # DEFENSIVE at t=0 would silently skip the opening stretch of every
+        # window and flatter any config that happens to start in a bad patch.
+        state, streak, last = "OFFENSIVE", 0, None
+        for rr in rrows:
+            healthy = rr["ma"] is not None and rr["pct200"] >= rr["ma"]
+            want = "OFFENSIVE" if healthy else "DEFENSIVE"
+            streak = streak + 1 if want == last else 1
+            last = want
+            if want != state and streak >= int(regime_confirm_days):
+                state = want
+            regime_by_day[rr["snapshot_date"]] = state
     breadth_by_day: dict = {}
     if entry_breadth_max_pct is not None or entry_breadth_require_rising:
         # Window starts well before start_date so the 20-session average is
@@ -346,6 +381,13 @@ async def _run(run: dict, pool) -> None:
             i = bisect_left(dates, ref_day)
             return (dates[i] - ref_day).days if i < len(dates) else None
 
+        # Regime gate: applied to the ranked candidate list, entries only.
+        if regime_by_day and candidates:
+            if regime_by_day.get(day) == "DEFENSIVE":
+                if regime_action == "block":
+                    candidates = []
+                elif regime_action == "half":
+                    candidates = candidates[:max(1, max_picks_per_track // 2)]
         if avoid_entry_days_before_earnings and candidates:
             n_days = int(avoid_entry_days_before_earnings)
             candidates = [c for c in candidates
