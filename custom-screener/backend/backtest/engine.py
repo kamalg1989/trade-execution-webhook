@@ -45,7 +45,16 @@ async def run_backtest(run_id: int, pool) -> None:
         return
 
     try:
-        await _run(dict(run), pool)
+        r = dict(run)
+        if (r.get("strategy") or "BREAKOUT") == "POSITIONAL":
+            # Different strategy shape entirely (a rebalancing portfolio, not
+            # one-signal-per-symbol-per-day), so it has its own engine. It
+            # writes the same backtest_trades rows, so every review surface —
+            # run list, trade log, equity curve, P&L — works unchanged.
+            from .positional_engine import run_positional
+            await run_positional(r, pool)
+            return
+        await _run(r, pool)
     except Exception as e:
         logger.exception("Backtest run %s failed", run_id)
         await pool.execute(

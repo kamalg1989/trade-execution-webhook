@@ -56,6 +56,15 @@ class ExitConfig(BaseModel):
 class RunCreate(BaseModel):
     start_date: date
     end_date: date
+    # sql/020 — which strategy this run executes. BREAKOUT is everything the
+    # engine did before; POSITIONAL is the low-turnover momentum book.
+    strategy: str = Field("BREAKOUT", pattern="^(BREAKOUT|POSITIONAL)$")
+    # Positional-only knobs (ignored for BREAKOUT runs).
+    pos_momentum: str = Field("pct_chg_6m", pattern="^pct_chg_(3m|6m|1y)$")
+    pos_rebalance_days: int = Field(21, ge=1, le=250)
+    pos_top_n: int = Field(10, ge=1, le=50)
+    pos_buffer_n: int = Field(20, ge=1, le=100)
+    pos_min_turnover_cr: float = 5.0
     track_mode: str = Field("BOTH", pattern="^(QUANT|AI|BOTH)$")
     capital: float = 400000
     resting_window_days: int | None = None
@@ -187,10 +196,12 @@ async def create_run(body: RunCreate, request: Request):
            risk_per_trade_pct, max_capital_per_trade_pct, max_contraction_ratio,
            min_risk_pct_of_price, max_holding_days,
            avoid_entry_days_before_earnings, exit_days_before_earnings,
-           regime_ma_days, regime_confirm_days, regime_action)
+           regime_ma_days, regime_confirm_days, regime_action,
+           strategy, pos_momentum, pos_rebalance_days, pos_top_n, pos_buffer_n,
+           pos_min_turnover_cr)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
                 $21,$22,$23,$24,$25,$26,$27,$28,
-                $29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50)
+                $29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56)
         RETURNING id
         """,
         body.start_date, body.end_date, body.track_mode, body.capital,
@@ -214,6 +225,8 @@ async def create_run(body: RunCreate, request: Request):
         body.min_risk_pct_of_price, body.max_holding_days,
         body.avoid_entry_days_before_earnings, body.exit_days_before_earnings,
         body.regime_ma_days, body.regime_confirm_days, body.regime_action,
+        body.strategy, body.pos_momentum, body.pos_rebalance_days, body.pos_top_n,
+        body.pos_buffer_n, body.pos_min_turnover_cr,
     )
     run_id = row["id"]
 
@@ -367,6 +380,12 @@ def _run_to_json(r) -> dict:
         "regimeMaDays": d.get("regime_ma_days"),
         "regimeConfirmDays": d.get("regime_confirm_days"),
         "regimeAction": d.get("regime_action"),
+        "strategy": d.get("strategy") or "BREAKOUT",
+        "posMomentum": d.get("pos_momentum"),
+        "posRebalanceDays": d.get("pos_rebalance_days"),
+        "posTopN": d.get("pos_top_n"),
+        "posBufferN": d.get("pos_buffer_n"),
+        "posMinTurnoverCr": float(d["pos_min_turnover_cr"]) if d.get("pos_min_turnover_cr") is not None else None,
     }
 
 

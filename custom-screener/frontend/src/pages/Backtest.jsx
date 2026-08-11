@@ -50,6 +50,13 @@ const GATE_LABELS = [
 function summarizeRunSettings(run) {
   const tags = [];
   if (run.maxPicksPerTrack != null && run.maxPicksPerTrack !== 3) tags.push(`top${run.maxPicksPerTrack}/track`);
+  if (run.strategy === 'POSITIONAL') {
+    // Positional runs share almost none of the breakout knobs, so summarise
+    // them on their own terms rather than showing a wall of "not set".
+    return [`POSITIONAL`, `${run.posMomentum?.replace('pct_chg_', '') ?? '6m'} mom`,
+            `top${run.posTopN}/buf${run.posBufferN}`,
+            `rebal ${run.posRebalanceDays}d`].filter(Boolean);
+  }
   if (run.quantFunnelVariant === 'v2') tags.push('rank:v2');
   // The validated edges — shown first-class so a run's identity is obvious
   if (run.stage2BaseStageMaxAllowed != null) tags.push(`baseStage≤${run.stage2BaseStageMaxAllowed}`);
@@ -95,6 +102,9 @@ function SettingsCell({ run }) {
 // ---------------- Run config form ----------------
 
 const DEFAULT_FORM = {
+  strategy: 'BREAKOUT',
+  pos_momentum: 'pct_chg_6m', pos_rebalance_days: 21, pos_top_n: 10,
+  pos_buffer_n: 20, pos_min_turnover_cr: 5,
   start_date: '', end_date: '', track_mode: 'QUANT', capital: 400000,
   restIndefinite: true, resting_window_days: 5,
   stacking_guard: true, stacking_guard_mode: 'OVERRIDE',
@@ -122,6 +132,7 @@ const PRESETS = {
   best: {
     label: 'Best known', hint: 'Winner across both validation windows',
     values: {
+      strategy: 'BREAKOUT',
       track_mode: 'QUANT', max_picks_per_track: 2, stage2_base_stage_max_allowed: 2,
       entry_breadth_max_pct: 40, entry_breadth_require_rising: true,
       max_contraction_ratio: 0.7, risk_per_trade_pct: 1.0,
@@ -132,9 +143,18 @@ const PRESETS = {
       failed_breakout_exit: false, swing_break_exit: false,
     },
   },
+  positional: {
+    label: 'Positional momentum',
+    hint: 'Low-turnover rotation: ~43 trades/yr held ~66d. Cost drag ~0.7%/yr vs ~5.7%.',
+    values: {
+      strategy: 'POSITIONAL', pos_momentum: 'pct_chg_6m', pos_rebalance_days: 21,
+      pos_top_n: 10, pos_buffer_n: 20, pos_min_turnover_cr: 5, capital: 400000,
+    },
+  },
   production: {
     label: 'Production today', hint: 'What screen_gpt.py currently runs',
     values: {
+      strategy: 'BREAKOUT',
       track_mode: 'QUANT', max_picks_per_track: 3, stage2_base_stage_max_allowed: '',
       entry_breadth_max_pct: '', entry_breadth_require_rising: false,
       max_contraction_ratio: '', risk_per_trade_pct: '',
@@ -185,6 +205,12 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
     try {
       const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
       const payload = {
+        strategy: f.strategy,
+        pos_momentum: f.pos_momentum,
+        pos_rebalance_days: Number(f.pos_rebalance_days) || 21,
+        pos_top_n: Number(f.pos_top_n) || 10,
+        pos_buffer_n: Number(f.pos_buffer_n) || 20,
+        pos_min_turnover_cr: Number(f.pos_min_turnover_cr) || 5,
         start_date: f.start_date, end_date: f.end_date, track_mode: f.track_mode,
         capital: Number(f.capital) || 400000,
         resting_window_days: f.restIndefinite ? null : Number(f.resting_window_days) || null,
@@ -263,12 +289,11 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
             className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" required />
         </label>
         <label className="text-xs text-slate-400 flex flex-col gap-1">
-          Track mode
-          <select value={f.track_mode} onChange={(e) => set('track_mode')(e.target.value)}
+          Strategy
+          <select value={f.strategy} onChange={(e) => set('strategy')(e.target.value)}
             className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
-            <option value="QUANT">Quant only</option>
-            <option value="AI">AI only</option>
-            <option value="BOTH">Both</option>
+            <option value="BREAKOUT">Breakout (swing)</option>
+            <option value="POSITIONAL">Positional momentum</option>
           </select>
         </label>
         <label className="text-xs text-slate-400 flex flex-col gap-1">
@@ -278,6 +303,49 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
         </label>
       </div>
 
+      {f.strategy === 'POSITIONAL' && (
+        <div className="pt-3 border-t border-slate-800">
+          <div className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-1">
+            Positional momentum
+          </div>
+          <p className="text-[11px] text-slate-500 mb-2 leading-snug">
+            Holds the top-ranked momentum names above their 200SMA, rebalanced monthly.
+            Sells only when a name drops outside the buffer rank — the gap between
+            &ldquo;hold&rdquo; and &ldquo;buffer&rdquo; is deliberate hysteresis that stops a name
+            oscillating around the cutoff from churning every rebalance.
+            Measured: ~43 trades/yr held ~66 days, vs ~118 held ~14 for breakout.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
+            <label className="text-xs text-slate-400 flex flex-col gap-1">
+              <span>Momentum lookback</span>
+              <select value={f.pos_momentum} onChange={(e) => set('pos_momentum')(e.target.value)}
+                className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
+                <option value="pct_chg_3m">3 months</option>
+                <option value="pct_chg_6m">6 months (tested)</option>
+                <option value="pct_chg_1y">12 months</option>
+              </select>
+            </label>
+            <Field label="Rebalance every (sessions)"
+              hint="21 ≈ monthly. Lower = more turnover = more cost drag."
+              value={f.pos_rebalance_days} onChange={set('pos_rebalance_days')}
+              type="number" min="1" max="250" />
+            <Field label="Hold top N" hint="Equal-weighted; each position is capital/N."
+              value={f.pos_top_n} onChange={set('pos_top_n')} type="number" min="1" max="50" />
+            <Field label="Sell below rank (buffer)"
+              hint="Must exceed 'hold top N'. This gap is the anti-churn hysteresis."
+              value={f.pos_buffer_n} onChange={set('pos_buffer_n')} type="number" min="1" max="100" />
+            <Field label="Min turnover (₹ cr)" hint="Liquidity floor."
+              value={f.pos_min_turnover_cr} onChange={set('pos_min_turnover_cr')}
+              type="number" min="0" step="0.5" />
+          </div>
+          <div className="text-[11px] text-amber-300/80 mt-2 leading-snug">
+            Note: this runs ~100% deployed, so its swings are much larger than the
+            breakout book&rsquo;s — measured calendar years include +95% and −34%.
+          </div>
+        </div>
+      )}
+
+      {f.strategy === 'BREAKOUT' && (<>
       {/* ---- The four settings that actually moved the needle in testing ---- */}
       <div className="pt-3 border-t border-slate-800">
         <div className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-2">
@@ -414,6 +482,8 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
           </div>
         </div>
       </details>
+
+      </>)}
 
       <label className="text-xs text-slate-400 flex flex-col gap-1">
         Notes (optional)
