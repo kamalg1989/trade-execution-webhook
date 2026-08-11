@@ -99,18 +99,27 @@ async def run_positional(run: dict, pool) -> None:
                 if f is None:
                     continue
                 h = holdings.pop(sym)
-                net = round(float(f["open"]) * (1 - slip / 100), 2)
+                gross_exit = float(f["open"])
+                net = round(gross_exit * (1 - slip / 100), 2)
                 pnl = ((net - h["entry"]) * h["qty"]
                        - _leg_cost(net * h["qty"], True, cfg))
+                # gross_pnl is the FRICTIONLESS result — raw open to raw open,
+                # no slippage and no charges — which is what the summary
+                # subtracts net from to report cost drag. Omitting it (as an
+                # earlier version did) leaves gross at 0 and makes the UI show
+                # a nonsensical negative cost equal to the whole realized P&L.
+                gross = (gross_exit - float(h["gross_entry"])) * h["qty"]
                 rmul = (round(pnl / (h["risk"] * h["qty"]), 3)
                         if h["risk"] and h["qty"] else None)
                 await pool.execute(
                     """
                     UPDATE backtest_trades SET status='CLOSED', exit_date=$2, exit_price=$3,
-                      exit_reason='RANK_DROP', realized_pnl=$4, r_multiple=$5, holding_days=$6
+                      exit_reason='RANK_DROP', realized_pnl=$4, r_multiple=$5, holding_days=$6,
+                      gross_pnl=$7
                     WHERE id=$1
                     """,
-                    h["db_id"], nxt, net, round(pnl, 2), rmul, (nxt - h["date"]).days)
+                    h["db_id"], nxt, net, round(pnl, 2), rmul, (nxt - h["date"]).days,
+                    round(gross, 2))
 
         # ---- BUY into free slots from the top of the ranking
         slots = top_n - len(holdings)
@@ -137,15 +146,18 @@ async def run_positional(run: dict, pool) -> None:
                         INSERT INTO backtest_trades
                           (run_id, symbol, quant_rank, signal_date, entry_trigger_price,
                            structural_sl, risk_per_share, quantity, entry_type, status,
-                           entry_fill_date, entry_fill_price, realized_pnl)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'MOMENTUM_RANK','OPEN',$9,$10,$11)
+                           entry_fill_date, entry_fill_price, realized_pnl, gross_pnl)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'MOMENTUM_RANK','OPEN',$9,$10,$11,0)
                         RETURNING id
                         """,
                         run_id, sym, want.index(sym) + 1, nxt, round(gross, 2),
                         round(sma, 2), round(risk, 2), qty, nxt, entry,
                         round(-_leg_cost(entry * qty, False, cfg), 2))
-                    holdings[sym] = {"entry": entry, "qty": qty, "date": nxt,
-                                     "risk": risk, "db_id": row["id"]}
+                    # gross_entry is the RAW open, kept separately from `entry`
+                    # (which includes buy slippage) so the frictionless gross
+                    # P&L can be computed at exit.
+                    holdings[sym] = {"entry": entry, "gross_entry": gross, "qty": qty,
+                                     "date": nxt, "risk": risk, "db_id": row["id"]}
 
     # Positions still open at the window end stay OPEN — the summary endpoint
     # marks them to the last close as unrealized, exactly like the breakout book.
