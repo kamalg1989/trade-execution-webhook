@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import multiprocessing as mp
 import re
 import sys
 import time
@@ -84,7 +85,14 @@ def parse_xbrl(path: Path) -> dict:
     return out
 
 
-async def fetch_pending(pool, limit: int):
+async def fetch_pending(pool, limit: int, shard: int = 0, shards: int = 1):
+    """Pending filings for one worker's shard.
+
+    Sharding is `f.id % shards = shard` rather than LIMIT/OFFSET: offsets shift
+    underneath concurrent writers, so two workers could hand each other the same
+    row. Modulo on the immutable primary key gives each worker a disjoint,
+    stable slice with no coordination and no locking.
+    """
     return await pool.fetch(
         """
         SELECT f.symbol, f.broadcast_date, f.period_from, f.period_to,
@@ -100,12 +108,16 @@ async def fetch_pending(pool, limit: int):
         -- (XBRL filing simply was not in force yet), and each one would
         -- otherwise burn a download attempt plus a 20s backoff.
         WHERE f.xbrl_url LIKE '%.xml' AND u.id IS NULL
-        -- Oldest first: the usable history is 2011-2024, while 2025-26 is
+          -- Single %, not %%: asyncpg passes SQL through verbatim (it uses $n
+          -- placeholders), so the psycopg2-style %% escape would be sent to
+          -- Postgres literally and fail as "operator does not exist".
+          AND (f.id % $2) = $3
+        -- Oldest first: the usable history is 2018-2024, while 2025-26 is
         -- sparse, so this front-loads the years the backtest can actually use.
         ORDER BY f.broadcast_date ASC
         LIMIT $1
         """,
-        limit,
+        limit, shards, shard,
     )
 
 
@@ -144,16 +156,21 @@ async def show_status(pool):
           flush=True)
 
 
-async def run(limit: int):
+async def run(limit: int, shard: int = 0, shards: int = 1, delay: float = DELAY_SEC):
     from app.db import create_pool
     from nse import NSE
 
     pool = await create_pool()
     try:
-        pending = await fetch_pending(pool, limit)
-        print(f"pending this pass: {len(pending)}", flush=True)
+        pending = await fetch_pending(pool, limit, shard, shards)
+        print(f"[w{shard}] pending this pass: {len(pending)}", flush=True)
         ok = failed = 0
-        with NSE(download_folder=str(DOWNLOAD_DIR), server=True) as n:
+        # Per-worker download dir: the NSE client writes the fetched document
+        # to disk by its own filename, so several workers sharing one folder
+        # could race on the same path. Cheap isolation, no locking.
+        wdir = DOWNLOAD_DIR / f"w{shard}"
+        wdir.mkdir(parents=True, exist_ok=True)
+        with NSE(download_folder=str(wdir), server=True) as n:
             for i, row in enumerate(pending, 1):
                 path = None
                 try:
@@ -172,12 +189,15 @@ async def run(limit: int):
                         except OSError:
                             pass
                 await store(pool, row, parsed)
-                if i % 200 == 0:
-                    print(f"  {i}/{len(pending)}  ok={ok} failed={failed}", flush=True)
-                    await show_status(pool)
-                time.sleep(DELAY_SEC)
-        print(f"pass complete: ok={ok} failed={failed}", flush=True)
-        await show_status(pool)
+                if i % 250 == 0:
+                    print(f"  [w{shard}] {i}/{len(pending)}  ok={ok} failed={failed}", flush=True)
+                    if shard == 0:
+                        await show_status(pool)
+                time.sleep(delay)
+        print(f"[w{shard}] pass complete: ok={ok} failed={failed}", flush=True)
+        if shard == 0:
+            await show_status(pool)
+        return ok + failed
     finally:
         await pool.close()
 
@@ -191,28 +211,48 @@ async def status_only():
         await pool.close()
 
 
+def _worker_loop(args):
+    """One OS process, pinned to its own shard, looping until its slice is done."""
+    shard, shards, limit, delay, loop = args
+    while True:
+        processed = asyncio.run(run(limit, shard, shards, delay))
+        if not loop or not processed:
+            break
+    return shard
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=5000,
-                    help="filings to process this pass")
+                    help="filings per pass, per worker")
     ap.add_argument("--status", action="store_true", help="print progress and exit")
     ap.add_argument("--loop", action="store_true",
                     help="keep going pass after pass until nothing is pending")
+    # The bottleneck is NSE's tolerance, not our CPU — this job is pure network
+    # wait, so workers are about overlapping latency, not parallel compute.
+    # 4 workers x 2.0s each is ~2 req/s aggregate, roughly double the old
+    # single-worker 1/1.2s, while staying far below the rate that would look
+    # like a scrape. Raising workers WITHOUT raising --delay proportionally is
+    # how you get the IP throttled and lose the whole batch.
+    ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--delay", type=float, default=2.0,
+                    help="seconds between requests WITHIN each worker")
     a = ap.parse_args()
+
     if a.status:
         asyncio.run(status_only())
         return
-    if a.loop:
-        while True:
-            before = time.time()
-            asyncio.run(run(a.limit))
-            # If a pass finished suspiciously fast it almost certainly found
-            # nothing left to do; stop rather than spin.
-            if time.time() - before < 30:
-                print("nothing pending — done", flush=True)
-                break
-    else:
-        asyncio.run(run(a.limit))
+
+    if a.workers <= 1:
+        _worker_loop((0, 1, a.limit, a.delay, a.loop))
+        return
+
+    print(f"backfill: {a.workers} workers, {a.delay}s delay each "
+          f"(~{a.workers / a.delay:.1f} req/s aggregate)", flush=True)
+    with mp.Pool(a.workers) as p:
+        p.map(_worker_loop,
+              [(i, a.workers, a.limit, a.delay, a.loop) for i in range(a.workers)])
+    asyncio.run(status_only())
 
 
 if __name__ == "__main__":
