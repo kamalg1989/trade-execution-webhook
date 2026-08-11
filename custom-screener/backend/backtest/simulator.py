@@ -265,6 +265,13 @@ def step_exit(trade: SimTrade, day: object, bar: dict, exit_config: dict) -> Non
         return
 
 
+def close_trade(trade: SimTrade, day: object, gross_price: float, reason: str, cfg: dict) -> None:
+    """Public alias for _close, for callers outside this module (engine.py's
+    pre-earnings exit). Keeps exit accounting — slippage, per-leg costs, gross
+    vs net — in exactly one place rather than duplicated at the call site."""
+    _close(trade, day, gross_price, reason, cfg)
+
+
 def _close(trade: SimTrade, day: object, gross_price: float, reason: str, cfg: dict) -> None:
     net_price = _sell_fill(gross_price, cfg)
     trade.gross_pnl += (gross_price - trade.entry_trigger_price) * trade.qty_remaining

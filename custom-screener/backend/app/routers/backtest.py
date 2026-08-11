@@ -137,6 +137,9 @@ class RunCreate(BaseModel):
     # sql/015 — cost-edge filters. See that migration for the measured basis.
     min_risk_pct_of_price: float | None = None
     max_holding_days: int | None = None
+    # sql/017 — earnings-event rules (short lead times only; see migration).
+    avoid_entry_days_before_earnings: int | None = None
+    exit_days_before_earnings: int | None = None
 
 
 def _pool(request: Request):
@@ -178,10 +181,11 @@ async def create_run(body: RunCreate, request: Request):
            stage2_enable_pullback_trigger, stage2_enable_breakout_retest_trigger,
            ai_respect_recommendation, entry_breadth_max_pct, entry_breadth_require_rising,
            risk_per_trade_pct, max_capital_per_trade_pct, max_contraction_ratio,
-           min_risk_pct_of_price, max_holding_days)
+           min_risk_pct_of_price, max_holding_days,
+           avoid_entry_days_before_earnings, exit_days_before_earnings)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
                 $21,$22,$23,$24,$25,$26,$27,$28,
-                $29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45)
+                $29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47)
         RETURNING id
         """,
         body.start_date, body.end_date, body.track_mode, body.capital,
@@ -203,6 +207,7 @@ async def create_run(body: RunCreate, request: Request):
         body.risk_per_trade_pct, body.max_capital_per_trade_pct,
         body.max_contraction_ratio,
         body.min_risk_pct_of_price, body.max_holding_days,
+        body.avoid_entry_days_before_earnings, body.exit_days_before_earnings,
     )
     run_id = row["id"]
 
@@ -351,6 +356,8 @@ def _run_to_json(r) -> dict:
         "maxContractionRatio": float(d["max_contraction_ratio"]) if d.get("max_contraction_ratio") is not None else None,
         "minRiskPctOfPrice": float(d["min_risk_pct_of_price"]) if d.get("min_risk_pct_of_price") is not None else None,
         "maxHoldingDays": d.get("max_holding_days"),
+        "avoidEntryDaysBeforeEarnings": d.get("avoid_entry_days_before_earnings"),
+        "exitDaysBeforeEarnings": d.get("exit_days_before_earnings"),
     }
 
 

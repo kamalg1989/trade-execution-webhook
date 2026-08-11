@@ -35,11 +35,17 @@ from datetime import datetime
 sys.path.insert(0, "/root/trade-execution-webhook")
 
 API = "http://localhost:8005/api"
-TAG = "campaign-v2"
+TAG = "campaign-v3"
 
 # One-year windows. 2026 is year-to-date (data ends ~2026-08-10).
-WINDOWS = [(str(y), f"{y}-01-01", f"{y}-12-31") for y in range(2016, 2026)]
-WINDOWS.append(("2026ytd", "2026-01-01", "2026-08-08"))
+# v3 windows stop at 2024 ON PURPOSE. The harvested filing calendar
+# (earnings_filings) is dense for 2016-2024 (~10-14k filings/yr across
+# ~1.6-2.1k symbols) but thin for 2025 (3,958) and essentially empty for 2026
+# (26 filings, 12 symbols). Since a missing filing is treated as "no
+# constraint", running the earnings rules over 2025/26 would silently measure
+# a no-op and dilute the result — so those windows are excluded rather than
+# reported as if they tested anything.
+WINDOWS = [(str(y), f"{y}-01-01", f"{y}-12-31") for y in range(2016, 2025)]
 
 EXITS = {
     "trailing": True, "breakeven": True, "half_booking": True, "fixed_target": False,
@@ -63,12 +69,20 @@ BASE = {
 # config: 6/11 years positive, lowest average drawdown).
 C = {"stage2_base_stage_max_allowed": 2, "entry_breadth_require_rising": True}
 
+# Campaign v3 — earnings-event rules (sql/016 + sql/017), on top of C.
+# Lead times deliberately kept SHORT. SEBI LODR only requires a few working
+# days' prior intimation of a results board meeting, so ~2-3 days of foresight
+# is something a real trader would have had; assuming more turns the harvested
+# broadcast dates into a look-ahead oracle. P exists purely as a sensitivity
+# probe — if the benefit only shows up at the longer lead, that is evidence of
+# look-ahead leakage rather than a tradable edge, and the rule gets rejected.
 CONFIGS = [
-    ("H-C+minrisk3", {**C, "min_risk_pct_of_price": 3.0}),
-    ("I-C+minrisk4", {**C, "min_risk_pct_of_price": 4.0}),
-    ("J-C+timestop12", {**C, "max_holding_days": 12}),
-    ("K-C+timestop20", {**C, "max_holding_days": 20}),
-    ("L-C+minrisk3+timestop15", {**C, "min_risk_pct_of_price": 3.0, "max_holding_days": 15}),
+    ("M-C+noEntry3d", {**C, "avoid_entry_days_before_earnings": 3}),
+    ("N-C+exit2d", {**C, "exit_days_before_earnings": 2}),
+    ("O-C+noEntry3d+exit2d", {**C, "avoid_entry_days_before_earnings": 3,
+                              "exit_days_before_earnings": 2}),
+    ("P-C+noEntry10d(leak probe)", {**C, "avoid_entry_days_before_earnings": 10}),
+    ("C-ref(2016-24)", {**C}),
 ]
 
 

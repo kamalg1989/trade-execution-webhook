@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import traceback
+from bisect import bisect_left
 from datetime import date
 
 import pandas as pd
@@ -20,11 +21,22 @@ from . import funnel
 from . import funnel_v2
 from . import funnel_stage2
 from .ai_repo import BacktestAiRepo
-from .simulator import SimTrade, step_exit, try_fill
+from .simulator import SimTrade, close_trade, step_exit, try_fill
 
 SWING_LOOKBACK_DAYS = 80  # trailing window fed to last_swing_low() — plenty for a 5-bar pivot
 
 logger = logging.getLogger(__name__)
+
+
+def _days_to_earnings_outer(earnings_by_symbol: dict, sym: str, ref_day) -> int | None:
+    """Module-level twin of the per-run closure, for use in the daily
+    management loop. Returns None when the symbol has no upcoming filing on
+    record so that missing calendar data never forces an exit."""
+    dates = earnings_by_symbol.get(sym)
+    if not dates:
+        return None
+    i = bisect_left(dates, ref_day)
+    return (dates[i] - ref_day).days if i < len(dates) else None
 
 
 async def run_backtest(run_id: int, pool) -> None:
@@ -136,6 +148,26 @@ async def _run(run: dict, pool) -> None:
     # NEGATIVE net edge). Entry gate only.
     min_risk_pct_of_price = (float(run["min_risk_pct_of_price"])
                              if run.get("min_risk_pct_of_price") is not None else None)
+    # sql/017 — earnings-event rules. See that migration for the look-ahead
+    # discipline these must be read under: they are only legitimate at short
+    # lead times, because that is all the advance notice SEBI actually requires.
+    avoid_entry_days_before_earnings = run.get("avoid_entry_days_before_earnings")
+    exit_days_before_earnings = run.get("exit_days_before_earnings")
+    earnings_by_symbol: dict = {}
+    if avoid_entry_days_before_earnings or exit_days_before_earnings:
+        # One fetch for the whole window (plus a tail, so a position still open
+        # at the window end can still see its upcoming filing), then an in-memory
+        # sorted list per symbol — the per-day lookup is a bisect, not a query.
+        er = await pool.fetch(
+            """
+            SELECT symbol, broadcast_date FROM earnings_filings
+            WHERE broadcast_date BETWEEN $1::date - 10 AND $2::date + 120
+            ORDER BY symbol, broadcast_date
+            """,
+            start_date, end_date,
+        )
+        for row in er:
+            earnings_by_symbol.setdefault(row["symbol"], []).append(row["broadcast_date"])
     breadth_by_day: dict = {}
     if entry_breadth_max_pct is not None or entry_breadth_require_rising:
         # Window starts well before start_date so the 20-session average is
@@ -265,10 +297,15 @@ async def _run(run: dict, pool) -> None:
         still_active = []
         for t in active:
             bar = bars_by_symbol.get(t.symbol)
-            if bar is not None:
-                if t.status == "PENDING":
-                    since = day_idx - t.signal_day_idx
-                    try_fill(t, day, bar, resting_window_days, since, cfg=exit_config)
+            if (exit_days_before_earnings and t.status == "OPEN" and bar is not None):
+                dte = _days_to_earnings_outer(earnings_by_symbol, t.symbol, day)
+                if dte is not None and dte <= int(exit_days_before_earnings):
+                    close_trade(t, day, round(bar["close"], 2), "PRE_EARNINGS", exit_config)
+            if bar is not None and t.status == "OPEN":
+                step_exit(t, day, bar, exit_config)
+            if bar is not None and t.status == "PENDING":
+                since = day_idx - t.signal_day_idx
+                try_fill(t, day, bar, resting_window_days, since, cfg=exit_config)
                 if t.status == "OPEN":
                     step_exit(t, day, bar, exit_config)
             if t.status in ("PENDING", "OPEN"):
@@ -298,6 +335,21 @@ async def _run(run: dict, pool) -> None:
                 pool, [c["symbol"] for c in candidates], day)
             candidates = [c for c in candidates
                           if ratios.get(c["symbol"], 0.0) <= max_contraction_ratio]
+        def _days_to_earnings(sym, ref_day):
+            """Calendar days from ref_day to that symbol's next results
+            broadcast, or None if we have no upcoming filing on record.
+            Absent data means 'no constraint' — a gap in the harvested
+            calendar must never silently block or force trades."""
+            dates = earnings_by_symbol.get(sym)
+            if not dates:
+                return None
+            i = bisect_left(dates, ref_day)
+            return (dates[i] - ref_day).days if i < len(dates) else None
+
+        if avoid_entry_days_before_earnings and candidates:
+            n_days = int(avoid_entry_days_before_earnings)
+            candidates = [c for c in candidates
+                          if (lambda d: d is None or d > n_days)(_days_to_earnings(c["symbol"], day))]
         if min_risk_pct_of_price is not None and candidates:
             candidates = [c for c in candidates
                           if c["entry"] > 0
