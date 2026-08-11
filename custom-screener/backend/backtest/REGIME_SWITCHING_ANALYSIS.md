@@ -62,3 +62,53 @@ Genuine options, in increasing order of work:
 What will NOT work is another parameter sweep. At ~250 backtests, roughly a
 dozen results look "significant" at p=0.05 by chance alone; the search itself
 is now the dominant source of false positives.
+
+---
+
+# Option 1 result: the regime state machine does NOT work
+
+Campaign v5, against B (basemax=2 alone: 169.3k, 5/11 yrs, worst -36.4k,
+avgDD 27.8k, 2,230 trades):
+
+    W-B+regime100/3-block  146.8k  5/11  worst -27.0k  avgDD 17.1k  1270 trades
+    V-B+regime50/3-half    107.9k  7/11  worst -35.5k  avgDD 21.7k  1800
+    T-B+regime50/3-block    97.0k  7/11  worst -39.2k  avgDD 17.0k  1299
+    U-B+regime50/5-block    91.3k  6/11  worst -39.0k  avgDD 17.0k  1308
+
+## It fails on its own terms
+
+Per-year, T vs B in exactly the years it was built to protect:
+
+    2018  -36.4k -> -39.2k   WORSE
+    2019   -8.8k -> -25.2k   MUCH WORSE
+    2022  -35.8k -> -19.8k   better
+    2025  -33.1k -> -10.5k   better
+
+while giving up large amounts in the good years:
+
+    2021  +71.8k -> +18.6k
+    2017  +31.0k -> +14.4k
+    2023  +92.3k -> +74.0k
+
+It made the two worst years WORSE. A signal that cannot flag 2018 and 2019 in
+advance is not identifying regimes — it is just trading less.
+
+## The decisive comparison
+
+    T (state machine)      1,299 trades -> 97.0k, 7/11 yrs, avgDD 17.0k
+    C (naive daily gate)   1,299 trades -> 134.4k, 6/11 yrs, avgDD 15.5k
+
+At IDENTICAL trade count the simple daily breadth filter beats the hysteresis
+state machine on total P&L and on drawdown. The confirmation logic — the whole
+premise of the design — adds nothing. What looks like a defensive benefit
+(7/11 years, lower drawdown) is just the mechanical consequence of taking 42%
+fewer trades, not of taking better ones.
+
+## What this means for Option 2
+
+If bad regimes are not identifiable in advance, then an allocation layer that
+SWITCHES between two strategies fails for the same reason — the switch would be
+wrong exactly when it matters. A second strategy would have to run ALWAYS-ON
+alongside the first, with diversification doing the work rather than timing.
+That is a materially different (and more honest) design than "detect regime,
+pick strategy".
