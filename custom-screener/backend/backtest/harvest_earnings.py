@@ -78,6 +78,13 @@ def fetch_range(start: date, end: date) -> list[dict]:
                         "relating_to": (r.get("relatingTo") or "")[:64] or None,
                         "audited": (r.get("audited") or "")[:32] or None,
                         "consolidated": (r.get("consolidated") or "")[:32] or None,
+                        # sql/018 — the XBRL document is what actually carries
+                        # revenue/profit/EPS; without this link the filing row
+                        # is just a date and the fundamentals backfill has
+                        # nothing to fetch.
+                        "xbrl_url": (r.get("xbrl") or None),
+                        "isin": (r.get("isin") or "")[:24] or None,
+                        "seq_number": (r.get("seqNumber") or "")[:32] or None,
                     })
                     kept += 1
                 print(f"  {cur}..{chunk_end}: {len(rows)} rows, {kept} usable", flush=True)
@@ -102,15 +109,24 @@ async def store(rows: list[dict]) -> int:
                 continue
             seen.add(k)
             uniq.append(r)
+        # DO UPDATE rather than DO NOTHING on the xbrl columns: the first
+        # harvest pass predated sql/018 and stored dates only, so re-running
+        # must be able to backfill xbrl_url onto those existing rows instead of
+        # silently skipping them as duplicates.
         await pool.executemany(
             """
             INSERT INTO earnings_filings
-              (symbol, broadcast_date, period_from, period_to, relating_to, audited, consolidated)
-            VALUES ($1,$2,$3,$4,$5,$6,$7)
-            ON CONFLICT DO NOTHING
+              (symbol, broadcast_date, period_from, period_to, relating_to,
+               audited, consolidated, xbrl_url, isin, seq_number)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            ON CONFLICT (symbol, broadcast_date, period_to, COALESCE(consolidated, ''))
+            DO UPDATE SET xbrl_url   = COALESCE(EXCLUDED.xbrl_url, earnings_filings.xbrl_url),
+                          isin       = COALESCE(EXCLUDED.isin, earnings_filings.isin),
+                          seq_number = COALESCE(EXCLUDED.seq_number, earnings_filings.seq_number)
             """,
             [(r["symbol"], r["broadcast_date"], r["period_from"], r["period_to"],
-              r["relating_to"], r["audited"], r["consolidated"]) for r in uniq],
+              r["relating_to"], r["audited"], r["consolidated"],
+              r["xbrl_url"], r["isin"], r["seq_number"]) for r in uniq],
         )
         row = await pool.fetchrow("SELECT count(*) c, min(broadcast_date) lo, max(broadcast_date) hi "
                                   "FROM earnings_filings")
