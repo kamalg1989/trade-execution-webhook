@@ -35,7 +35,7 @@ from datetime import datetime
 sys.path.insert(0, "/root/trade-execution-webhook")
 
 API = "http://localhost:8005/api"
-TAG = "campaign-v3"
+TAG = "campaign-v4"
 
 # One-year windows. 2026 is year-to-date (data ends ~2026-08-10).
 # v3 windows stop at 2024 ON PURPOSE. The harvested filing calendar
@@ -45,7 +45,8 @@ TAG = "campaign-v3"
 # constraint", running the earnings rules over 2025/26 would silently measure
 # a no-op and dilute the result — so those windows are excluded rather than
 # reported as if they tested anything.
-WINDOWS = [(str(y), f"{y}-01-01", f"{y}-12-31") for y in range(2016, 2025)]
+WINDOWS = [(str(y), f"{y}-01-01", f"{y}-12-31") for y in range(2016, 2026)]
+WINDOWS.append(("2026ytd", "2026-01-01", "2026-08-08"))
 
 EXITS = {
     "trailing": True, "breakeven": True, "half_booking": True, "fixed_target": False,
@@ -69,20 +70,23 @@ BASE = {
 # config: 6/11 years positive, lowest average drawdown).
 C = {"stage2_base_stage_max_allowed": 2, "entry_breadth_require_rising": True}
 
-# Campaign v3 — earnings-event rules (sql/016 + sql/017), on top of C.
-# Lead times deliberately kept SHORT. SEBI LODR only requires a few working
-# days' prior intimation of a results board meeting, so ~2-3 days of foresight
-# is something a real trader would have had; assuming more turns the harvested
-# broadcast dates into a look-ahead oracle. P exists purely as a sensitivity
-# probe — if the benefit only shows up at the longer lead, that is evidence of
-# look-ahead leakage rather than a tradable edge, and the rule gets rejected.
+# Campaign v4 — ENTRY TECHNIQUE, the one structural lever never tested at
+# scale. Production hard-codes ENABLE_PULLBACK_TRIGGER=False and
+# ENABLE_BREAKOUT_RETEST_TRIGGER=False, so the system only ever buys the
+# breakout itself. That is the likeliest source of the "bad trades" problem:
+# 1,425 of 2,230 trades lose, dying in ~8 days for -3.77% — the signature of
+# chasing breakouts that immediately fail. Buying the retest/pullback instead
+# is what an experienced positional trader does to avoid exactly that.
+#
+# These two knobs already exist (sql/008) and scored +7% and +15% in the
+# original single-window Stage 2 sweep, but that was ONE window on the old
+# baseline and was never re-validated. Given three prior "edges" died under
+# multi-window testing, this settles it across all 11 windows.
 CONFIGS = [
-    ("M-C+noEntry3d", {**C, "avoid_entry_days_before_earnings": 3}),
-    ("N-C+exit2d", {**C, "exit_days_before_earnings": 2}),
-    ("O-C+noEntry3d+exit2d", {**C, "avoid_entry_days_before_earnings": 3,
-                              "exit_days_before_earnings": 2}),
-    ("P-C+noEntry10d(leak probe)", {**C, "avoid_entry_days_before_earnings": 10}),
-    ("C-ref(2016-24)", {**C}),
+    ("Q-C+pullback", {**C, "stage2_enable_pullback_trigger": True}),
+    ("R-C+retest", {**C, "stage2_enable_breakout_retest_trigger": True}),
+    ("S-C+both-triggers", {**C, "stage2_enable_pullback_trigger": True,
+                           "stage2_enable_breakout_retest_trigger": True}),
 ]
 
 
@@ -172,7 +176,10 @@ def main():
     print(f"campaign: {len(CONFIGS)} configs x {len(WINDOWS)} windows, {len(days)} trading days",
           flush=True)
 
-    warm(days, base_stage_max=2)      # shared by configs B..G
+    # v4 configs each toggle a Stage 2 entry trigger, so each has its OWN
+    # config-hash and its own cache. Warming only basemax=2 would leave every
+    # run cold; instead let the runs populate their caches themselves (they are
+    # the same total work, just serialised) and skip the pre-warm entirely.
     # NOTE: deliberately not warming the production-default hash. Config A is
     # last and only 11 runs; warming its 2,625 days costs more wall-clock than
     # letting those 11 runs populate the cache themselves.
