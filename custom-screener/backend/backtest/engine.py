@@ -131,6 +131,11 @@ async def _run(run: dict, pool) -> None:
     # and that migration for the measured, cross-window edge.
     max_contraction_ratio = (float(run["max_contraction_ratio"])
                              if run.get("max_contraction_ratio") is not None else None)
+    # sql/015 — skip candidates whose stop distance is too small a fraction of
+    # price to clear round-trip costs (measured: the <3%-of-price band has a
+    # NEGATIVE net edge). Entry gate only.
+    min_risk_pct_of_price = (float(run["min_risk_pct_of_price"])
+                             if run.get("min_risk_pct_of_price") is not None else None)
     breadth_by_day: dict = {}
     if entry_breadth_max_pct is not None or entry_breadth_require_rising:
         # Window starts well before start_date so the 20-session average is
@@ -177,6 +182,7 @@ async def _run(run: dict, pool) -> None:
         "stamp_duty_pct": float(run["stamp_duty_pct"]),
         "exchange_charges_pct": float(run["exchange_charges_pct"]),
         "dp_charge": float(run["dp_charge"]),
+        "max_holding_days": run.get("max_holding_days"),
     }
     needs_ema_atr = any(exit_config.get(k) for k in
                          ("ema10_trail", "ema21_trail", "ema50_trail", "chandelier_trail"))
@@ -292,6 +298,10 @@ async def _run(run: dict, pool) -> None:
                 pool, [c["symbol"] for c in candidates], day)
             candidates = [c for c in candidates
                           if ratios.get(c["symbol"], 0.0) <= max_contraction_ratio]
+        if min_risk_pct_of_price is not None and candidates:
+            candidates = [c for c in candidates
+                          if c["entry"] > 0
+                          and (c["risk_per_share"] / c["entry"] * 100) >= min_risk_pct_of_price]
         cand_by_symbol = {c["symbol"]: c for c in candidates}
 
         quant_top3 = candidates[:max_picks_per_track] if track_mode in ("QUANT", "BOTH") else []

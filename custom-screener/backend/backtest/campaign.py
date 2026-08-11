@@ -35,7 +35,7 @@ from datetime import datetime
 sys.path.insert(0, "/root/trade-execution-webhook")
 
 API = "http://localhost:8005/api"
-TAG = "campaign-v1"
+TAG = "campaign-v2"
 
 # One-year windows. 2026 is year-to-date (data ends ~2026-08-10).
 WINDOWS = [(str(y), f"{y}-01-01", f"{y}-12-31") for y in range(2016, 2026)]
@@ -56,33 +56,19 @@ BASE = {
 
 # Each entry is what gets ADDED to BASE. Ordered cheapest-hypothesis-first so a
 # partial campaign still answers the most important questions.
+# Campaign v2 — cost-edge filters (sql/015). The v1 campaign showed the real
+# problem is not selection but frictions: avg gross move +0.704%/trade vs
+# 0.522% costs, i.e. costs eat ~74% of the gross edge. These test the two
+# mechanisms that attack that directly, on top of C (the most consistent v1
+# config: 6/11 years positive, lowest average drawdown).
+C = {"stage2_base_stage_max_allowed": 2, "entry_breadth_require_rising": True}
+
 CONFIGS = [
-    # Isolate each validated edge, then stack them. All of these share the
-    # basemax=2 Stage 2 config-hash, so one warm pass covers the lot.
-    ("B-basemax2", {"stage2_base_stage_max_allowed": 2}),
-    ("C-basemax2+rising", {"stage2_base_stage_max_allowed": 2,
-                           "entry_breadth_require_rising": True}),
-    ("D-basemax2+vcp", {"stage2_base_stage_max_allowed": 2,
-                        "max_contraction_ratio": 0.7}),
-    ("E-basemax2+rising+vcp", {"stage2_base_stage_max_allowed": 2,
-                               "entry_breadth_require_rising": True,
-                               "max_contraction_ratio": 0.7}),
-    ("F-full+risk1", {"stage2_base_stage_max_allowed": 2,
-                      "entry_breadth_require_rising": True,
-                      "max_contraction_ratio": 0.7, "risk_per_trade_pct": 1.0}),
-    # The regime-dependent variant, kept in deliberately: it should FAIL in the
-    # high-breadth years (2021 ~85% above 200SMA), documenting why an absolute
-    # breadth cap must not be shipped.
-    ("G-full+lvl40cap", {"stage2_base_stage_max_allowed": 2,
-                         "entry_breadth_max_pct": 40.0,
-                         "entry_breadth_require_rising": True,
-                         "max_contraction_ratio": 0.7, "risk_per_trade_pct": 1.0}),
-    # Production-as-it-runs-today. Deliberately LAST: it is the only config
-    # with no Stage 2 override, so it reads a different cache (the shared
-    # backtest_quant_signals table) and its windows are cold. Putting it at the
-    # end means the six comparable configs above finish first.
-    ("A-production", {"max_picks_per_track": 3, "safety_sl_pct": 8.0,
-                      "exit_config": {**EXITS, "fixed_target": True, "ema21_trail": False}}),
+    ("H-C+minrisk3", {**C, "min_risk_pct_of_price": 3.0}),
+    ("I-C+minrisk4", {**C, "min_risk_pct_of_price": 4.0}),
+    ("J-C+timestop12", {**C, "max_holding_days": 12}),
+    ("K-C+timestop20", {**C, "max_holding_days": 20}),
+    ("L-C+minrisk3+timestop15", {**C, "min_risk_pct_of_price": 3.0, "max_holding_days": 15}),
 ]
 
 

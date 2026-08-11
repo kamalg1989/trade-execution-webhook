@@ -192,6 +192,18 @@ def step_exit(trade: SimTrade, day: object, bar: dict, exit_config: dict) -> Non
         _close(trade, day, round(bar["close"], 2), "FAILED_BREAKOUT", exit_config)
         return
 
+    # Time stop (sql/015). Only fires on a trade that has NOT yet proved
+    # itself — once breakeven or half-booking has triggered, the position is
+    # working and the clock must not touch it (winners here average 24 days
+    # held, so a naive time stop would amputate exactly the trades that carry
+    # the system). days_held is counted from the fill, not the signal.
+    max_hold = exit_config.get("max_holding_days")
+    if (max_hold and not trade.moved_to_breakeven and not trade.half_booked
+            and trade.entry_fill_date is not None
+            and (day - trade.entry_fill_date).days >= max_hold):
+        _close(trade, day, round(bar["close"], 2), "TIME_STOP", exit_config)
+        return
+
     swing_low = bar.get("swing_low")
     if (exit_config.get("swing_break_exit") and swing_low is not None
             and bar["close"] < swing_low):
