@@ -565,28 +565,43 @@ async def _daily_unrealized(pool, run_id: int, end_date: date,
     every day from entry_fill_date up to (but excluding) exit_date — or
     through the run's end_date if it's still open — so a position open for
     N days contributes N daily mark-to-market rows."""
-    # all_quant: PORTFOLIO runs have a single book with no quant/AI split, so
-    # their trades carry no quant_rank. Without this the CASE matches nothing,
-    # every series sums to zero, and the equity chart renders blank — which is
-    # exactly what happened.
+    # all_quant is retained for callers that need a single undivided book. It is
+    # currently unused: PORTFOLIO runs, the only such case, now skip this
+    # function entirely and render the engine's stored equity curve instead.
     quant_when = "TRUE" if all_quant else "t.quant_rank IS NOT NULL"
-    rows = await pool.fetch(
-        f"""
-        SELECT o.time::date AS d,
-          SUM(CASE WHEN {quant_when}
-                    THEN (o.close - t.entry_fill_price) * t.quantity ELSE 0 END) AS quant_unrealized,
-          SUM(CASE WHEN t.ai_rank IS NOT NULL
-                    THEN (o.close - t.entry_fill_price) * t.quantity ELSE 0 END) AS ai_unrealized
-        FROM backtest_trades t
-        JOIN ohlcv_data o
-          ON o.symbol = t.symbol
-         AND o.time::date >= t.entry_fill_date
-         AND o.time::date < COALESCE(t.exit_date, $2::date + 1)
-        WHERE t.run_id = $1 AND t.entry_fill_date IS NOT NULL
-        GROUP BY o.time::date
-        """,
-        run_id, end_date,
-    )
+    # PERFORMANCE. This query took ~4-6s and dominated the summary endpoint.
+    # Three separate causes, all fixed here:
+    #
+    # 1. `o.time::date >= ...` wrapped the partition key in a function, so
+    #    Postgres could not prune and scanned all 203 ohlcv_data partitions.
+    #    Comparing o.time directly against the date bounds lets pruning work.
+    #    `< exit_date` on a timestamp column is equivalent to `< exit_date` on
+    #    the cast, since a bar at exactly midnight of the exit date is excluded
+    #    either way and intraday timestamps within the exit date must also be.
+    # 2. With 203 partitions the planner emitted 2,861 JIT functions costing
+    #    ~2.1s of a 3.7s query — far more than JIT saved. Disabled per
+    #    transaction, not globally, so other workloads keep it.
+    # 3. Planning alone was ~450ms; pruning cuts that too.
+    async with pool.acquire() as con:
+        async with con.transaction():
+            await con.execute("SET LOCAL jit = off")
+            rows = await con.fetch(
+                f"""
+                SELECT o.time::date AS d,
+                  SUM(CASE WHEN {quant_when}
+                            THEN (o.close - t.entry_fill_price) * t.quantity ELSE 0 END) AS quant_unrealized,
+                  SUM(CASE WHEN t.ai_rank IS NOT NULL
+                            THEN (o.close - t.entry_fill_price) * t.quantity ELSE 0 END) AS ai_unrealized
+                FROM backtest_trades t
+                JOIN ohlcv_data o
+                  ON o.symbol = t.symbol
+                 AND o.time >= t.entry_fill_date
+                 AND o.time < COALESCE(t.exit_date, $2::date + 1)
+                WHERE t.run_id = $1 AND t.entry_fill_date IS NOT NULL
+                GROUP BY o.time::date
+                """,
+                run_id, end_date,
+            )
     return {r["d"]: {"quant": float(r["quant_unrealized"] or 0), "ai": float(r["ai_unrealized"] or 0)} for r in rows}
 
 
@@ -625,8 +640,12 @@ async def get_summary(run_id: int, request: Request):
         if t.get("ai_rank") is not None:
             row["ai"] += float(t["realized_pnl"] or 0)
 
-    unrealized_by_day = await _daily_unrealized(pool, run_id, run["end_date"],
-                                                all_quant=is_pf)
+    # A PORTFOLIO run renders `portfolioEquity` (the engine's stored daily
+    # equity), so the reconstructed series below is computed and then discarded.
+    # Skipping it removes the single most expensive query in this endpoint for
+    # exactly the runs being clicked on most.
+    unrealized_by_day = ({} if is_pf else
+                         await _daily_unrealized(pool, run_id, run["end_date"]))
 
     all_days = sorted(set(realized_by_day) | set(unrealized_by_day))
     equity_curve = []
