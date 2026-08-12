@@ -53,7 +53,16 @@ def _leg_cost(value: float, is_sell: bool) -> float:
 
 async def _run_one(pool, start: date, end: date, capital: float, slip: float,
                    momentum: str, rebalance: int, top_n: int, buffer_n: int,
-                   min_turnover: float):
+                   min_turnover: float, sl_mode: str = "none", sl_pct: float = 0.0):
+    """sl_mode, checked EVERY DAY (the base strategy only ever checked at
+    rebalance, which is why it drew down ~45%):
+        none    -- exit only at rebalance (rank drop / lost SMA200)
+        fixed   -- hard stop sl_pct below the entry price
+        trail   -- stop sl_pct below the highest close since entry
+        struct  -- daily close below the stock's own SMA200
+    After a stop fires the slot stays in CASH until the next rebalance, which is
+    what a real trader does; refilling instantly would quietly re-buy the same
+    falling names and flatter the result."""
     days = [r["d"] for r in await pool.fetch(
         "SELECT DISTINCT time::date AS d FROM ohlcv_data "
         "WHERE time::date BETWEEN $1 AND $2 ORDER BY d", start, end)]
@@ -82,15 +91,46 @@ async def _run_one(pool, start: date, end: date, capital: float, slip: float,
 
     async def closes_for(sym: str) -> dict:
         if sym not in series:
-            series[sym] = {r["d"]: float(r["c"]) for r in await pool.fetch(
-                "SELECT time::date AS d, close AS c FROM ohlcv_data "
-                "WHERE symbol=$1 AND time::date BETWEEN $2 AND $3", sym, start, end)}
+            # sma_200 comes along for the ride so the 'struct' stop can be
+            # evaluated daily without a second round trip per symbol.
+            series[sym] = {r["d"]: (float(r["c"]), float(r["s"]) if r["s"] is not None else None)
+                           for r in await pool.fetch(
+                "SELECT o.time::date AS d, o.close AS c, si.sma_200 AS s "
+                "FROM ohlcv_data o LEFT JOIN stock_indicators si "
+                "  ON si.symbol=o.symbol AND si.indicator_date=o.time::date "
+                "WHERE o.symbol=$1 AND o.time::date BETWEEN $2 AND $3", sym, start, end)}
         return series[sym]
 
     for i, day in enumerate(days):
         # --- daily mark to market (this is what makes real drawdown possible)
         for s, h in holdings.items():
-            h["last"] = series.get(s, {}).get(day, h["last"])
+            row = series.get(s, {}).get(day)
+            if row is not None:
+                h["last"] = row[0]
+                h["peak"] = max(h.get("peak", h["last"]), h["last"])
+                h["sma"] = row[1]
+
+        # --- DAILY stop-loss check (the base strategy had none at all)
+        if sl_mode != "none" and holdings:
+            stopped = []
+            for s, h in holdings.items():
+                px = h["last"]
+                if sl_mode == "fixed" and px <= h["entry_px"] * (1 - sl_pct / 100):
+                    stopped.append(s)
+                elif sl_mode == "trail" and px <= h["peak"] * (1 - sl_pct / 100):
+                    stopped.append(s)
+                elif sl_mode == "struct" and h.get("sma") and px < h["sma"]:
+                    stopped.append(s)
+            for s in stopped:
+                h = holdings.pop(s)
+                net = h["last"] * (1 - slip / 100)
+                proceeds = net * h["qty"] - _leg_cost(net * h["qty"], True)
+                cash += proceeds
+                pnl = proceeds - h["cost_basis"]
+                realized += pnl
+                n_closed += 1
+                n_win += pnl > 0
+
         equity_curve.append(cash + sum(h["last"] * h["qty"] for h in holdings.values()))
 
         if i % rebalance != 0 or i + 1 >= len(days):
@@ -138,7 +178,8 @@ async def _run_one(pool, start: date, end: date, capital: float, slip: float,
                         continue          # never spend money the book doesn't have
                     cash -= outlay
                     await closes_for(s)   # warm this symbol's series for MTM
-                    holdings[s] = {"qty": qty, "cost_basis": outlay, "last": entry}
+                    holdings[s] = {"qty": qty, "cost_basis": outlay, "last": entry,
+                                   "entry_px": entry, "peak": entry, "sma": None}
 
     final = equity_curve[-1] if equity_curve else capital
     peak = equity_curve[0] if equity_curve else capital
@@ -153,7 +194,7 @@ async def _run_one(pool, start: date, end: date, capital: float, slip: float,
 
 
 def _worker(job):
-    momentum, rebalance, top_n, buffer_n, min_turnover, capital, slip = job
+    momentum, rebalance, top_n, buffer_n, min_turnover, capital, slip, sl_mode, sl_pct = job
     from app.db import create_pool
 
     async def go():
@@ -164,11 +205,12 @@ def _worker(job):
                 s = date(y, 1, 1)
                 e = date(2026, 8, 8) if y == 2026 else date(y, 12, 31)
                 r = await _run_one(pool, s, e, capital, slip, momentum, rebalance,
-                                   top_n, buffer_n, min_turnover)
+                                   top_n, buffer_n, min_turnover, sl_mode, sl_pct)
                 if r:
                     r.update({"window": str(y) if y < 2026 else "2026ytd",
                               "momentum": momentum, "rebalance": rebalance,
-                              "top_n": top_n, "buffer_n": buffer_n})
+                              "top_n": top_n, "buffer_n": buffer_n,
+                              "sl_mode": sl_mode, "sl_pct": sl_pct})
                     out.append(r)
         finally:
             await pool.close()
@@ -189,10 +231,16 @@ def main():
     # buffer is tied to top_n (2x) rather than being a free axis: an independent
     # buffer would add a fourth dimension of overfitting surface for a knob whose
     # only job is anti-churn hysteresis.
-    jobs = [(m, rb, tn, tn * 2, a.min_turnover, a.capital, a.slippage)
-            for m in ("pct_chg_3m", "pct_chg_6m", "pct_chg_1y")
-            for rb in (10, 21, 42, 63)
-            for tn in (5, 10, 15, 20)]
+    # Stop-loss study, held on the plateau-supported settings from the first
+    # sweep (6m/12m momentum, 63-day rebalance, top-20) so the SL effect is not
+    # confounded by re-optimising everything else at the same time.
+    SLS = [("none", 0.0),
+           ("fixed", 10.0), ("fixed", 15.0), ("fixed", 20.0), ("fixed", 25.0),
+           ("trail", 15.0), ("trail", 20.0), ("trail", 25.0), ("trail", 30.0),
+           ("struct", 0.0)]
+    jobs = [(m, 63, 20, 40, a.min_turnover, a.capital, a.slippage, sm, sp)
+            for m in ("pct_chg_6m", "pct_chg_1y")
+            for sm, sp in SLS]
     print(f"positional sweep: {len(jobs)} configs x 11 windows = {len(jobs)*11} backtests, "
           f"{a.workers} workers", flush=True)
 
