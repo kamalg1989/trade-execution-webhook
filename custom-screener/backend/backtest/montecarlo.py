@@ -25,9 +25,19 @@ defeating the point of a stress test. The engine now applies the shock first.
 
 WHY PERCENTILES, NOT MEANS. On a rare, heavy-tailed event the mean is close to
 useless: it hides the paths that matter. What a position-sizing decision needs is
-the bad case, so this reports the MEDIAN and the 5th PERCENTILE of CAGR, and the
-WORST drawdown seen across all paths - not the average drawdown, which no
-investor ever experiences.
+the bad case, so this reports the MEDIAN and the 5th PERCENTILE of CAGR.
+
+WHY THE SAMPLED WORST IS NOT A SIZING INPUT. max() over N paths is an ORDER
+STATISTIC: it rises mechanically as N grows, because more sampling finds more
+extreme draws. Quoting "worst drawdown across 1,000 paths" as a planning figure
+therefore says as much about the path count as about the strategy, and doubling
+N would "discover" a worse number without anything having changed. So maxDD is
+reported at p50/p90/p95/p99 as well - p95 is the practical stress-sizing
+reference, and the sampled worst is retained only as an illustrative disaster
+scenario, explicitly labelled as such.
+
+Raw per-path values are written to disk alongside the summary so any other
+percentile can be recovered later without re-running.
 
 Run:  nohup python3 -m backtest.montecarlo --paths 500 > /root/mc.log 2>&1 &
 """
@@ -118,28 +128,39 @@ async def main():
     print(f"SURVIVORSHIP STRESS — {a.paths} paths per cell, reported by PERCENTILE")
     print("A simplified random-loss stress test. NOT a survivorship correction.")
     print("=" * 104)
-    print(f"{'hazard/yr':>10}{'recovery':>10}{'CAGR p50':>10}{'CAGR p5':>10}"
-          f"{'CAGR p95':>10}{'maxDD p50':>11}{'maxDD WORST':>13}"
-          f"{'w12m p5':>10}{'blowups':>9}")
-    rows = []
+    print(f"{'hazard':>8}{'recov':>7}{'CAGRp50':>9}{'CAGRp5':>8}"
+          f"{'DDp50':>8}{'DDp90':>8}{'DDp95':>8}{'DDp99':>8}"
+          f"{'DD(worst)':>11}{'w12m p5':>9}{'blowups':>9}")
+    rows, raw = [], {}
     for (hz, rec), rs in out.items():
         cg = sorted(r["cagr"] for r in rs)
         dd = sorted(r["maxDD"] for r in rs)
         w12 = sorted(r["worst12m"] for r in rs)
+        raw[f"{hz}_{rec}"] = {"cagr": cg, "maxDD": dd, "worst12m": w12}
         row = {"hazard": hz, "recovery": rec, "n": len(rs),
                "cagr_p50": pct(cg, 50), "cagr_p5": pct(cg, 5),
                "cagr_p95": pct(cg, 95),
-               "maxdd_p50": pct(dd, 50), "maxdd_worst": dd[-1],
+               "maxdd_p50": pct(dd, 50), "maxdd_p90": pct(dd, 90),
+               "maxdd_p95": pct(dd, 95), "maxdd_p99": pct(dd, 99),
+               # Kept for illustration ONLY. It is an order statistic and grows
+               # with path count; it is not a planning figure.
+               "maxdd_sampled_worst": dd[-1],
                "w12m_p5": w12[0] if len(w12) < 20 else pct(w12, 5),
                "blowups": round(sum(r["blowups"] for r in rs) / len(rs), 1)}
         rows.append(row)
-        print(f"{hz*100:>9.1f}%{rec*100:>9.0f}%{row['cagr_p50']:>10.2f}"
-              f"{row['cagr_p5']:>10.2f}{row['cagr_p95']:>10.2f}"
-              f"{row['maxdd_p50']:>11.1f}{row['maxdd_worst']:>13.1f}"
-              f"{row['w12m_p5']:>10.1f}{row['blowups']:>9.1f}", flush=True)
+        print(f"{hz*100:>7.1f}%{rec*100:>6.0f}%{row['cagr_p50']:>9.2f}"
+              f"{row['cagr_p5']:>8.2f}{row['maxdd_p50']:>8.1f}"
+              f"{row['maxdd_p90']:>8.1f}{row['maxdd_p95']:>8.1f}"
+              f"{row['maxdd_p99']:>8.1f}{row['maxdd_sampled_worst']:>11.1f}"
+              f"{row['w12m_p5']:>9.1f}{row['blowups']:>9.1f}", flush=True)
+
+    print("\np95 maxDD is the stress-sizing reference. The sampled worst is an")
+    print("order statistic - it grows with path count and is illustrative only.")
 
     with open(a.out, "w") as fh:
         json.dump(rows, fh, default=str)
+    with open(a.out.replace(".json", "_raw.json"), "w") as fh:
+        json.dump(raw, fh)
     print("\nALLDONE", flush=True)
 
 

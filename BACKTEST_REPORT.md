@@ -1098,6 +1098,41 @@ that the sleeve has not cleared a low bar: beating cash. Absent that, it should
 not be carried into a live allocation, and the burden of proof sits with a proper
 shared-capital test that has not been run.
 
+### 9.15 Drawdown percentiles — the correct stress-sizing reference (2,000 paths/cell)
+
+**Supersedes the "worst drawdown" figures in §9.14 as a planning input.**
+`max()` over N paths is an **order statistic**: it is non-decreasing in N *by
+construction*, so it reports the path count as much as the strategy and can never
+be a stable estimate. It is retained below only as an illustrative disaster
+scenario.
+
+| Hazard/yr | Rec. | CAGR p50 | CAGR p5 | DD p50 | DD p90 | **DD p95** | DD p99 | DD *(sampled worst)* | w12m p5 |
+|---|---|---|---|---|---|---|---|---|---|
+| 0.0% | — | 19.51 | 19.51 | 39.3 | 39.3 | **39.3** | 39.3 | *39.3* | −30.7 |
+| 0.5% | 0% | 19.37 | 17.40 | 39.3 | 42.2 | **43.0** | 46.3 | *50.8* | −34.0 |
+| 1.0% | 0% | 18.79 | 16.02 | 39.3 | 43.3 | **45.3** | 48.7 | *54.5* | −35.0 |
+| **2.0%** | 0% | 17.79 | 14.21 | 40.1 | 45.5 | **47.6** | 50.8 | *60.3* | −37.8 |
+| 4.0% | 0% | 15.90 | 10.69 | 42.6 | 49.0 | **51.8** | 57.0 | *65.1* | −40.6 |
+| 0.5% | 30% | 19.37 | 16.77 | 39.3 | 41.5 | **43.0** | 44.8 | *46.7* | −32.8 |
+| 1.0% | 30% | 19.06 | 15.82 | 39.3 | 43.0 | **44.2** | 45.8 | *49.1* | −33.8 |
+| 2.0% | 30% | 18.25 | 14.84 | 39.3 | 44.2 | **44.9** | 47.1 | *50.6* | −35.5 |
+| 4.0% | 30% | 16.86 | 12.53 | 41.5 | 46.1 | **47.4** | 50.8 | *56.7* | −37.0 |
+
+**The corrected stress-sizing figure is ~45–48% max drawdown, not 50–60%.**
+Across the empirical hazard range (0.3–2.7%/yr), **DD p95 lands at 43–48%** —
+meaningfully worse than the 39.3% observed with no stress, but well short of the
+sampled extremes.
+
+*A note on the order-statistic point, verified empirically:* doubling from 1,000
+to 2,000 paths left every sampled worst **unchanged** (50.8 / 54.5 / 60.3 / 65.1)
+— the seeds are nested, and the maximum happened to fall in the first thousand
+each time. That is luck of the draw, not stability: the statistic can only rise
+or stay flat as N grows, never fall, which is precisely why it cannot serve as a
+forecast. The p95 figures, by contrast, were stable across both runs.
+
+Raw per-path values are written to `mc2_raw.json`, so any other percentile can be
+recovered without re-running.
+
 ### 9.14 Monte Carlo stress, corrected ordering — 1,000 paths per cell
 
 Supersedes §9.11's table. Two changes: **the delisting shock is applied *before*
@@ -1124,15 +1159,25 @@ the refactor reproduces the pre-refactor figures **exactly** (CAGR 19.51, maxDD
 
 **The percentiles change the conclusion, and the earlier mean-based table was
 misleading.** The *median* path barely moves — 19.51 → 17.82 at a 2% hazard, less
-than 2pp. But:
+than 2pp. But **CAGR p5 falls to 14.21%**, a 5.3pp hit in the bad case, and the
+drawdown tail is far heavier than the median suggests.
 
-- **CAGR p5 falls to 14.21%** at 2% hazard — a **5.3pp** hit in the bad case.
-- **Worst drawdown balloons from 39.3% to 60.3%**, and to **65.1%** at 4%.
+A mean would have reported "small effect." The dispersion comes from how many
+independent shocks land, and on which positions — a handful of blow-ups is enough
+to take a 39% drawdown well past 50%, and the median is silent about it.
 
-A mean would have reported "small effect." The tail says something different: a
-handful of blow-ups is enough to turn a 39% drawdown into a 60% one, and the
-median is silent about it because most paths never hit that cluster. **This is the
-number that should drive position sizing, not the median.**
+**Two things this model does NOT say**, both of which an earlier draft got wrong:
+
+- It contains **no clustering at all** — shocks are independent per position per
+  day. An earlier draft wrote "most paths never hit that cluster", which
+  described a mechanism that is not in the model. The correct statement is: *the
+  model omits the temporal and sector clustering that could produce worse
+  drawdowns than its independent-loss paths.*
+- **The sampled worst drawdown is not a forecast.** `max()` over N paths is an
+  order statistic: it rises mechanically with N, so "worst across 1,000 paths"
+  reports the path count as much as the strategy. See §9.15 — **p95 is the
+  stress-sizing reference**; the sampled worst is an illustrative disaster
+  scenario only.
 
 Stating it as agreed:
 
@@ -1173,7 +1218,10 @@ Costs         0.10% slippage/fill, STT 0.10% both legs, stamp 0.015% buy,
 **Observed on this data (not expected forward):** CAGR 19.5%, maxDD 39.3%,
 ulcer 18.99, worst 12-month −30.7%, ~50 trades/yr, turnover 2.6x/yr.
 
-**Under stress:** CAGR p5 14–17%, worst drawdown 50–60%.
+**Under stress (§9.15):** CAGR p50 17.8–19.4%, CAGR p5 14–17%, and
+**drawdown p95 of 43–48%** across the empirical hazard range. The p95 is the
+sizing reference; the sampled worst (50–65%) is an illustrative disaster
+scenario, not a forecast.
 
 ### 10.1 The one permitted variation, if pre-registered
 
@@ -1206,20 +1254,34 @@ behaviour on stops is where a −15% stop becomes a −30% loss in reality.
 
 ### 10.3 Allocation
 
-Sizing is now the decision, not signals. As a rough linear scaling of the ~39%
-observed drawdown (and noting the stressed worst case is 50–60%):
+Sizing is now the decision, not signals. **Size against the larger of the two
+relevant drawdown figures**, never against the median CAGR:
+
+- **observed** max drawdown: **39.3%** (no stress)
+- **stress p95** max drawdown: **~48%** (§9.15, 2%/yr hazard, total loss)
+
+Using ~48% as the planning denominator:
 
 | Max drawdown you can hold through | Allocation to the strategy |
 |---|---|
-| ~15% | ~40% |
-| ~20% | ~55% |
-| ~25% | ~65% |
-| ~39% | fully invested |
+| ~15% | ~30% |
+| ~20% | ~40% |
+| ~25% | ~50% |
+| ~30% | ~60% |
+| ~48% | fully invested |
 
-**These are rough translations of an observed number, not guarantees**, and the
-stress test suggests the honest planning figure sits above 39% rather than below.
-The remainder belongs in cash or low-risk assets — which, per §9.13, is also
-strictly better than the breakout sleeve.
+**These are rough linear translations, not guarantees.** They also assume the
+drawdown scales linearly with allocation, which is true only because the
+remainder sits in cash — the moment the balance is in another risky asset, the
+arithmetic no longer holds.
+
+The remainder belongs in cash or low-risk assets, which per §9.13 is also
+strictly better than the breakout sleeve on the evidence available.
+
+**Two reasons the true figure may exceed 48%:** the stress model contains no
+temporal or sector clustering (real blow-ups cluster, and clustered losses hit a
+20-name book harder), and stops are assumed to fill at the breaching close rather
+than gapping through. Both push the same direction.
 
 ### 9.9 Still open
 
