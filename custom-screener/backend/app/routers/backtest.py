@@ -86,6 +86,11 @@ class RunCreate(BaseModel):
     pf_max_stocks_per_sector: int = Field(99, ge=1, le=99)
     pf_require_sector: bool = False
     pf_dd_throttle_at: float = Field(0.0, ge=0, le=0.5)
+    # sql/023 — how often the funnel generates signals. Only SIGNAL GENERATION
+    # is gated; exits, fills and mark-to-market still run every session, so a
+    # weekly scan never means a weekly stop-loss.
+    signal_cadence: str = Field("daily", pattern="^(daily|weekly|monthly)$")
+    signal_scan_day: str = Field("last", pattern="^(first|last)$")
     track_mode: str = Field("BOTH", pattern="^(QUANT|AI|BOTH)$")
     capital: float = 400000
     resting_window_days: int | None = None
@@ -221,11 +226,12 @@ async def create_run(body: RunCreate, request: Request):
            strategy, pos_momentum, pos_rebalance_days, pos_top_n, pos_buffer_n,
            pos_min_turnover_cr, pos_sl_mode, pos_sl_pct,
            pf_vol_mode, pf_vol_floor, pf_max_per_stock_pct, pf_max_per_sector_pct,
-           pf_max_stocks_per_sector, pf_require_sector, pf_dd_throttle_at)
+           pf_max_stocks_per_sector, pf_require_sector, pf_dd_throttle_at,
+           signal_cadence, signal_scan_day)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
                 $21,$22,$23,$24,$25,$26,$27,$28,
                 $29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,
-                $57,$58,$59,$60,$61,$62,$63,$64,$65)
+                $57,$58,$59,$60,$61,$62,$63,$64,$65,$66,$67)
         RETURNING id
         """,
         body.start_date, body.end_date, body.track_mode, body.capital,
@@ -255,6 +261,7 @@ async def create_run(body: RunCreate, request: Request):
         body.pf_vol_mode, body.pf_vol_floor, body.pf_max_per_stock_pct,
         body.pf_max_per_sector_pct, body.pf_max_stocks_per_sector,
         body.pf_require_sector, body.pf_dd_throttle_at,
+        body.signal_cadence, body.signal_scan_day,
     )
     run_id = row["id"]
 
@@ -475,6 +482,8 @@ def _run_to_json(r) -> dict:
         "pfMaxStocksPerSector": d.get("pf_max_stocks_per_sector"),
         "pfRequireSector": d.get("pf_require_sector"),
         "pfDdThrottleAt": _f(d.get("pf_dd_throttle_at")),
+        "signalCadence": d.get("signal_cadence") or "daily",
+        "signalScanDay": d.get("signal_scan_day") or "last",
         # Path metrics — NULL on non-PORTFOLIO runs, which the UI reads as
         # "no path metrics" rather than as zeros.
         "pfCagrPct": _f(d.get("pf_cagr_pct")),

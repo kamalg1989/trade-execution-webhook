@@ -288,6 +288,31 @@ async def _run(run: dict, pool) -> None:
 
     active: list[SimTrade] = []          # PENDING or OPEN trades, not yet persisted-final
 
+    # ---- which sessions generate signals -----------------------------------
+    # 'daily' (production today) scans every session. 'weekly'/'monthly' scan
+    # once per calendar period, on either the first or last session of it.
+    #
+    # Scan day is a PHASE choice, not an information one: a scan on any day
+    # sees all data up to that day and none beyond it. Friday's scan has four
+    # more sessions than Monday's at that instant, but next Monday's scan has
+    # them too. 'last' is the default because it matches how a weekend review
+    # actually works — decide with the full period visible, act on the next
+    # open. Both are offered so the choice can be shown not to matter.
+    cadence = (run.get("signal_cadence") or "daily").lower()
+    scan_at = (run.get("signal_scan_day") or "last").lower()
+    if cadence == "daily":
+        scan_day_idx = set(range(len(trading_days)))
+    else:
+        buckets: dict[tuple, list[int]] = {}
+        for i, d in enumerate(trading_days):
+            key = ((d.year, d.isocalendar()[1]) if cadence == "weekly"
+                   else (d.year, d.month))
+            buckets.setdefault(key, []).append(i)
+        scan_day_idx = {(idx[0] if scan_at == "first" else idx[-1])
+                        for idx in buckets.values()}
+    logger.info("run %s: cadence=%s scan_at=%s -> %d scan days of %d sessions",
+                run_id, cadence, scan_at, len(scan_day_idx), len(trading_days))
+
     for day_idx, day in enumerate(trading_days):
         symbols_today = {t.symbol for t in active}
         bars_by_symbol = {}
@@ -366,7 +391,19 @@ async def _run(run: dict, pool) -> None:
             await asyncio.gather(*(_persist(pool, run_id, t) for t in active))
         active = still_active
 
-        # 2. today's candidates (quant funnel, always computed — cheap/local)
+        # 2. today's candidates — but only on a SCAN day.
+        #
+        # Production scans nightly. signal_cadence lets the same funnel run
+        # weekly or monthly instead, which is the low-turnover question the
+        # portfolio work raised: is the breakout edge destroyed by trading it
+        # every day rather than by the picks themselves?
+        #
+        # Only SIGNAL GENERATION is gated. Exits, fills and mark-to-market above
+        # continue to run every session — a weekly scan must not mean a weekly
+        # stop-loss, which would be a different (and far more dangerous) system.
+        if day_idx not in scan_day_idx:
+            continue
+
         if stage2_active:
             candidates = await funnel_stage2.build_candidates(
                 pool, day, capital, stage2_config_hash, gate_overrides, use_v2_ranking, sizing
