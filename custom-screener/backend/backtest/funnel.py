@@ -232,7 +232,16 @@ def _size_qty(capital: float, base_stage: int, entry: float, risk_per_share: flo
     s = sizing or {}
     risk_pct = s.get("risk_per_trade_pct") or PROD_RISK_PER_TRADE_PCT
     cap_pct = s.get("max_capital_per_trade_pct") or PROD_MAX_CAPITAL_PER_TRADE_PCT
-    stage_mult = screen_gpt.BASE_STAGE_SIZE_MULTIPLIER.get(base_stage, screen_gpt.BASE_STAGE_DEFAULT_MULTIPLIER)
+    # sizing["stage_multipliers"] (sql/024) overrides the base-stage ladder for
+    # this run only. Falls back to screen_gpt's live dict, so with no override
+    # the backtest and production stay in sync by construction rather than by a
+    # copied literal that can drift.
+    ladder = (sizing or {}).get("stage_multipliers")
+    if ladder:
+        stage_mult = ladder.get(base_stage, ladder.get("default", 0.25))
+    else:
+        stage_mult = screen_gpt.BASE_STAGE_SIZE_MULTIPLIER.get(
+            base_stage, screen_gpt.BASE_STAGE_DEFAULT_MULTIPLIER)
     qty_risk = int(capital * (risk_pct / 100) * stage_mult / risk_per_share)
     qty_cap = int(capital * (cap_pct / 100) * stage_mult / entry)
     return min(qty_risk, qty_cap)

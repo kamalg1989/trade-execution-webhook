@@ -156,6 +156,14 @@ async def _run(run: dict, pool) -> None:
         "max_capital_per_trade_pct": (float(run["max_capital_per_trade_pct"])
                                       if run.get("max_capital_per_trade_pct") is not None else None),
     }
+    # Base-stage allocation ladder (sql/024). 'prod' leaves sizing to
+    # screen_gpt's live dict; 'v2' is the monotonic ladder — only Base 2 differs
+    # (1.00 -> 0.75) and the 1.00 ceiling is unchanged, so no position can
+    # exceed the 10%-of-capital / 0.25%-risk limits production already runs.
+    if (run.get("base_stage_ladder") or "prod") == "v2":
+        sizing["stage_multipliers"] = {1: 1.00, 2: 0.75, 3: 0.50, 4: 0.25,
+                                       "default": 0.25}
+    entry_v2 = bool(run.get("entry_v2_buy_points"))
     # VCP-style contraction gate (sql/014) — see funnel.contraction_ratios()
     # and that migration for the measured, cross-window edge.
     max_contraction_ratio = (float(run["max_contraction_ratio"])
@@ -419,6 +427,24 @@ async def _run(run: dict, pool) -> None:
         # candidates so it's uniform across all three funnel paths, and only
         # ever removes rows (relative ranking of survivors is preserved).
         # A symbol missing from the map (data gap) is kept, not dropped.
+        # ---- ENTRY V2: require a BUY POINT as well as a trigger candle.
+        # The deck separates WHERE in the base we are from WHETHER today's bar
+        # is actionable; production only ever asks the second. Applied here,
+        # after ranking, so it is uniform across all three funnel paths and only
+        # ever REMOVES rows — relative ranking of survivors is preserved.
+        # Measured to cut survivors from ~100% to ~38% (ENTRY_V2_SPEC).
+        if entry_v2 and candidates:
+            from .buy_points import detect_buy_points
+            bp_frames = await funnel.load_ohlcv_frames_batch(
+                pool, [c["symbol"] for c in candidates], day)
+            kept = []
+            for c_ in candidates:
+                bps = detect_buy_points(bp_frames.get(c_["symbol"]), c_["symbol"])
+                if bps:
+                    c_["buy_points"] = ",".join(bps)
+                    kept.append(c_)
+            candidates = kept
+
         if max_contraction_ratio is not None and candidates:
             ratios = await funnel.contraction_ratios(
                 pool, [c["symbol"] for c in candidates], day)
