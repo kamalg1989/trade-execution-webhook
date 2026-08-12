@@ -91,9 +91,9 @@ async def main():
                             ex.append({
                                 "symbol": sym, "date": str(d), "trigger": ttype,
                                 "bars": [
-                                    (str(ix.date()), round(float(r.open), 2),
-                                     round(float(r.high), 2), round(float(r.low), 2),
-                                     round(float(r.close), 2))
+                                    (str(ix.date()), round(float(r.Open), 2),
+                                     round(float(r.High), 2), round(float(r.Low), 2),
+                                     round(float(r.Close), 2))
                                     for ix, r in tail.iterrows()],
                             })
     finally:

@@ -70,9 +70,13 @@ def detect_buy_points(df, symbol: str = "?") -> list[str]:
     if df is None or len(df) < PIVOT_HALF * 2 + 6:
         return []
 
-    highs = [float(x) for x in df["high"].tolist()]
-    lows = [float(x) for x in df["low"].tolist()]
-    closes = [float(x) for x in df["close"].tolist()]
+    # Columns are capitalised — _rows_to_frame() renames to Open/High/Low/Close
+    # because that is what screen_gpt expects. Reading lowercase raised KeyError
+    # on the very first bar, which is the cheap way to find this; a detector
+    # that silently returned [] would not have been.
+    highs = [float(x) for x in df["High"].tolist()]
+    lows = [float(x) for x in df["Low"].tolist()]
+    closes = [float(x) for x in df["Close"].tolist()]
 
     bar_high, bar_low, bar_close = highs[-1], lows[-1], closes[-1]
     found: list[str] = []
@@ -88,15 +92,25 @@ def detect_buy_points(df, symbol: str = "?") -> list[str]:
     # ---- PULLBACK: retrace into support with the trend intact --------------
     # EMA21 because that is the trail production already uses; introducing a
     # different MA here would add a parameter with no justification.
-    ema21 = df["ema21"].iloc[-1] if "ema21" in df else None
-    ema50 = df["ema50"].iloc[-1] if "ema50" in df else None
-    sma200 = df["sma200"].iloc[-1] if "sma200" in df else None
-    if ema21 is not None and not _isnan(ema21):
-        trend_ok = ((sma200 is None or _isnan(sma200) or bar_close > float(sma200))
-                    and (ema50 is None or _isnan(ema50) or bar_close > float(ema50)))
+    #
+    # The MAs are computed HERE from the close series rather than read off the
+    # frame. load_ohlcv_frames_batch() returns OHLCV only, so an earlier version
+    # that did `df["ema21"] if "ema21" in df` would have found no column and
+    # silently never emitted a PULLBACK — a detector that is simply switched off
+    # while appearing to work. Computing them locally makes this independent of
+    # the frame's schema.
+    close_s = df["Close"]
+    ema21 = float(close_s.ewm(span=21, adjust=False).mean().iloc[-1])
+    ema50 = (float(close_s.ewm(span=50, adjust=False).mean().iloc[-1])
+             if len(close_s) >= 50 else None)
+    sma200 = (float(close_s.rolling(200).mean().iloc[-1])
+              if len(close_s) >= 200 else None)
+    if not _isnan(ema21):
+        trend_ok = ((sma200 is None or _isnan(sma200) or bar_close > sma200)
+                    and (ema50 is None or _isnan(ema50) or bar_close > ema50))
         # Touched or breached the EMA intraday, but closed back above it —
         # a pullback that HOLDS. A close below is not a pullback, it is a break.
-        if trend_ok and bar_low <= float(ema21) <= bar_close:
+        if trend_ok and bar_low <= ema21 <= bar_close:
             found.append("PULLBACK")
 
     # ---- BREAKOUT RETEST: cleared the base, came back to test it -----------
