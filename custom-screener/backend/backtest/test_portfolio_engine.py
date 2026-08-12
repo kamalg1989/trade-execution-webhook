@@ -232,6 +232,43 @@ async def test_stop_fires_at_or_below_threshold_never_above():
 
 
 @pytest.mark.asyncio
+async def test_pnl_decomposition_reconciles_to_final_equity():
+    """final_equity - capital == realized(closed) + unrealized(open, NET of the
+    buy-side charges paid at entry).
+
+    This is the identity the UI's "Total" column depends on. It failed in the
+    display layer, not the engine: the generic SQL formula computes unrealized as
+    (last_close - entry_fill_price) * qty, which omits the entry charges already
+    taken out of cash — overstating total P&L by Rs.1,860 across 16 open
+    positions on the continuous run.
+
+    The algebra, which is why the entry cost belongs in unrealized:
+        cash  = capital - SUM(all outlays) + SUM(closed proceeds)
+        final = cash + SUM(open marked value)
+              = capital + SUM_closed(proceeds - outlay)
+                        + SUM_open(marked - outlay)
+    so the open-position term must be marked value minus OUTLAY (gross + entry
+    charges), not minus gross alone."""
+    pool = await _pool()
+    try:
+        trades = []
+        m = await run_portfolio(pool, **SHORT, _audit_trade=trades.append)
+    finally:
+        await pool.close()
+    assert m and m["_open"], "need open positions at the end to test this"
+
+    realized = sum(t["proceeds"] - t["cost"] for t in trades)
+    unrealized = sum(h["last"] * h["qty"] - h["cost"] for h in m["_open"])
+    assert m["final"] - SHORT["capital"] == pytest.approx(realized + unrealized,
+                                                          abs=1.0)
+
+    # And confirm the NAIVE formula (ignoring entry charges) is measurably
+    # WRONG, so this test cannot pass against the bug it was written for.
+    naive = sum((h["last"] - h["entry"]) * h["qty"] for h in m["_open"])
+    assert naive > unrealized, "entry charges are not being deducted at all"
+
+
+@pytest.mark.asyncio
 async def test_missing_sector_does_not_exclude_a_stock():
     """Sector data covers only ~55% of traded names. A stock with NO sector must
     be unconstrained, not silently dropped — otherwise the cap quietly becomes a

@@ -337,6 +337,39 @@ async def cancel_run(run_id: int, request: Request):
     return {"id": run_id, "status": "FAILED"}
 
 
+def _portfolio_pnl(d: dict) -> dict:
+    """Realized / unrealized / total, with the PORTFOLIO case reconciled.
+
+    BREAKOUT and POSITIONAL runs keep the SQL decomposition: they have no
+    engine-level equity figure to reconcile against, so realized + unrealized is
+    the best available and total is their sum.
+
+    A PORTFOLIO run does have one. `pf_final_equity` is what the continuous
+    simulation actually ended with, having paid every charge, so:
+
+        total      = pf_final_equity - capital        (authoritative)
+        realized   = sum of closed-trade P&L          (authoritative)
+        unrealized = total - realized                 (residual, so it balances)
+
+    Deriving unrealized as the residual is deliberate. The alternative — storing
+    entry costs on open trade rows and re-deriving — would leave two independent
+    computations of the same quantity free to drift apart, which is how the
+    Rs.1,860 discrepancy arose in the first place. Here the three figures
+    reconcile by construction, and a run whose stored equity is missing simply
+    falls back to the generic decomposition rather than reporting a wrong total.
+    """
+    real = float(d["realized_pnl"]) if d.get("realized_pnl") is not None else None
+    unreal = float(d["unrealized_pnl"]) if d.get("unrealized_pnl") is not None else None
+    total = real + unreal if real is not None and unreal is not None else None
+
+    if (d.get("strategy") == "PORTFOLIO" and d.get("pf_final_equity") is not None
+            and d.get("capital") is not None and real is not None):
+        total = float(d["pf_final_equity"]) - float(d["capital"])
+        unreal = total - real
+
+    return {"realizedPnl": real, "unrealizedPnl": unreal, "totalPnl": total}
+
+
 def _run_to_json(r) -> dict:
     d = dict(r)
     exit_cfg = d.get("exit_config")
@@ -365,10 +398,19 @@ def _run_to_json(r) -> dict:
         "status": d["status"], "progressDay": d["progress_day"], "progressTotalDays": d["progress_total_days"],
         "error": d["error"], "params": params, "tradeCount": d.get("trade_count"),
         # Present only on the list endpoint (see list_runs) — null elsewhere.
-        "realizedPnl": float(d["realized_pnl"]) if d.get("realized_pnl") is not None else None,
-        "unrealizedPnl": float(d["unrealized_pnl"]) if d.get("unrealized_pnl") is not None else None,
-        "totalPnl": (float(d["realized_pnl"]) + float(d["unrealized_pnl"]))
-                    if d.get("realized_pnl") is not None and d.get("unrealized_pnl") is not None else None,
+        # For a PORTFOLIO run the ENGINE's final equity is authoritative and the
+        # SQL decomposition is not. The generic unrealized formula is
+        #     (last_close - entry_fill_price) * quantity
+        # which omits the buy-side charges already deducted from cash at entry,
+        # because those are not stored on an open trade row. Measured on the
+        # continuous run that overstated total P&L by Rs.1,860 across 16 open
+        # positions (~Rs.116 each — exactly one buy-side leg cost).
+        #
+        # So total is taken from the engine, and unrealized is derived as the
+        # residual. That makes realized + unrealized == total EXACTLY by
+        # construction, and pushes the open-position entry costs into the
+        # unrealized figure where they belong. See _portfolio_pnl below.
+        **_portfolio_pnl(d),
         "safetySlPct": float(d["safety_sl_pct"]) if d.get("safety_sl_pct") is not None else None,
         "slippagePct": float(d["slippage_pct"]) if d.get("slippage_pct") is not None else None,
         "brokeragePerOrder": float(d["brokerage_per_order"]) if d.get("brokerage_per_order") is not None else None,

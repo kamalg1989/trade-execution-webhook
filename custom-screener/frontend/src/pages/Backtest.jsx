@@ -59,6 +59,15 @@ const POS_SL_MODES = [
 ];
 const POS_SL_NEEDS_PCT = new Set(POS_SL_MODES.filter((m) => m.pct).map((m) => m.v));
 
+// A PORTFOLIO run spanning under ~2 years is a standalone simulation that starts
+// fresh at the run's capital. Its CAGR annualises one short window and its P&L
+// is not additive with the compounded continuous run.
+function isShortWindow(run) {
+  if (!run.startDate || !run.endDate) return false;
+  const days = (new Date(run.endDate) - new Date(run.startDate)) / 86400000;
+  return days < 730;
+}
+
 function slLabel(mode, pct) {
   if (!mode || mode === 'none') return null;
   if (POS_SL_NEEDS_PCT.has(mode)) return `SL ${mode} ${Number(pct)}%`;
@@ -76,6 +85,12 @@ function summarizeRunSettings(run) {
     // controls, not the breakout gates, so summarise on its own terms.
     const t = ['PORTFOLIO', `${run.posMomentum?.replace('pct_chg_', '') ?? '6m'} mom`,
                `top${run.posTopN}`, `rebal ${run.posRebalanceDays}d`];
+    // A window under ~2 years is a STANDALONE simulation that restarts at the
+    // initial capital. Its CAGR annualises a single short period and its P&L
+    // cannot be added to, or compared with, the compounded continuous run. That
+    // warning has to be on the ROW — a reader scanning the list will not go
+    // looking for it in the notes.
+    if (isShortWindow(run)) t.unshift('⚠ 1-YR STANDALONE — DO NOT SUM');
     if (run.posSlPct > 0) t.push(`stop ${run.posSlPct}%`);
     if (run.pfVolMode && run.pfVolMode !== 'none') {
       t.push(`vol:${run.pfVolMode}${run.pfVolFloor ? ` floor${run.pfVolFloor}%` : ''}`);
@@ -822,9 +837,14 @@ function RunRow({ run, selected, onSelect, onCancel, cancelling, rowRef, onKeyDo
       </td>
       {/* Path metrics — NULL on non-PORTFOLIO runs, shown as em-dash rather than
           0 so an empty cell is never mistaken for a measured zero. */}
-      <td className="py-1.5 px-2 text-xs font-medium whitespace-nowrap tabular-nums text-emerald-300"
-        title="Compound annual growth rate. Only meaningful on a continuous compounding run.">
-        {run.pfCagrPct != null ? `${run.pfCagrPct.toFixed(1)}%` : '—'}
+      <td className={`py-1.5 px-2 text-xs font-medium whitespace-nowrap tabular-nums ${
+            isShortWindow(run) ? 'text-slate-500 italic' : 'text-emerald-300'}`}
+        title={isShortWindow(run)
+          ? 'Annualised from a window under 2 years — not comparable with a continuous run'
+          : 'Compound annual growth rate'}>
+        {run.pfCagrPct != null
+          ? `${run.pfCagrPct.toFixed(1)}%${isShortWindow(run) ? '*' : ''}`
+          : '—'}
       </td>
       <td className="py-1.5 px-2 text-xs whitespace-nowrap tabular-nums text-rose-300"
         title="Peak-to-trough drawdown on the daily equity curve">
