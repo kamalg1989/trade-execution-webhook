@@ -73,6 +73,7 @@ exceeds the first.
 from __future__ import annotations
 
 import math
+import random
 import statistics as st
 from datetime import date
 
@@ -122,6 +123,11 @@ DEFAULTS = {
     "dd_throttle_at": 0.0,       # 0 disables; e.g. 0.10 = throttle past -10%
     "dd_restore_at": 0.05,
     "dd_throttle_factor": 0.5,
+    # --- survivorship stress (see survivorship.py). Injects the losses the
+    #     dataset CANNOT contain. 0 disables, reproducing the raw backtest.
+    "delist_hazard_pa": 0.0,     # annual probability a held name blows up
+    "delist_recovery": 0.0,      # fraction of value recovered when it does
+    "delist_seed": 0,
 }
 
 
@@ -249,6 +255,12 @@ async def run_portfolio(pool, _audit=None, _audit_trade=None, _audit_rebal=None,
                 "WHERE symbol=$1 AND time::date BETWEEN $2 AND $3",
                 sym, cfg["start"], cfg["end"])}
 
+    # Survivorship stress. Its own RNG instance, seeded, so a run is exactly
+    # reproducible and does not perturb any other random state in the process.
+    rng = random.Random(cfg["delist_seed"])
+    daily_hazard = cfg["delist_hazard_pa"] / TRADING_DAYS
+    n_delisted = 0
+
     holdings: dict[str, dict] = {}
     cash = cap0
     curve: list[tuple] = []
@@ -299,6 +311,16 @@ async def run_portfolio(pool, _audit=None, _audit_trade=None, _audit_rebal=None,
                 # the conservative choice and it is what produced the numbers in
                 # BACKTEST_REPORT.md section 9.
                 sell(sym, day, holdings[sym]["last"], "STOP")
+
+        # ---- survivorship stress: force the blow-up losses the dataset cannot
+        #      contain. Applied BEFORE the equity mark so the hit lands on the
+        #      curve the same day, and after the stop check so a name that would
+        #      have stopped out normally is not double-counted as a blow-up.
+        if daily_hazard > 0 and holdings:
+            for sym in [s for s in holdings if rng.random() < daily_hazard]:
+                sell(sym, day, holdings[sym]["last"] * cfg["delist_recovery"],
+                     "DELISTED")
+                n_delisted += 1
 
         eq = equity(day)
         curve.append((day, eq))
@@ -429,6 +451,7 @@ async def run_portfolio(pool, _audit=None, _audit_trade=None, _audit_rebal=None,
     m["avgExposure"] = (round(sum(e for _, e, _, _ in exposure_log) / len(exposure_log), 3)
                         if exposure_log else 1.0)
     m["openAtEnd"] = len(holdings)
+    m["delisted"] = n_delisted
     # Still-open positions and the daily curve, for the persistence layer. The
     # curve is downsampled to weekly for storage: 2,600 daily points per run is
     # more than any chart needs and it bloats every list query that selects *.
