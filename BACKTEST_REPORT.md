@@ -919,6 +919,155 @@ improving at 40, which is the edge of what was tested. No single top-N should be
 hard-coded; the defensible zone is 30–40, and it should be chosen on how much
 CAGR you are willing to pay rather than on a backtest maximum.
 
+### 9.11 Survivorship bias — measured, and bounded
+
+**The bias exists, and is close to total.** Of 3,261 symbols in `ohlcv_data`,
+**7 have a price series that ends early — 0.21%.** The eligible pool grows
+monotonically and never shrinks:
+
+```
+2016:1249  2017:1388  2018:1563  2019:1753  2020:1814  2021:1963
+2022:2126  2023:2379  2024:2743  2025:3091  2026:3258
+```
+
+A real universe loses companies every year to compulsory delisting, prolonged
+suspension, merger and liquidation. This one only gains them. **It is not a
+universe; it is a list of survivors.** For scale: NSE had roughly 1,800 listed
+companies in 2016 against our 2016 pool of 1,249, and 132 NSE companies had been
+suspended for over seven years as of that date.
+
+The consequence is specific: **the backtest cannot buy a stock that later goes to
+zero, because such stocks are absent from the table.** Every figure in this
+report is an upper bound.
+
+**Why this is a bound, not a correction.** Fixing it properly requires
+point-in-time universe snapshots — the tradeable NSE symbol list on each
+historical date, with delisting dates and final prices. That is not in the
+database and is not freely available. What *can* be done rigorously is to inject
+the missing losses across a range of rates and watch how fast the result
+degrades.
+
+**Hazard calibration.** NSE compulsory delistings run ~5–50/year against
+~1,800–2,700 listed companies: **~0.3–2.7% a year**. Applied unconditionally this
+*overstates* the harm here, because delisting candidates are overwhelmingly
+illiquid and falling — they fail the ₹5cr turnover gate and the `close > SMA200`
+filter long before the book could buy them. But the channel that *does* hit a
+momentum book is real: a stock that runs on manipulation, passes every filter,
+then gets suspended. Erring pessimistic is the right direction for a bound.
+
+**Results** (top-35, stop 15%, mean of 5 seeds; the *whole distribution* matters
+on a rare event, so the seed spread is shown):
+
+| Hazard/yr | Recovery | CAGR% | (min–max) | maxDD% | Ulcer | Martin | Blow-ups |
+|---|---|---|---|---|---|---|---|
+| 0.0% | — | 15.66 | — | 37.5 | 16.60 | 0.94 | 0 |
+| 0.5% | 0% | 15.09 | 13.8–15.7 | 37.5 | 16.72 | 0.90 | 1.6 |
+| 1.0% | 0% | 14.88 | 13.2–15.7 | 37.8 | 16.82 | 0.89 | 2.2 |
+| **2.0%** | **0%** | **13.66** | 11.5–14.9 | 39.4 | 17.51 | 0.78 | 4.8 |
+| 4.0% | 0% | 11.24 | 8.1–13.0 | 40.5 | 18.86 | 0.60 | 10.4 |
+| 0.5% | 30% | 15.36 | 14.7–15.7 | 37.4 | 16.62 | 0.92 | 1.6 |
+| 1.0% | 30% | 15.10 | 13.6–15.7 | 38.1 | 16.84 | 0.90 | 2.2 |
+| 2.0% | 30% | 14.43 | 13.2–15.5 | 38.4 | 17.12 | 0.84 | 4.8 |
+| 4.0% | 30% | 12.84 | 11.9–13.7 | 39.2 | 17.81 | 0.72 | 10.4 |
+
+**Verdict: the bias is material but not fatal.** Across the empirical range
+(0.3–2.7%/yr) CAGR falls from 15.7% to roughly **13.5–15%**, and even at a
+deliberately pessimistic 4%/yr with total loss it is 11.2%. The strategy degrades
+smoothly rather than collapsing; there is no cliff inside the plausible range.
+
+**Three caveats that keep this a bound and not a result:**
+
+1. **The hazard is applied uniformly at random.** Real blow-ups cluster — in
+   time (2018 NBFC crisis, 2019 promoter-pledge unwinds) and by sector. Clustered
+   losses hurt a 35-name book far more than independent ones, so the drawdown
+   figures here are optimistic even at a given hazard rate.
+2. **The correct number is unknown, not merely uncertain.** Only the *shape* of
+   the degradation is established.
+3. **Universe composition is untouched.** This injects losses into stocks that
+   were bought; it does not restore the ~550 companies missing from the 2016
+   pool, whose absence also changes which stocks ranked top-N in the first place.
+
+**Practical reading: discount the headline CAGR by roughly 2–4 percentage points
+and treat drawdown as a floor rather than an estimate.**
+
+### 9.12 Final bounded diversification test — the rule fired, and it conflicts with the data
+
+Six top-N values × two stops × three windows, with the **decision rule fixed
+before the run**: adopt a top-N only if a contiguous plateau appears in the upper
+half of *both* stop columns on TEST, then take its middle; otherwise keep top-20.
+
+**TEST (2021–2026) Martin by top-N:**
+
+| Stop | 20 | 30 | 35 | 40 | 45 | 50 |
+|---|---|---|---|---|---|---|
+| 15% | 0.64 | 0.86 | 0.87 | 0.97 | 1.02 | 1.02 |
+| 20% | 0.66 | 0.98 | 0.94 | 0.90 | 0.94 | 1.06 |
+
+Upper half of both columns intersects at `{50}` only — not contiguous, not three
+wide. **The rule says: keep top-20.**
+
+**But the rule's fallback is contradicted by the same data.** Top-20 is the
+*worst* value on TEST in **both** stop columns, by a wide margin, and it was also
+worst in the previous round. The rule was designed to stop me picking a peak; its
+default was "the incumbent, on no evidence." There is now evidence, and it points
+away from the incumbent.
+
+The reason the rule mis-fires is that **Martin mixes return into a risk question**,
+and the return component is noisy. Look at the risk metrics alone — which is what
+diversification is *for* — and both columns are essentially monotone:
+
+| Stop | Metric | 20 | 30 | 35 | 40 | 45 | 50 |
+|---|---|---|---|---|---|---|---|
+| 15% | TEST maxDD% | 38.1 | 36.6 | 34.3 | 32.9 | **30.0** | 30.6 |
+| 15% | TEST worst 12m% | −32.4 | −28.3 | −25.4 | −24.7 | −21.4 | **−21.3** |
+| 20% | TEST maxDD% | 42.8 | 38.5 | 36.8 | 36.0 | **33.2** | 33.6 |
+| 20% | TEST worst 12m% | −37.2 | −31.8 | −28.9 | −29.8 | −26.0 | **−21.3** |
+
+Four series, all monotone but for single-step wobbles at the last point. **This is
+the cleanest out-of-sample relationship found anywhere in the programme.**
+
+**Conclusion, stated in two parts because the parts differ in strength:**
+
+- **Strongly supported:** more names monotonically reduces drawdown and worst
+  12-month loss out of sample. Top-20 is rejected.
+- **Not supported:** any specific value within 30–50. The Martin ordering does not
+  transfer, and 45 vs 50 vs 35 is not distinguishable.
+
+Choose within 30–50 on how much CAGR you are willing to pay for drawdown, not on
+a backtest number. Roughly, across the TEST window, going 20 → 45 traded about
+**2–3pp of CAGR for about 8pp of max drawdown**.
+
+### 9.13 The breakout sleeve — remove it
+
+Tested as an annual-return blend against the correct null: **the same weight in
+plain cash.**
+
+Annual-return correlation, breakout vs positional: **+0.57** (config C), **+0.51**
+(config F). It loses in the same years the positional book loses — 2016, 2018,
+2019, 2022, 2025. That is the wrong sign for a diversifier.
+
+| Allocation | Mean% | Stdev% | Worst yr% | **Mean/Stdev** |
+|---|---|---|---|---|
+| 100% positional | 23.2 | 44.4 | −33.7 | 0.522 |
+| 90% positional + 10% **breakout** | 21.1 | 40.4 | −30.7 | 0.524 |
+| 90% positional + 10% **cash** *(null)* | 20.8 | 40.0 | −30.4 | 0.522 |
+| 80% positional + 20% **breakout** | 19.1 | 36.3 | −27.6 | 0.526 |
+| 80% positional + 20% **cash** *(null)* | 18.5 | 35.5 | −27.0 | 0.522 |
+
+**The breakout rows and the cash rows are indistinguishable** — mean/stdev of
+0.524–0.526 versus 0.522. The sleeve adds return only in exact proportion to the
+risk it adds. It is not diversifying; it is a second correlated bet held in
+smaller size, with its own execution cost and operational complexity.
+
+**Decision: remove the breakout sleeve.** Holding cash in its place achieves the
+same risk reduction, free.
+
+*(Caveat: this uses 11 annual observations of the breakout book from the
+annual-reset harness, not a continuous daily curve — 11 points is a weak
+correlation estimate. But the conclusion does not rest on the correlation alone;
+it rests on the sleeve failing to beat cash on risk-adjusted return, which is a
+much lower bar than it needed to clear.)*
+
 ### 9.9 Still open
 
 - **Survivorship bias remains unquantified**, and §9.5 suggests it could be large.
