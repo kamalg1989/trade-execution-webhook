@@ -92,6 +92,10 @@ class SimTrade:
     exit_reason: str | None = None
     partial_exits: list = field(default_factory=list)  # [{date, qty, price, reason}]
 
+    # Set when a CLOSE-triggered exit has fired but the fill is deferred to the
+    # next session's open (exit_config['next_open_exit']). See step_exit.
+    pending_exit_reason: str | None = None
+
     # Identity fields owned by the engine's persistence/expiry logic. These
     # used to live in dicts keyed by Python's id(trade) (object memory
     # address) in engine.py -- a real bug: once a trade is dropped from the
@@ -162,8 +166,29 @@ def step_exit(trade: SimTrade, day: object, bar: dict, exit_config: dict) -> Non
     if trade.status != "OPEN":
         return
 
+    # ---- deferred fill from a close-triggered exit on the PREVIOUS session.
+    # A rule that reads the close cannot also be executed at that close: the
+    # close is only known once the session is over. The default model exits at
+    # the triggering close, which quietly assumes an execution nobody can get.
+    # With next_open_exit the fill happens here, at the next open, wearing
+    # whatever the gap gives — which is what actually happens to a trader
+    # reacting to a closing print.
+    if trade.pending_exit_reason:
+        reason, trade.pending_exit_reason = trade.pending_exit_reason, None
+        _close(trade, day, round(bar["open"], 2), reason, exit_config)
+        return
+
     entry = trade.entry_fill_price
     risk = trade.risk_per_share
+    next_open = bool(exit_config.get("next_open_exit"))
+
+    def _close_or_defer(gross_price: float, reason: str) -> None:
+        """Intraday-triggered exits still fill same-day: a resting stop order is
+        genuinely live during the session. Only CLOSE-triggered rules defer."""
+        if next_open:
+            trade.pending_exit_reason = reason
+        else:
+            _close(trade, day, gross_price, reason, exit_config)
     trade.peak_high = max(trade.peak_high, bar["high"])
 
     # Floor, always on: intraday -X% from entry, checked against the low.
@@ -181,7 +206,7 @@ def step_exit(trade: SimTrade, day: object, bar: dict, exit_config: dict) -> Non
     # (structural, or breakeven/trail-moved if those toggles are active).
     if bar["close"] < trade.current_sl:
         reason = "TRAIL_SL" if (trade.moved_to_breakeven or trade.half_booked) else "STRUCTURAL_SL"
-        _close(trade, day, round(bar["close"], 2), reason, exit_config)
+        _close_or_defer(round(bar["close"], 2), reason)
         return
 
     # Early invalidation: closed back below the breakout trigger before the
@@ -189,7 +214,7 @@ def step_exit(trade: SimTrade, day: object, bar: dict, exit_config: dict) -> Non
     # breakout is a tighter, earlier exit than waiting for structural SL.
     if (exit_config.get("failed_breakout_exit") and not trade.moved_to_breakeven
             and not trade.half_booked and bar["close"] < trade.entry_trigger_price):
-        _close(trade, day, round(bar["close"], 2), "FAILED_BREAKOUT", exit_config)
+        _close_or_defer(round(bar["close"], 2), "FAILED_BREAKOUT")
         return
 
     # Time stop (sql/015). Only fires on a trade that has NOT yet proved
@@ -201,13 +226,13 @@ def step_exit(trade: SimTrade, day: object, bar: dict, exit_config: dict) -> Non
     if (max_hold and not trade.moved_to_breakeven and not trade.half_booked
             and trade.entry_fill_date is not None
             and (day - trade.entry_fill_date).days >= max_hold):
-        _close(trade, day, round(bar["close"], 2), "TIME_STOP", exit_config)
+        _close_or_defer(round(bar["close"], 2), "TIME_STOP")
         return
 
     swing_low = bar.get("swing_low")
     if (exit_config.get("swing_break_exit") and swing_low is not None
             and bar["close"] < swing_low):
-        _close(trade, day, round(bar["close"], 2), "SWING_LOW_BREAK", exit_config)
+        _close_or_defer(round(bar["close"], 2), "SWING_LOW_BREAK")
         return
 
     up_r = int((bar["high"] - entry) // risk) if risk else 0

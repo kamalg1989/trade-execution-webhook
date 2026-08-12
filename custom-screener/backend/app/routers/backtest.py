@@ -51,6 +51,14 @@ class ExitConfig(BaseModel):
     # Structural/technical hard exits.
     failed_breakout_exit: bool = False
     swing_break_exit: bool = False
+    # Execution realism. Close-triggered exits (structural/trail SL, failed
+    # breakout, time stop, swing break) cannot actually be filled at the close
+    # that triggered them — the close is only known once the session is over.
+    # With this on they fill at the NEXT session's open, wearing the gap.
+    # Intraday-triggered exits (the safety floor, the 2R target, half-booking)
+    # are unaffected: those are live orders during the session.
+    # Default False so every previously recorded run keeps its meaning.
+    next_open_exit: bool = False
 
 
 class RunCreate(BaseModel):
