@@ -209,13 +209,17 @@ const PRESETS = {
     label: 'Portfolio (continuous)',
     hint: 'ONE compounding run 2016→2026 — capital carried forward, positions '
         + 'held across year ends, daily mark-to-market. Reports CAGR / maxDD / '
-        + 'ulcer, not summed annual P&L. Best current candidate.',
+        + 'ulcer, not summed annual P&L. Top-35 is a PROVISIONAL diversification '
+        + 'setting inside the 30–40 zone that was tested — not an optimised '
+        + 'optimum, and backed by only one split-sample experiment.',
     values: {
-      // top-35 is a midpoint of the DEFENSIBLE ZONE (30-40), not a backtest
-      // maximum. top-30 was the best in-sample cell and FAILED split-sample
-      // validation — it ranked 6th of 10 on 2021-26 (BACKTEST_REPORT §9.10).
-      // What survived is the direction: out of sample every risk metric
-      // improved monotonically with top-N and was still improving at 40.
+      // top-35 is PROVISIONAL: a value inside the 30-40 zone that was tested,
+      // chosen because the out-of-sample risk metrics improved monotonically
+      // across it — NOT because 35 scored best. top-30 was the best in-sample
+      // cell and FAILED split-sample validation, ranking 6th of 10 on 2021-26
+      // (BACKTEST_REPORT §9.10). The evidence supports the DIRECTION only, and
+      // rests on a single split-sample experiment; a precise number is not
+      // supported at all, and the metrics were still improving at 40.
       // The stop is a supported RANGE of 15-20%; 15 is the midpoint, not a
       // proven optimum. Every risk control is off: vol scaling and the
       // drawdown throttle both measured NET NEGATIVE.
@@ -445,7 +449,7 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
               value={f.pos_rebalance_days} onChange={set('pos_rebalance_days')}
               type="number" min="1" max="250" />
             <Field label="Hold top N"
-              hint="More names = less drawdown. 30 scored best but is one cell, not a proven plateau."
+              hint="Provisional 30–40. The direction (more names → less drawdown) held out of sample; no specific value did. top-30 was best in-sample and ranked 6th of 10 out of sample."
               value={f.pos_top_n} onChange={set('pos_top_n')} type="number" min="1" max="60" />
             <Field label="Sell below rank (buffer)" hint="Anti-churn hysteresis; 2x top-N."
               value={f.pos_buffer_n} onChange={set('pos_buffer_n')} type="number" min="1" max="120" />

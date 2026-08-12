@@ -932,12 +932,35 @@ CAGR you are willing to pay rather than on a backtest maximum.
 - **Test top-N beyond 40.** Every out-of-sample risk metric was still improving
   at the edge of the tested range, so the useful zone may not have been reached.
 - **`portfolio_engine.py` now has invariant tests** (`test_portfolio_engine.py`,
-  11 passing) covering the daily `cash + marked holdings == equity` identity,
+  12 passing) covering the daily `cash + marked holdings == equity` identity,
   compounding position sizing, positions surviving year ends, cost ordering and
   single application, stop fills at or below threshold, and unknown-sector
   stocks not being silently excluded. They assert accounting identities rather
   than pinning returns — a test that pins CAGR is a regression detector for the
   data, not a correctness check for the engine.
+
+  Two things worth recording about those tests:
+
+  **The compounding test was originally worthless.** It doubled the starting
+  capital and checked that final equity roughly doubled. An engine that wrongly
+  sized every slot from the *initial* capital scales just as linearly and would
+  have passed — linear scaling follows from both the correct and the incorrect
+  rule, so it cannot distinguish them. It now asserts
+  `slot == equity / top_n` **at each rebalance**, via a dedicated audit hook,
+  and additionally requires that equity actually moved >2% from its start
+  (otherwise the assertion is trivially satisfied by a book that never changed
+  value).
+
+  **That replacement was verified by mutation.** Changing the engine to
+  `slot = cap0 / top_n` makes the test fail with
+  `slot 20000.00 != equity/top_n 18472.91`, and reverting makes it pass. A test
+  that has never been observed to fail is an assumption, not a check.
+
+- **The API/UI path reproducing the sweep numbers is not independent
+  confirmation.** `portfolio_run.py` calls the same `run_portfolio()` as the
+  standalone sweeps. The agreement validates configuration handling,
+  persistence and plumbing — it does **not** independently verify CAGR or
+  drawdown, because there is only one implementation of those calculations.
 
 ---
 

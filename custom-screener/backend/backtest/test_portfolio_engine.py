@@ -116,22 +116,58 @@ async def test_cash_never_goes_negative():
 
 @pytest.mark.asyncio
 async def test_position_size_tracks_current_equity_not_initial_capital():
-    """Sizing must compound. If slots were sized off the initial Rs.4L, the book
-    would stop growing and CAGR would be understated — and the 'continuous
-    portfolio' framing would be a lie, since it would behave like the annual
-    resets it was built to replace.
+    """Sizing must compound: every slot is CURRENT equity / top_n, recomputed at
+    each rebalance. If slots were sized off the initial Rs.4L the book would stop
+    growing, and the 'continuous portfolio' framing would be a lie — it would
+    behave like the annual resets it was built to replace.
 
-    Checked by running the same window at two capital levels: with sizing off
-    CURRENT equity, final equity should scale ~linearly with starting capital."""
+    This asserts the sizing rule DIRECTLY, at each rebalance.
+
+    An earlier version of this test instead doubled the starting capital and
+    checked the final equity roughly doubled. That proves nothing: an engine
+    that wrongly sized every slot from the INITIAL capital scales just as
+    linearly and passes. Linear scaling is a consequence of BOTH the correct and
+    the incorrect rule, so it cannot distinguish them. Only comparing the slot
+    against the equity at that same moment can."""
     pool = await _pool()
     try:
-        a = await run_portfolio(pool, **{**SHORT, "capital": 400000.0})
-        b = await run_portfolio(pool, **{**SHORT, "capital": 800000.0})
+        rebals = []
+        await run_portfolio(pool, **SHORT, _audit_rebal=rebals.append)
     finally:
         await pool.close()
-    ratio = b["final"] / a["final"]
-    assert 1.85 < ratio < 2.15, f"doubling capital changed final by {ratio:.2f}x"
-    assert a["cagrPct"] == pytest.approx(b["cagrPct"], abs=1.5)
+    assert len(rebals) >= 4, f"only {len(rebals)} rebalances to check"
+
+    for r in rebals:
+        expected = r["equity"] / r["top_n"]
+        assert r["slot"] == pytest.approx(expected, rel=1e-9), (
+            f"slot {r['slot']:.2f} != equity/top_n {expected:.2f} on {r['day']}")
+
+    # ...and the equity it is sized from must actually MOVE, otherwise the
+    # assertion above is trivially satisfied by a book that never changed value
+    # and the test would still pass against a hard-coded initial-capital rule.
+    equities = [r["equity"] for r in rebals]
+    cap = SHORT["capital"]
+    assert max(equities) != min(equities), "equity never changed across rebalances"
+    assert any(abs(e - cap) / cap > 0.02 for e in equities), (
+        "equity never moved >2% from the initial capital, so 'sized off current "
+        "equity' and 'sized off initial capital' are indistinguishable here")
+
+
+@pytest.mark.asyncio
+async def test_slot_size_respects_the_per_stock_cap_when_active():
+    """With the cap active the slot is min(equity/top_n, equity*cap%), so the
+    cap must bind exactly when it is the smaller of the two and never otherwise."""
+    pool = await _pool()
+    try:
+        rebals = []
+        await run_portfolio(pool, **SHORT, top_n=10, max_per_stock_pct=5.0,
+                            _audit_rebal=rebals.append)
+    finally:
+        await pool.close()
+    assert rebals
+    for r in rebals:
+        # top_n=10 implies a 10% slot, so a 5% cap must bind on every rebalance.
+        assert r["slot"] == pytest.approx(r["equity"] * 0.05, rel=1e-9)
 
 
 @pytest.mark.asyncio

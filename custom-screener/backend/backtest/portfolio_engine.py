@@ -204,13 +204,23 @@ def _metrics(curve: list[tuple], capital: float, buy_val: float, sell_val: float
     }
 
 
-async def run_portfolio(pool, _audit=None, _audit_trade=None, **overrides) -> dict:
-    """_audit(dict) is called once per session with the raw cash/holdings/equity
-    figures, and _audit_trade(dict) once per completed trade with its prices,
-    quantity, costs and exit reason. Both are None in production and cost
-    nothing; they exist so test_portfolio_engine.py can assert the accounting
-    identities directly rather than re-implementing the engine and proving only
-    that two copies of the same logic agree."""
+async def run_portfolio(pool, _audit=None, _audit_trade=None, _audit_rebal=None,
+                        **overrides) -> dict:
+    """Audit hooks, all None in production and costing nothing. They exist so
+    test_portfolio_engine.py can assert the accounting identities DIRECTLY,
+    rather than re-implementing the engine and proving only that two copies of
+    the same logic agree.
+
+      _audit(dict)        once per session: cash, marked holdings, equity
+      _audit_trade(dict)  once per closed trade: prices, qty, costs, exit reason
+      _audit_rebal(dict)  once per rebalance: equity, the slot size derived from
+                          it, top_n, n_slots and exposure
+
+    _audit_rebal exists specifically because the obvious test of compounding —
+    double the starting capital and check the final equity roughly doubles —
+    proves nothing. An engine that wrongly sized every slot from the INITIAL
+    capital would scale just as linearly and pass. Only comparing the slot size
+    against the equity AT THAT REBALANCE can distinguish the two."""
     cfg = {**DEFAULTS, **overrides}
     cap0 = cfg["capital"]
     slip = cfg["slippage"]
@@ -369,6 +379,11 @@ async def run_portfolio(pool, _audit=None, _audit_trade=None, **overrides) -> di
                 # instead of quietly concentrating the book.
                 slot = eq_now / top_n
                 slot = min(slot, eq_now * cfg["max_per_stock_pct"] / 100)
+                if _audit_rebal:
+                    _audit_rebal({"day": nxt, "equity": eq_now, "slot": slot,
+                                  "top_n": top_n, "n_slots": n_slots,
+                                  "exposure": exposure,
+                                  "capped": cfg["max_per_stock_pct"] < 100})
 
                 sec_val: dict[str, float] = {}
                 sec_cnt: dict[str, int] = {}
