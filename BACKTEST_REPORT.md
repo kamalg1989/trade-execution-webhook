@@ -1354,6 +1354,83 @@ sizes by risk; this buys the ranked names at the next open in equal weight. What
 is measured is whether the funnel's choice of STOCKS carries information, not
 whether its entry mechanics do.*
 
+### 9.17 Entry v2 (buy-point gate) — REJECTED, and the cleanest kill in the programme
+
+The decks separate *where* in the base you are (pullback / reverse H&S / high
+breakout / breakout retest) from *whether* today's bar is actionable (hammer /
+HH-HL / inside bar / trend bar). Production only ever asks the second. Entry v2
+required both.
+
+**Three rounds of inspection ran before any backtest**, and each found a real
+defect — which is what makes the final negative result trustworthy rather than a
+suspected bug:
+
+| Round | Method | Finding |
+|---|---|---|
+| 1 | Count the pass rate | `HIGH_BREAKOUT` fired on 78% of survivors — Stage 1 already gates on 5% near-high, so it re-tested an upstream filter. Gate passed 73.6%. |
+| 2 | Print bars and read them | `BREAKOUT_RETEST` labelled JINDALSTEL a retest while price sat **5% above** the level and climbing — the band allowed the low to be *above* the breakout level. |
+| 3 | Measure firing persistence | `REVERSE_HS` fired **100 times from 20 real setups** (5.00/setup, one running 12 consecutive days) — the neckline test was a *state*, not an *event*. |
+
+Each fix **removed a tolerance** rather than adding a threshold, and each was
+driven by redundancy, visual inspection or measurement — never by a return
+figure, since none existed. The gate ended at **38.3%** pass rate from 73.6%,
+with all four detectors verified to fire on genuine patterns.
+
+**Then it was tested, and it fails everywhere.**
+
+| Case | Trades | Win% | Total | maxDD | Return/DD |
+|---|---|---|---|---|---|
+| 0 baseline, daily | 3,784 | 37.6 | ₹193,635 | ₹121,158 | 1.60 |
+| 1 + base ladder v2 | 3,788 | 37.5 | ₹159,091 | ₹110,007 | 1.45 |
+| 2 **+ buy-point gate** | 4,238 | 36.2 | **₹101,807** | ₹156,984 | **0.65** |
+| 3 + ladder AND gate | 4,235 | 36.1 | ₹80,618 | ₹139,919 | 0.58 |
+| 4 + both + weekly | 1,250 | 36.7 | ₹37,447 | ₹58,655 | 0.64 |
+| **5 weekly cadence only** | **1,313** | **38.6** | ₹99,339 | **₹51,613** | **1.92** |
+
+- **Daily: ₹194k → ₹102k. Weekly: ₹99k → ₹37k.** Worse in both, and *more* harmful
+  under weekly (−62% vs −47%). No regime dependence to hide behind.
+- **Drawdown got worse too** (₹121k → ₹157k), so it is not even a
+  return-for-safety trade.
+- **The base ladder v2 also failed**: −18% return for −9% drawdown, worse than
+  proportional.
+
+**The diagnostic detail.** Trade count went *up* (3,784 → 4,238) despite the gate
+cutting candidates by 62%. The 3-pick cap binds either way, so filtering changes
+*which* three are taken, not how many — and the gate systematically favours
+stocks **at breakout points**, whose buy-stop entries trigger more reliably. More
+fills, at worse prices, with a lower win rate. The gate selects stocks that are
+already extended, close to the opposite of the deck's intent.
+
+**Why this kill is the cleanest yet.** The detectors provably fire on real
+pullbacks, breakouts and head-and-shoulders — verified by eye and by persistence
+measurement before any P&L existed. So this is not "the code was broken". It is
+the harder finding: **the patterns are genuine and they still do not predict.**
+
+**What survived instead: weekly cadence.** Best return-per-drawdown of all six
+(1.92 vs 1.60), highest win rate (38.6%), and **less than half the drawdown** —
+51% of the return for 43% of the pain.
+
+### 9.18 Gate strictness cannot control trade count
+
+A recurring intuition worth settling with numbers: *"stricter gates → fewer,
+better stocks → fewer trades."* The first two hold. The third does not.
+
+Measured over 2019-2024: the funnel yields **22.7 candidates/day (median 18)**,
+and only **4.5% of days have fewer than 3**. With `max_picks_per_track = 3` the
+cap binds on ~95% of days, so shrinking the pool changes *which* three are taken,
+not how many. After the entry-v2 gate (×0.38) still only ~20% of days fall below
+3 — a trade-count reduction of roughly **10%**, not the 60% the pool reduction
+suggests.
+
+To reach ~50 trades/year on a daily scan the gate would need to reject **~99%**
+of survivors. At that point the survivors are not the *best* stocks but whatever
+cleared an arbitrary threshold stack — and the ranking, which already sorts by
+IFP and base tightness and picks the top 3 of ~23, is a strictly better selector.
+
+**Trade count is `picks per scan × scans per year`.** Gates are for quality;
+cadence and pick-count are for quantity. Conflating them uses the wrong tool and
+gets neither.
+
 ### 9.9 Still open
 
 - **Survivorship bias remains unquantified**, and §9.5 suggests it could be large.
