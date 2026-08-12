@@ -109,13 +109,30 @@ DEFAULTS = {
     # --- selection (held at the plateau-supported settings; NOT re-optimised
     #     here, because re-tuning selection and risk control simultaneously
     #     would make it impossible to attribute any change to either)
+    #
+    # selection picks WHICH ranking fills the book, holding every other
+    # mechanic constant. That is the point: the cost thesis said the breakout
+    # book failed on TURNOVER, not on stock picking, and this is the only way
+    # to test that claim — put production's selection inside the low-turnover
+    # wrapper and see whether it beats momentum on equal terms.
+    #   momentum  rank by `momentum` column, descending  (the frozen strategy)
+    #   breakout  rank by production's own funnel: Stage 1 SQL gates, Stage 2
+    #             base/trigger classification, ordered -ifp_score then
+    #             base_range_pct, exactly as screen_gpt.rank_candidates() does
+    "selection": "momentum",
     "momentum": "pct_chg_6m",
     "rebalance_days": 63,
     "top_n": 20,
     "buffer_n": 40,
     "min_turnover": 5.0,
-    # --- stop
-    "sl_pct": 15.0,              # 0 disables
+    # --- stops
+    "sl_pct": 15.0,              # fixed % below entry; 0 disables
+    # Safety stop at N x the structural distance (entry - structural_sl), where
+    # structural_sl is the base invalidation level production already computes.
+    # Only available with selection='breakout', because momentum ranking has no
+    # structural level. 0 disables. Both stops may be active; whichever is hit
+    # first fires, which is what a real order book would do.
+    "safety_struct_mult": 0.0,
     # --- exposure budget
     "vol_mode": "none",          # none | pct (expanding percentile) | abs
     "vol_lookback": 63,
@@ -170,12 +187,24 @@ async def load_market_data(pool, cfg: dict) -> dict:
         ORDER BY {cfg['momentum']} DESC LIMIT $3
     """
     ranks: dict[int, list[str]] = {}
+    struct: dict[int, dict[str, float]] = {}
     for i in range(0, len(days), cfg["rebalance_days"]):
         if i + 1 >= len(days):
             break
-        ranks[i] = [r["symbol"] for r in
-                    await pool.fetch(rank_sql, days[i], cfg["min_turnover"],
-                                     cfg["buffer_n"])]
+        if cfg["selection"] == "breakout":
+            # Production's own funnel, evaluated ONLY on rebalance days. The
+            # live screener runs it nightly; at a 63-session cadence that is 42
+            # evaluations over a decade instead of ~2,600, which is what makes
+            # this affordable at all. Stage 2 results are cached in
+            # backtest_quant_signals, already populated by earlier campaigns.
+            from . import funnel
+            cands = await funnel.build_candidates(pool, days[i], cfg["capital"])
+            ranks[i] = [c["symbol"] for c in cands][:cfg["buffer_n"]]
+            struct[i] = {c["symbol"]: float(c["sl"]) for c in cands}
+        else:
+            ranks[i] = [r["symbol"] for r in
+                        await pool.fetch(rank_sql, days[i], cfg["min_turnover"],
+                                         cfg["buffer_n"])]
 
     universe = sorted({s for lst in ranks.values() for s in lst})
     sym_ix = {s: j for j, s in enumerate(universe)}
@@ -194,7 +223,7 @@ async def load_market_data(pool, cfg: dict) -> dict:
     sectors = {r["symbol"]: r["sector"] for r in await pool.fetch(
         "SELECT symbol, sector FROM symbols_meta WHERE sector IS NOT NULL")}
 
-    return {"days": days, "ranks": ranks, "sym_ix": sym_ix,
+    return {"days": days, "ranks": ranks, "struct": struct, "sym_ix": sym_ix,
             "opens": opens, "closes": closes, "sectors": sectors}
 
 
@@ -300,6 +329,7 @@ def simulate(data: dict, cfg: dict, _audit=None, _audit_trade=None,
 
     days = data["days"]
     ranks = data["ranks"]
+    struct = data.get("struct") or {}
     sym_ix = data["sym_ix"]
     opens = data["opens"]
     closes = data["closes"]
@@ -321,6 +351,7 @@ def simulate(data: dict, cfg: dict, _audit=None, _audit_trade=None,
     throttle_step = 0          # 0 = no throttle, 1 = halved, 2 = partial restore
     peak_eq = cap0
     exposure_log: list[float] = []
+    fill_log: list[int] = []
 
     def equity() -> float:
         return cash + sum(h["last"] * h["qty"] for h in holdings.values())
@@ -363,18 +394,25 @@ def simulate(data: dict, cfg: dict, _audit=None, _audit_trade=None,
                 n_delisted += 1
 
         # ---- daily stop check (a stopped slot stays in cash until rebalance)
-        if cfg["sl_pct"] > 0 and holdings:
-            for sym in [s for s, h in holdings.items()
-                        if h["last"] <= h["entry"] * (1 - cfg["sl_pct"] / 100)]:
-                # Exit at the CLOSE that revealed the breach, not at the stop
-                # level. Only daily bars are available, so a fill at exactly the
-                # stop price would assume the resting order was filled intraday
-                # at its limit — which is precisely what does NOT happen on the
-                # gap-downs that cause the worst losses.
-                sell(sym, day, holdings[sym]["last"], "STOP")
+        #      Two independent levels may be active; whichever is breached first
+        #      fires, which is what a real order book would do. Exit is at the
+        #      CLOSE that revealed the breach, not at the stop level: only daily
+        #      bars exist, and a fill at exactly the stop price would assume the
+        #      resting order filled intraday at its limit — precisely what does
+        #      NOT happen on the gap-downs that cause the worst losses.
+        if holdings and (cfg["sl_pct"] > 0 or cfg["safety_struct_mult"] > 0):
+            hits = []
+            for sym, h in holdings.items():
+                if cfg["sl_pct"] > 0 and h["last"] <= h["entry"] * (1 - cfg["sl_pct"] / 100):
+                    hits.append((sym, "STOP"))
+                elif h.get("safety") and h["last"] <= h["safety"]:
+                    hits.append((sym, "SAFETY_STOP"))
+            for sym, reason in hits:
+                sell(sym, day, holdings[sym]["last"], reason)
 
         eq = equity()
         curve.append((day, eq))
+        fill_log.append(len(holdings))
         if _audit:
             _audit({"day": day, "cash": cash, "equity": eq,
                     "held": sum(h["last"] * h["qty"] for h in holdings.values()),
@@ -483,8 +521,17 @@ def simulate(data: dict, cfg: dict, _audit=None, _audit_trade=None,
                     continue
                 cash -= outlay
                 buy_val += gross
+                # Safety level from production's own structural SL: the base
+                # invalidation price. At mult=2 the stop sits twice that
+                # distance below entry, i.e. deliberately wider than the level
+                # that would invalidate the setup, so it is a backstop rather
+                # than the primary exit.
+                safety = None
+                s_sl = struct.get(i, {}).get(sym)
+                if s_sl and cfg["safety_struct_mult"] > 0:
+                    safety = entry - cfg["safety_struct_mult"] * (entry - s_sl)
                 holdings[sym] = {"qty": qty, "cost": outlay, "entry": entry,
-                                 "last": entry, "peak": entry,
+                                 "last": entry, "peak": entry, "safety": safety,
                                  "raw_open": float(o), "date": nxt, "j": j}
                 if sec:
                     sec_val[sec] = sec_val.get(sec, 0) + gross
@@ -496,6 +543,13 @@ def simulate(data: dict, cfg: dict, _audit=None, _audit_trade=None,
                         if exposure_log else 1.0)
     m["openAtEnd"] = len(holdings)
     m["delisted"] = n_delisted
+    # How full the book actually was. With selection='breakout' the funnel often
+    # yields fewer than top_n candidates (10-18/day in 2016-2020), so the book
+    # runs partly in cash whether or not that was intended — reporting it stops
+    # a half-deployed run being read as a fully-invested one.
+    m["avgHoldings"] = round(sum(fill_log) / len(fill_log), 1) if fill_log else 0
+    m["avgDeployedPct"] = (round(100 * sum(fill_log) / len(fill_log) / top_n, 1)
+                           if fill_log else 0)
     # Still-open positions and the daily curve, for the persistence layer. The
     # curve is downsampled to weekly for storage: 2,600 daily points per run is
     # more than any chart needs and it bloats every list query that selects *.

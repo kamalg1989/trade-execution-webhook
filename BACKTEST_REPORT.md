@@ -1290,6 +1290,70 @@ temporal or sector clustering (real blow-ups cluster, and clustered losses hit a
 20-name book harder), and stops are assumed to fill at the breaching close rather
 than gapping through. Both push the same direction.
 
+### 9.16 Production's SELECTION inside the low-turnover wrapper
+
+The cost thesis (§6.1) concluded the breakout book failed on **turnover**, not on
+stock picking. That was an inference and was never tested directly — production's
+selection had only ever run inside production's high-turnover wrapper, so "bad
+picks" and "too many trades" were confounded.
+
+This separates them. Production's own funnel (Stage 1 SQL gates, Stage 2
+base/trigger classification, ranked `-ifp_score` then `base_range_pct`, exactly
+as `screen_gpt.rank_candidates()` orders it) fills a **top-20 book rebalanced
+every 63 sessions**, with the same stop, costs and mechanics as the frozen
+momentum strategy. Only the ranking differs.
+
+| Window | Selection | CAGR% | maxDD% | Ulcer | Worst 12m% | **Martin** | Deployed |
+|---|---|---|---|---|---|---|---|
+| **FULL** | momentum + 15% | **19.51** | 39.3 | 18.99 | −30.7 | 1.03 | 66.0% |
+| **FULL** | **breakout + 15%** | 13.76 | **18.9** | **7.72** | **−15.3** | **1.78** | 64.2% |
+| FULL | breakout + 2× structural | 11.42 | 14.1 | 6.15 | −11.0 | 1.86 | 46.0% |
+| FULL | breakout, no stop | 14.05 | 22.4 | 9.61 | −19.0 | 1.46 | 70.6% |
+| FULL | breakout, top 10 | 15.73 | 29.7 | 13.59 | −26.0 | 1.16 | 74.6% |
+| **FIT** | momentum + 15% | **23.48** | 39.3 | 21.26 | −30.7 | 1.10 | 66.1% |
+| **FIT** | breakout + 15% | 9.41 | **18.1** | 8.05 | −15.3 | **1.17** | 53.0% |
+| **TEST** | momentum + 15% | 13.45 | 38.1 | 21.11 | −32.4 | 0.64 | 64.5% |
+| **TEST** | **breakout + 15%** | **13.89** | **27.9** | **11.48** | **−16.9** | **1.21** | 68.9% |
+| TEST | breakout, no stop | 15.78 | 29.9 | 11.47 | −18.8 | **1.38** | 78.1% |
+
+**The cost thesis is confirmed, and more strongly than expected.** The same
+selection that made ₹202k against ₹298k of costs in its native high-turnover
+wrapper produces **the best risk-adjusted result measured anywhere in this
+programme** when the turnover is removed — Martin 1.78 against the frozen
+strategy's 1.03, with **half the drawdown (18.9% vs 39.3%)** and a worst year of
+−15.3% against −30.7%.
+
+**It is not a cash artifact.** The obvious objection is that a book which cannot
+fill 20 slots is simply holding cash. Deployment is **64.2% vs 66.0%** — the two
+books are equally invested. (The 2× structural variant *is* a cash artifact at
+46% deployed, and is discounted accordingly.)
+
+**And unusually for this project, it holds in both halves.** Martin: FIT 1.17 vs
+1.10, TEST 1.21 vs 0.64. This is **the first change tested that beats the
+incumbent on risk-adjusted return in FIT and TEST independently** — every prior
+candidate won one and lost the other.
+
+**Three things that keep this a candidate rather than a conclusion:**
+
+1. **It costs return.** Over the full window CAGR falls 19.5% → 13.8%. The win is
+   entirely risk-adjusted. If the objective is maximum growth, momentum still
+   wins; if it is a survivable path, this is materially better.
+2. **The FIT margin is thin** (1.17 vs 1.10) and driven by drawdown, not return —
+   in 2016-2020 momentum earned 23.5% CAGR against breakout's 9.4%. Only on TEST
+   does breakout win on *both* axes.
+3. **One experiment.** Every dead idea in this report looked good at exactly this
+   stage. It has not had a top-N sweep, a stop sweep, or a Monte Carlo stress.
+
+**The frozen configuration does not change.** Unfreezing on a single result is
+the mistake this programme has made repeatedly. This becomes the **first item for
+the next research round**, to be run *after* paper trading of the frozen config is
+underway — not instead of it.
+
+*Caveat on what was tested: production waits for an intraday entry trigger and
+sizes by risk; this buys the ranked names at the next open in equal weight. What
+is measured is whether the funnel's choice of STOCKS carries information, not
+whether its entry mechanics do.*
+
 ### 9.9 Still open
 
 - **Survivorship bias remains unquantified**, and §9.5 suggests it could be large.
