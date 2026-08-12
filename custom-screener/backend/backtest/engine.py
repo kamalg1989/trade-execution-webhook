@@ -46,6 +46,14 @@ async def run_backtest(run_id: int, pool) -> None:
 
     try:
         r = dict(run)
+        if (r.get("strategy") or "BREAKOUT") == "PORTFOLIO":
+            # Continuous compounding book with portfolio-level risk controls.
+            # Reports path metrics (CAGR, ulcer, worst rolling 12m) that the
+            # summary endpoint cannot derive from trade rows, so it stores them
+            # on the run row itself — see sql/022.
+            from .portfolio_run import run_portfolio_persisted
+            await run_portfolio_persisted(r, pool)
+            return
         if (r.get("strategy") or "BREAKOUT") == "POSITIONAL":
             # Different strategy shape entirely (a rebalancing portfolio, not
             # one-signal-per-symbol-per-day), so it has its own engine. It

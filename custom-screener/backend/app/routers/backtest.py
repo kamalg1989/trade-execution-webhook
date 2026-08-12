@@ -58,7 +58,7 @@ class RunCreate(BaseModel):
     end_date: date
     # sql/020 — which strategy this run executes. BREAKOUT is everything the
     # engine did before; POSITIONAL is the low-turnover momentum book.
-    strategy: str = Field("BREAKOUT", pattern="^(BREAKOUT|POSITIONAL)$")
+    strategy: str = Field("BREAKOUT", pattern="^(BREAKOUT|POSITIONAL|PORTFOLIO)$")
     # Positional-only knobs (ignored for BREAKOUT runs).
     pos_momentum: str = Field("pct_chg_6m", pattern="^pct_chg_(3m|6m|1y)$")
     pos_rebalance_days: int = Field(21, ge=1, le=250)
@@ -69,6 +69,15 @@ class RunCreate(BaseModel):
     # reproduces the original rebalance-only exits, so old runs stay comparable.
     pos_sl_mode: str = Field("none", pattern="^(none|fixed|trail|sma200|sma50|ema50|ema21)$")
     pos_sl_pct: float = Field(0.0, ge=0, le=50)
+    # sql/022 — PORTFOLIO-only. All default to INERT: a risk control that is on
+    # by default cannot be measured against a baseline (see BACKTEST_REPORT §9.7).
+    pf_vol_mode: str = Field("none", pattern="^(none|pct|abs)$")
+    pf_vol_floor: float | None = Field(None, ge=10, le=100)
+    pf_max_per_stock_pct: float = Field(100.0, gt=0, le=100)
+    pf_max_per_sector_pct: float = Field(100.0, gt=0, le=100)
+    pf_max_stocks_per_sector: int = Field(99, ge=1, le=99)
+    pf_require_sector: bool = False
+    pf_dd_throttle_at: float = Field(0.0, ge=0, le=0.5)
     track_mode: str = Field("BOTH", pattern="^(QUANT|AI|BOTH)$")
     capital: float = 400000
     resting_window_days: int | None = None
@@ -202,11 +211,13 @@ async def create_run(body: RunCreate, request: Request):
            avoid_entry_days_before_earnings, exit_days_before_earnings,
            regime_ma_days, regime_confirm_days, regime_action,
            strategy, pos_momentum, pos_rebalance_days, pos_top_n, pos_buffer_n,
-           pos_min_turnover_cr, pos_sl_mode, pos_sl_pct)
+           pos_min_turnover_cr, pos_sl_mode, pos_sl_pct,
+           pf_vol_mode, pf_vol_floor, pf_max_per_stock_pct, pf_max_per_sector_pct,
+           pf_max_stocks_per_sector, pf_require_sector, pf_dd_throttle_at)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
                 $21,$22,$23,$24,$25,$26,$27,$28,
                 $29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,
-                $57,$58)
+                $57,$58,$59,$60,$61,$62,$63,$64,$65)
         RETURNING id
         """,
         body.start_date, body.end_date, body.track_mode, body.capital,
@@ -233,6 +244,9 @@ async def create_run(body: RunCreate, request: Request):
         body.strategy, body.pos_momentum, body.pos_rebalance_days, body.pos_top_n,
         body.pos_buffer_n, body.pos_min_turnover_cr,
         body.pos_sl_mode, body.pos_sl_pct,
+        body.pf_vol_mode, body.pf_vol_floor, body.pf_max_per_stock_pct,
+        body.pf_max_per_sector_pct, body.pf_max_stocks_per_sector,
+        body.pf_require_sector, body.pf_dd_throttle_at,
     )
     run_id = row["id"]
 
@@ -331,6 +345,16 @@ def _run_to_json(r) -> dict:
     params = d.get("params")
     if isinstance(params, str):
         params = json.loads(params)
+
+    def _f(v):
+        """NUMERIC -> float, preserving NULL as None. The pf_* metrics are NULL
+        on every BREAKOUT/POSITIONAL run, and coercing those to 0.0 would make
+        the UI render a real-looking 0% CAGR on runs that never computed one."""
+        return float(v) if v is not None else None
+
+    def _j(v):
+        return json.loads(v) if isinstance(v, str) else v
+
     return {
         "id": d["id"], "createdAt": d["created_at"].isoformat() if d.get("created_at") else None,
         "completedAt": d["completed_at"].isoformat() if d.get("completed_at") else None,
@@ -394,6 +418,25 @@ def _run_to_json(r) -> dict:
         "posMinTurnoverCr": float(d["pos_min_turnover_cr"]) if d.get("pos_min_turnover_cr") is not None else None,
         "posSlMode": d.get("pos_sl_mode") or "none",
         "posSlPct": float(d["pos_sl_pct"]) if d.get("pos_sl_pct") is not None else 0.0,
+        "pfVolMode": d.get("pf_vol_mode") or "none",
+        "pfVolFloor": _f(d.get("pf_vol_floor")),
+        "pfMaxPerStockPct": _f(d.get("pf_max_per_stock_pct")),
+        "pfMaxPerSectorPct": _f(d.get("pf_max_per_sector_pct")),
+        "pfMaxStocksPerSector": d.get("pf_max_stocks_per_sector"),
+        "pfRequireSector": d.get("pf_require_sector"),
+        "pfDdThrottleAt": _f(d.get("pf_dd_throttle_at")),
+        # Path metrics — NULL on non-PORTFOLIO runs, which the UI reads as
+        # "no path metrics" rather than as zeros.
+        "pfCagrPct": _f(d.get("pf_cagr_pct")),
+        "pfMaxDDPct": _f(d.get("pf_max_dd_pct")),
+        "pfUlcer": _f(d.get("pf_ulcer")),
+        "pfWorst12mPct": _f(d.get("pf_worst_12m_pct")),
+        "pfMartin": _f(d.get("pf_martin")),
+        "pfTurnoverPerYr": _f(d.get("pf_turnover_per_yr")),
+        "pfAvgExposure": _f(d.get("pf_avg_exposure")),
+        "pfFinalEquity": _f(d.get("pf_final_equity")),
+        "pfCalendar": _j(d.get("pf_calendar")),
+        "pfEquityCurve": _j(d.get("pf_equity_curve")),
     }
 
 

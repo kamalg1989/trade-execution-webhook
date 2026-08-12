@@ -204,7 +204,13 @@ def _metrics(curve: list[tuple], capital: float, buy_val: float, sell_val: float
     }
 
 
-async def run_portfolio(pool, **overrides) -> dict:
+async def run_portfolio(pool, _audit=None, _audit_trade=None, **overrides) -> dict:
+    """_audit(dict) is called once per session with the raw cash/holdings/equity
+    figures, and _audit_trade(dict) once per completed trade with its prices,
+    quantity, costs and exit reason. Both are None in production and cost
+    nothing; they exist so test_portfolio_engine.py can assert the accounting
+    identities directly rather than re-implementing the engine and proving only
+    that two copies of the same logic agree."""
     cfg = {**DEFAULTS, **overrides}
     cap0 = cfg["capital"]
     slip = cfg["slippage"]
@@ -247,7 +253,7 @@ async def run_portfolio(pool, **overrides) -> dict:
     def equity(day) -> float:
         return cash + sum(h["last"] * h["qty"] for h in holdings.values())
 
-    def sell(sym: str, day, px: float) -> None:
+    def sell(sym: str, day, px: float, reason: str) -> None:
         nonlocal cash, sell_val, n_trades, n_win
         h = holdings.pop(sym)
         net = px * (1 - slip / 100)
@@ -257,6 +263,11 @@ async def run_portfolio(pool, **overrides) -> dict:
         sell_val += gross
         n_trades += 1
         n_win += (proceeds - h["cost"]) > 0
+        if _audit_trade:
+            _audit_trade({"sym": sym, "entry": h["date"], "exit": day,
+                          "entry_px": h["entry"], "raw_open": h["raw_open"],
+                          "exit_px": net, "qty": h["qty"], "cost": h["cost"],
+                          "proceeds": proceeds, "reason": reason})
 
     for i, day in enumerate(days):
         # ---- daily mark to market
@@ -270,10 +281,21 @@ async def run_portfolio(pool, **overrides) -> dict:
         if cfg["sl_pct"] > 0 and holdings:
             for sym in [s for s, h in holdings.items()
                         if h["last"] <= h["entry"] * (1 - cfg["sl_pct"] / 100)]:
-                sell(sym, day, holdings[sym]["last"])
+                # Exit at the CLOSE that revealed the breach, not at the stop
+                # level. Only daily bars are available, so a fill at exactly the
+                # stop price would assume the resting order was filled intraday
+                # at its limit — which is precisely what does NOT happen on the
+                # gap-downs that cause the worst losses. Exiting at the close is
+                # the conservative choice and it is what produced the numbers in
+                # BACKTEST_REPORT.md section 9.
+                sell(sym, day, holdings[sym]["last"], "STOP")
 
         eq = equity(day)
         curve.append((day, eq))
+        if _audit:
+            _audit({"day": day, "cash": cash, "equity": eq,
+                    "held": sum(h["last"] * h["qty"] for h in holdings.values()),
+                    "n": len(holdings)})
         if len(curve) > 1:
             prev = curve[-2][1]
             daily_ret.append(eq / prev - 1 if prev else 0.0)
@@ -331,7 +353,7 @@ async def run_portfolio(pool, **overrides) -> dict:
                 drop, nxt)}
             for s in drop:
                 if s in fills:
-                    sell(s, nxt, fills[s])
+                    sell(s, nxt, fills[s], "ROTATE")
 
         # ---- buys ------------------------------------------------------------
         free = n_slots - len(holdings)
@@ -381,7 +403,8 @@ async def run_portfolio(pool, **overrides) -> dict:
                     buy_val += gross
                     await warm(sym)
                     holdings[sym] = {"qty": qty, "cost": outlay, "entry": entry,
-                                     "last": entry, "peak": entry}
+                                     "last": entry, "peak": entry,
+                                     "raw_open": o, "date": nxt}
                     if sec:
                         sec_val[sec] = sec_val.get(sec, 0) + gross
                         sec_cnt[sec] = sec_cnt.get(sec, 0) + 1
@@ -391,4 +414,10 @@ async def run_portfolio(pool, **overrides) -> dict:
     m["avgExposure"] = (round(sum(e for _, e, _, _ in exposure_log) / len(exposure_log), 3)
                         if exposure_log else 1.0)
     m["openAtEnd"] = len(holdings)
+    # Still-open positions and the daily curve, for the persistence layer. The
+    # curve is downsampled to weekly for storage: 2,600 daily points per run is
+    # more than any chart needs and it bloats every list query that selects *.
+    m["_open"] = [{"sym": s, **h} for s, h in holdings.items()]
+    m["_curve"] = [(d.isoformat(), round(v)) for i, (d, v) in enumerate(curve)
+                   if i % 5 == 0 or i == len(curve) - 1]
     return m

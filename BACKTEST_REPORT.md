@@ -757,12 +757,20 @@ test.** It does exactly what it was designed to do — maxDD 28.5%, worst 12-mon
 **worse than applying no controls at all**. It buys survivability at a price that
 exceeds what it is worth.
 
-### 9.4 The control that worked was not on the list
+### 9.4 The control that worked was not on the list — but it is a hypothesis, not a result
 
-**Holding 30 names instead of 20** produced the best unbiased risk-adjusted result
-in the whole test: CAGR 19.51 → 16.73 (−2.8pp), but maxDD 39.3% → 33.8%, ulcer
-18.99 → **15.30** (the largest single improvement in the table), and worst 12-month
-−30.7% → −26.5%. Martin **1.09**, the highest of any unbiased config.
+**Holding 30 names instead of 20** produced the best unbiased risk-adjusted
+outcome in this test: CAGR 19.51 → 16.73 (−2.8pp), but maxDD 39.3% → 33.8%,
+ulcer 18.99 → **15.30** (the largest single improvement in the table), and worst
+12-month −30.7% → −26.5%. Martin **1.09**, the highest of any unbiased config.
+
+**This is one post-hoc cell and must not be treated as the production setting
+yet.** Every idea this project has killed looked exactly like this at exactly
+this stage — the absolute breadth cap, the VCP gate, earnings rule M — and each
+died as soon as its neighbouring values and its out-of-sample behaviour were
+checked. Until top-20/25/30/35/40 trace a plateau rather than a spike, and until
+the ranking survives a FIT/TEST split, top-30 is a **hypothesis under test**
+(see §9.10).
 
 That is a meaningful result for the original hypothesis. The thesis was *"use
 position sizing, diversification, cash and portfolio limits to control the return
@@ -816,19 +824,28 @@ measured against a baseline.
 
 ### 9.8 Where this leaves the strategy
 
-**Recommended configuration, on the evidence:**
+**Best current candidate, on the evidence:**
 
 ```
 Core:      Positional 6m momentum / 63-session rebalance / buffer rank
-Breadth:   top 30 (not top 20) — the best risk reduction found
-Stop:      Fixed 15% (supported range 15–20%; 10% rejected)
+Breadth:   top 30-40. NOT top-30 specifically - that FAILED split-sample
+           validation (§9.10). What survived is the DIRECTION: out of sample,
+           every risk metric improved monotonically as top-N rose, and was
+           still improving at 40. Pick on CAGR you will pay, not on a maximum.
+Stop:      Fixed 15% (supported RANGE 15-20%; 10% rejected. Not "15 is optimal")
 Exposure:  Full, or mild vol scaling with a 75% floor. NOT the 25% ladder.
-Sector:    3 per sector; 2 is too tight
+Sector:    3 per sector — TENTATIVE, roughly neutral rather than proven
 Throttle:  None — it fails at every threshold tested
 ```
 
-Expected: **~17% CAGR, ~34% maxDD, worst 12-month ~−26%.** On ₹4L over the
-measured decade that is ₹20L.
+**Observed in this backtest: ~17% CAGR, ~34% maxDD, worst 12-month ~−26%**, or
+₹20L from ₹4L over the measured decade.
+
+The word is *observed*, not *expected*. **Survivorship bias is unresolved**, and
+§9.5 shows it can move results dramatically in both directions — the
+survivorship-contaminated variant posted a 28% CAGR *and* a materially lower
+drawdown. Until that is quantified, these figures describe what happened to this
+dataset, not what a live book should anticipate.
 
 **What this does not do is make the book comfortable.** A 34% drawdown and a
 −26% worst year remain. The honest conclusion of this test is that the original
@@ -845,6 +862,63 @@ failed here, except it is decided once rather than timed badly. That is a
 portfolio decision, and it is the honest answer to "how do I make this
 survivable."
 
+### 9.10 The top-N plateau + split-sample test — top-30 FAILED validation
+
+Run as 30 continuous simulations (5 top-N values × 2 stops × full/FIT/TEST).
+
+**Full period 2016–2026, stop 15%:**
+
+| top-N | CAGR% | maxDD% | Ulcer | Worst 12m% | Martin | Trades |
+|---|---|---|---|---|---|---|
+| 20 | 19.51 | 39.3 | 18.99 | −30.7 | 1.03 | 530 |
+| 25 | 17.67 | 35.9 | 16.94 | −28.0 | 1.04 | 655 |
+| **30** | 16.73 | **33.8** | **15.30** | −26.5 | **1.09** | 765 |
+| 35 | 15.66 | 37.5 | 16.60 | −28.6 | 0.94 | 902 |
+| 40 | 16.42 | 37.8 | 15.98 | −28.2 | 1.03 | 1005 |
+
+At stop 20% the top-N effect essentially vanishes (Martin 0.91 / 0.82 / 0.91 /
+0.86 / 0.92 — flat). So even in-sample, top-30's advantage exists only at one
+stop level and is non-monotonic in its neighbours: 35 drops *below* 20.
+
+**Split sample:**
+
+| Stop | top-N | FIT CAGR% | FIT maxDD% | FIT Martin | TEST CAGR% | TEST maxDD% | TEST Martin | TEST worst 12m% |
+|---|---|---|---|---|---|---|---|---|
+| 15 | 20 | 23.48 | 39.3 | 1.10 | 13.45 | 38.1 | 0.64 | −32.4 |
+| 15 | 25 | 20.00 | 35.9 | 1.09 | 14.27 | 36.7 | 0.75 | −29.6 |
+| 15 | **30** | 19.69 | 33.8 | **1.16** | 14.72 | 36.6 | 0.86 | −28.3 |
+| 15 | 35 | 17.21 | 37.5 | 0.91 | 14.15 | 34.3 | 0.87 | −25.4 |
+| 15 | 40 | 16.64 | 37.8 | 0.90 | **14.91** | **32.9** | **0.97** | **−24.7** |
+| 20 | 30 | 18.44 | 38.2 | 0.94 | 16.99 | 38.5 | **0.98** | −31.8 |
+
+**Spearman rank correlation (Martin), FIT vs TEST: −0.39 — inverted.**
+Best on FIT was `stop15/top30`; **its TEST rank was 6th of 10**.
+
+**Verdict: top-30 as a specific setting is not validated and must not be
+adopted.** It is the FIT maximum that degrades out of sample — the exact
+signature that killed the breadth cap, the VCP gate and earnings rule M, and the
+same signature as the positional rotation sweep where the FIT-best config ranked
+48th of 48 on TEST. Wiring top-30 into production on the strength of §9.4 would
+have repeated the programme's most-repeated mistake.
+
+**But the underlying direction does survive, on the risk axis specifically.**
+Read *within* a stop level, every out-of-sample risk measure improves
+monotonically as top-N rises:
+
+- TEST Martin: 0.64 → 0.75 → 0.86 → 0.87 → **0.97**
+- TEST maxDD: 38.1 → 36.7 → 36.6 → 34.3 → **32.9**
+- TEST worst 12m: −32.4 → −29.6 → −28.3 → −25.4 → **−24.7**
+
+No bumps, no reversals. The negative overall Spearman comes from FIT and TEST
+*disagreeing about direction* — in 2016-2020 fewer names scored better, in
+2021-2026 more names scored better — not from the relationship being random.
+
+So the honest statement is: **"more names lowers drawdown" has out-of-sample
+support; "30 is the right number" does not.** On TEST the metrics were still
+improving at 40, which is the edge of what was tested. No single top-N should be
+hard-coded; the defensible zone is 30–40, and it should be chosen on how much
+CAGR you are willing to pay rather than on a backtest maximum.
+
 ### 9.9 Still open
 
 - **Survivorship bias remains unquantified**, and §9.5 suggests it could be large.
@@ -853,8 +927,17 @@ survivable."
   condition was "a 10–20% sleeve only if the combined backtest improves drawdown."
   The two books can now share capital in one engine; the correlation has never
   been measured.
-- **Top-30 was one data point, not a sweep.** Top-25/35/40 should be checked for a
-  plateau before top-30 is trusted — the finding is currently a single cell.
+- ~~Top-30 was one data point, not a sweep.~~ **Done — and it failed.** See
+  §9.10. The direction survived; the specific value did not.
+- **Test top-N beyond 40.** Every out-of-sample risk metric was still improving
+  at the edge of the tested range, so the useful zone may not have been reached.
+- **`portfolio_engine.py` now has invariant tests** (`test_portfolio_engine.py`,
+  11 passing) covering the daily `cash + marked holdings == equity` identity,
+  compounding position sizing, positions surviving year ends, cost ordering and
+  single application, stop fills at or below threshold, and unknown-sector
+  stocks not being silently excluded. They assert accounting identities rather
+  than pinning returns — a test that pins CAGR is a regression detector for the
+  data, not a correctness check for the engine.
 
 ---
 

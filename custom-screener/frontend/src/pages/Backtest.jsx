@@ -71,6 +71,22 @@ function slLabel(mode, pct) {
 // default value so the column stays scannable across many runs.
 function summarizeRunSettings(run) {
   const tags = [];
+  if (run.strategy === 'PORTFOLIO') {
+    // A continuous compounding book — the knobs that describe it are the risk
+    // controls, not the breakout gates, so summarise on its own terms.
+    const t = ['PORTFOLIO', `${run.posMomentum?.replace('pct_chg_', '') ?? '6m'} mom`,
+               `top${run.posTopN}`, `rebal ${run.posRebalanceDays}d`];
+    if (run.posSlPct > 0) t.push(`stop ${run.posSlPct}%`);
+    if (run.pfVolMode && run.pfVolMode !== 'none') {
+      t.push(`vol:${run.pfVolMode}${run.pfVolFloor ? ` floor${run.pfVolFloor}%` : ''}`);
+    }
+    if (run.pfDdThrottleAt > 0) t.push(`ddThrottle ${(run.pfDdThrottleAt * 100).toFixed(0)}%`);
+    if (run.pfMaxStocksPerSector && run.pfMaxStocksPerSector < 99) {
+      t.push(`${run.pfMaxStocksPerSector}/sector`);
+    }
+    if (run.pfRequireSector) t.push('⚠ sector-only universe');
+    return t;
+  }
   if (run.maxPicksPerTrack != null && run.maxPicksPerTrack !== 3) tags.push(`top${run.maxPicksPerTrack}/track`);
   if (run.strategy === 'POSITIONAL') {
     // Positional runs share almost none of the breakout knobs, so summarise
@@ -129,6 +145,14 @@ const DEFAULT_FORM = {
   pos_momentum: 'pct_chg_6m', pos_rebalance_days: 21, pos_top_n: 10,
   pos_buffer_n: 20, pos_min_turnover_cr: 5,
   pos_sl_mode: 'none', pos_sl_pct: 15,
+  // PORTFOLIO risk controls. Every one defaults to INERT — a control that is on
+  // by default cannot be measured against a baseline, which is exactly the bug
+  // that made the first sector-cap run identical to the run it should have
+  // differed from.
+  pf_vol_mode: 'none', pf_vol_floor: 75,
+  pf_max_per_stock_pct: 100, pf_max_per_sector_pct: 100,
+  pf_max_stocks_per_sector: 99, pf_require_sector: false,
+  pf_dd_throttle_at: 0,
   start_date: '', end_date: '', track_mode: 'QUANT', capital: 400000,
   restIndefinite: true, resting_window_days: 5,
   stacking_guard: true, stacking_guard_mode: 'OVERRIDE',
@@ -179,6 +203,40 @@ const PRESETS = {
       strategy: 'POSITIONAL', pos_momentum: 'pct_chg_6m', pos_rebalance_days: 63,
       pos_top_n: 20, pos_buffer_n: 40, pos_min_turnover_cr: 5, capital: 400000,
       pos_sl_mode: 'fixed', pos_sl_pct: 15,
+    },
+  },
+  portfolio: {
+    label: 'Portfolio (continuous)',
+    hint: 'ONE compounding run 2016→2026 — capital carried forward, positions '
+        + 'held across year ends, daily mark-to-market. Reports CAGR / maxDD / '
+        + 'ulcer, not summed annual P&L. Best current candidate.',
+    values: {
+      // top-35 is a midpoint of the DEFENSIBLE ZONE (30-40), not a backtest
+      // maximum. top-30 was the best in-sample cell and FAILED split-sample
+      // validation — it ranked 6th of 10 on 2021-26 (BACKTEST_REPORT §9.10).
+      // What survived is the direction: out of sample every risk metric
+      // improved monotonically with top-N and was still improving at 40.
+      // The stop is a supported RANGE of 15-20%; 15 is the midpoint, not a
+      // proven optimum. Every risk control is off: vol scaling and the
+      // drawdown throttle both measured NET NEGATIVE.
+      strategy: 'PORTFOLIO', pos_momentum: 'pct_chg_6m', pos_rebalance_days: 63,
+      pos_top_n: 35, pos_buffer_n: 70, pos_min_turnover_cr: 5, capital: 400000,
+      pos_sl_pct: 15, pf_vol_mode: 'none', pf_dd_throttle_at: 0,
+      pf_max_stocks_per_sector: 3, pf_max_per_sector_pct: 30,
+      pf_require_sector: false,
+      start_date: '2016-01-01', end_date: '2026-08-08',
+    },
+  },
+  portfolioBaseline: {
+    label: 'Portfolio (no controls)',
+    hint: 'Same continuous book with NO stop and no risk controls — the true '
+        + 'baseline every control must be measured against.',
+    values: {
+      strategy: 'PORTFOLIO', pos_momentum: 'pct_chg_6m', pos_rebalance_days: 63,
+      pos_top_n: 20, pos_buffer_n: 40, pos_min_turnover_cr: 5, capital: 400000,
+      pos_sl_pct: 0, pf_vol_mode: 'none', pf_dd_throttle_at: 0,
+      pf_max_stocks_per_sector: 99, pf_max_per_sector_pct: 100,
+      start_date: '2016-01-01', end_date: '2026-08-08',
     },
   },
   positionalNoSl: {
@@ -254,7 +312,18 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
         pos_sl_mode: f.pos_sl_mode || 'none',
         // The MA stops ignore a percentage; send 0 rather than a stale value so
         // the run row can't imply a threshold that was never applied.
-        pos_sl_pct: POS_SL_NEEDS_PCT.has(f.pos_sl_mode) ? Number(f.pos_sl_pct) || 0 : 0,
+        // PORTFOLIO always uses a fixed stop (the only stop type that survived
+        // testing), so it reads pos_sl_pct directly rather than via pos_sl_mode.
+        pos_sl_pct: f.strategy === 'PORTFOLIO'
+          ? Number(f.pos_sl_pct) || 0
+          : (POS_SL_NEEDS_PCT.has(f.pos_sl_mode) ? Number(f.pos_sl_pct) || 0 : 0),
+        pf_vol_mode: f.pf_vol_mode || 'none',
+        pf_vol_floor: f.pf_vol_mode === 'none' ? null : Number(f.pf_vol_floor) || 75,
+        pf_max_per_stock_pct: Number(f.pf_max_per_stock_pct) || 100,
+        pf_max_per_sector_pct: Number(f.pf_max_per_sector_pct) || 100,
+        pf_max_stocks_per_sector: Number(f.pf_max_stocks_per_sector) || 99,
+        pf_require_sector: !!f.pf_require_sector,
+        pf_dd_throttle_at: Number(f.pf_dd_throttle_at) || 0,
         start_date: f.start_date, end_date: f.end_date, track_mode: f.track_mode,
         capital: Number(f.capital) || 400000,
         resting_window_days: f.restIndefinite ? null : Number(f.resting_window_days) || null,
@@ -338,6 +407,7 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
             className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
             <option value="BREAKOUT">Breakout (swing)</option>
             <option value="POSITIONAL">Positional momentum</option>
+            <option value="PORTFOLIO">Portfolio (continuous, compounding)</option>
           </select>
         </label>
         <label className="text-xs text-slate-400 flex flex-col gap-1">
@@ -346,6 +416,118 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
             className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" min="10000" step="10000" />
         </label>
       </div>
+
+      {f.strategy === 'PORTFOLIO' && (
+        <div className="pt-3 border-t border-slate-800">
+          <div className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-1">
+            Continuous portfolio
+          </div>
+          <p className="text-[11px] text-slate-500 mb-2 leading-snug">
+            ONE simulation start to finish: capital compounds, positions are held
+            across year ends, the book is marked to market daily. This is not the
+            same measurement as the other strategies, which run a separate backtest
+            per year and add the P&amp;L — that framing resets capital every January
+            and cannot show a drawdown that spans a year boundary.
+            Results are reported as <b>CAGR, max drawdown, ulcer index and worst
+            rolling 12-month return</b>, not as a P&amp;L total.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
+            <label className="text-xs text-slate-400 flex flex-col gap-1">
+              <span>Momentum lookback</span>
+              <select value={f.pos_momentum} onChange={(e) => set('pos_momentum')(e.target.value)}
+                className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
+                <option value="pct_chg_3m">3 months</option>
+                <option value="pct_chg_6m">6 months (tested)</option>
+                <option value="pct_chg_1y">12 months</option>
+              </select>
+            </label>
+            <Field label="Rebalance every (sessions)" hint="63 ≈ quarterly."
+              value={f.pos_rebalance_days} onChange={set('pos_rebalance_days')}
+              type="number" min="1" max="250" />
+            <Field label="Hold top N"
+              hint="More names = less drawdown. 30 scored best but is one cell, not a proven plateau."
+              value={f.pos_top_n} onChange={set('pos_top_n')} type="number" min="1" max="60" />
+            <Field label="Sell below rank (buffer)" hint="Anti-churn hysteresis; 2x top-N."
+              value={f.pos_buffer_n} onChange={set('pos_buffer_n')} type="number" min="1" max="120" />
+            <Field label="Fixed stop (%)"
+              hint="Supported RANGE is 15–20%. 10% was rejected out-of-sample. 0 disables."
+              value={f.pos_sl_pct} onChange={set('pos_sl_pct')}
+              type="number" min="0" max="50" step="0.5" />
+            <Field label="Min turnover (₹ cr)" hint="Liquidity floor."
+              value={f.pos_min_turnover_cr} onChange={set('pos_min_turnover_cr')}
+              type="number" min="0" step="0.5" />
+          </div>
+
+          <div className="mt-4 pt-3 border-t border-slate-800">
+            <div className="text-xs font-semibold text-amber-400 uppercase tracking-wide mb-1">
+              Risk controls — all measured, most rejected
+            </div>
+            <p className="text-[11px] text-slate-500 mb-2 leading-snug">
+              These default to OFF because that is what testing supported, not as a
+              placeholder. Volatility scaling cost 5.4pp of CAGR for <i>zero</i>
+              {' '}drawdown reduction; the drawdown throttle scored worse than doing
+              nothing at every threshold and made the ulcer index <i>worse</i> — it
+              cuts exposure after the loss and restores it after the recovery.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
+              <label className="text-xs text-slate-400 flex flex-col gap-1">
+                <span>Volatility scaling</span>
+                <select value={f.pf_vol_mode} onChange={(e) => set('pf_vol_mode')(e.target.value)}
+                  className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
+                  <option value="none">Off (tested best)</option>
+                  <option value="pct">On — percentile of the book&apos;s own past vol</option>
+                  <option value="abs">On — absolute vol bands</option>
+                </select>
+                <span className="text-[11px] text-slate-500 leading-snug">
+                  Cuts the number of slots held, so reducing exposure raises cash
+                  rather than concentrating the book.
+                </span>
+              </label>
+              {f.pf_vol_mode !== 'none' && (
+                <Field label="Exposure floor (%)"
+                  hint="Lowest exposure allowed. Only mild floors (≥75%) ever helped."
+                  value={f.pf_vol_floor} onChange={set('pf_vol_floor')}
+                  type="number" min="10" max="100" step="5" />
+              )}
+              <Field label="Drawdown throttle at (0 = off)"
+                hint="e.g. 0.10 halves new exposure past −10%. Net negative at every value tested."
+                value={f.pf_dd_throttle_at} onChange={set('pf_dd_throttle_at')}
+                type="number" min="0" max="0.5" step="0.01" />
+              <Field label="Max stocks per sector (99 = off)"
+                hint="2 costs more than it buys; 3 is roughly neutral."
+                value={f.pf_max_stocks_per_sector} onChange={set('pf_max_stocks_per_sector')}
+                type="number" min="1" max="99" />
+              <Field label="Max % per sector"
+                value={f.pf_max_per_sector_pct} onChange={set('pf_max_per_sector_pct')}
+                type="number" min="1" max="100" step="5" />
+              <Field label="Max % per stock"
+                hint="Near-inert at top-20+ where a slot is already ≤5%."
+                value={f.pf_max_per_stock_pct} onChange={set('pf_max_per_stock_pct')}
+                type="number" min="1" max="100" step="1" />
+            </div>
+            <label className="flex items-start gap-2 mt-3 text-xs text-slate-400">
+              <input type="checkbox" checked={!!f.pf_require_sector}
+                onChange={(e) => set('pf_require_sector')(e.target.checked)}
+                className="mt-0.5" />
+              <span>
+                Restrict universe to stocks with a known sector
+                <span className="block text-[11px] text-rose-400/90 leading-snug mt-0.5">
+                  ⚠ Do not trust results from this. Sector data exists only for
+                  <i> current</i> NSE index members, so this filters the 2016
+                  universe by &ldquo;was in an index in 2026&rdquo; — selecting
+                  winners with a decade of hindsight. It posts the best numbers in
+                  the whole project and they are survivorship artifacts.
+                </span>
+              </span>
+            </label>
+          </div>
+          <div className="text-[11px] text-amber-300/80 mt-3 leading-snug">
+            Survivorship bias across the whole dataset is still unquantified, so
+            treat every figure here as <b>observed on this data</b>, not as expected
+            forward performance.
+          </div>
+        </div>
+      )}
 
       {f.strategy === 'POSITIONAL' && (
         <div className="pt-3 border-t border-slate-800">
@@ -617,18 +799,41 @@ function RunRow({ run, selected, onSelect, onCancel, cancelling, rowRef, onKeyDo
         {run.status === 'RUNNING' && pct != null && <span className="text-slate-400 font-normal"> · {pct}%</span>}
       </td>
       <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap">{run.tradeCount ?? '—'}</td>
-      <td className={`py-1.5 px-2 text-xs font-medium whitespace-nowrap tabular-nums ${pnlColor(run.realizedPnl)}`}
-        title={run.realizedPnl != null ? `Realized ₹${run.realizedPnl.toLocaleString('en-IN')}` : undefined}>
-        {fmtPnl(run.realizedPnl)}
-      </td>
-      <td className={`py-1.5 px-2 text-xs whitespace-nowrap tabular-nums ${pnlColor(run.unrealizedPnl)}`}
-        title={run.unrealizedPnl != null ? `Unrealized (open positions marked to run end) ₹${run.unrealizedPnl.toLocaleString('en-IN')}` : undefined}>
-        {fmtPnl(run.unrealizedPnl)}
-      </td>
-      <td className={`py-1.5 px-2 text-xs font-semibold whitespace-nowrap tabular-nums ${pnlColor(run.totalPnl)}`}
-        title={run.totalPnl != null ? `Total ₹${run.totalPnl.toLocaleString('en-IN')}` : undefined}>
-        {fmtPnl(run.totalPnl)}
-      </td>
+      {run.strategy === 'PORTFOLIO' ? (
+        // A continuous compounding book is judged on the PATH, so the three P&L
+        // columns carry CAGR / maxDD / Martin instead. Summed P&L is not a
+        // meaningful headline for it — and showing it next to annual-reset runs
+        // would invite exactly the comparison that is invalid.
+        <>
+          <td className="py-1.5 px-2 text-xs font-medium whitespace-nowrap tabular-nums text-emerald-300"
+            title="Compound annual growth rate over the whole continuous run">
+            {run.pfCagrPct != null ? `${run.pfCagrPct.toFixed(1)}%` : '—'}
+          </td>
+          <td className="py-1.5 px-2 text-xs whitespace-nowrap tabular-nums text-rose-300"
+            title="Peak-to-trough drawdown on the daily equity curve">
+            {run.pfMaxDDPct != null ? `−${run.pfMaxDDPct.toFixed(1)}%` : '—'}
+          </td>
+          <td className="py-1.5 px-2 text-xs font-semibold whitespace-nowrap tabular-nums text-slate-200"
+            title="Martin ratio = CAGR / ulcer index. Return per unit of time-weighted pain.">
+            {run.pfMartin != null ? run.pfMartin.toFixed(2) : '—'}
+          </td>
+        </>
+      ) : (
+        <>
+          <td className={`py-1.5 px-2 text-xs font-medium whitespace-nowrap tabular-nums ${pnlColor(run.realizedPnl)}`}
+            title={run.realizedPnl != null ? `Realized ₹${run.realizedPnl.toLocaleString('en-IN')}` : undefined}>
+            {fmtPnl(run.realizedPnl)}
+          </td>
+          <td className={`py-1.5 px-2 text-xs whitespace-nowrap tabular-nums ${pnlColor(run.unrealizedPnl)}`}
+            title={run.unrealizedPnl != null ? `Unrealized (open positions marked to run end) ₹${run.unrealizedPnl.toLocaleString('en-IN')}` : undefined}>
+            {fmtPnl(run.unrealizedPnl)}
+          </td>
+          <td className={`py-1.5 px-2 text-xs font-semibold whitespace-nowrap tabular-nums ${pnlColor(run.totalPnl)}`}
+            title={run.totalPnl != null ? `Total ₹${run.totalPnl.toLocaleString('en-IN')}` : undefined}>
+            {fmtPnl(run.totalPnl)}
+          </td>
+        </>
+      )}
       <SettingsCell run={run} />
       <td className="py-1.5 px-2 text-xs">
         {run.status === 'RUNNING' && (
@@ -735,9 +940,15 @@ function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
             <th className="py-1.5 px-2">Capital</th>
             <th className="py-1.5 px-2">Status</th>
             <th className="py-1.5 px-2">Trades</th>
-            <th className="py-1.5 px-2" title="Banked P&L from closed trades">Realized</th>
-            <th className="py-1.5 px-2" title="Open positions marked to the run's end date">Unreal.</th>
-            <th className="py-1.5 px-2" title="Realized + unrealized">Total</th>
+            <th className="py-1.5 px-2" title="Closed-trade P&L — or CAGR on PORTFOLIO runs">
+              Realized <span className="text-slate-500 font-normal">/ CAGR</span>
+            </th>
+            <th className="py-1.5 px-2" title="Open positions marked to the run's end date — or max drawdown on PORTFOLIO runs">
+              Unreal. <span className="text-slate-500 font-normal">/ maxDD</span>
+            </th>
+            <th className="py-1.5 px-2" title="Realized + unrealized — or Martin ratio (CAGR/ulcer) on PORTFOLIO runs">
+              Total <span className="text-slate-500 font-normal">/ Martin</span>
+            </th>
             <th className="py-1.5 px-2">Settings</th>
             <th className="py-1.5 px-2"></th>
           </tr>
