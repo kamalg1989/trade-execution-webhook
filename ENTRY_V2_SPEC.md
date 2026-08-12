@@ -117,12 +117,55 @@ drop out and this is 7 years across 2 regimes, not a decade.
 
 ---
 
-## 4. Base-stage allocation
+## 4. Allocation
 
-**Already implemented in production and honoured by the backtest** —
-`BASE_STAGE_SIZE_MULTIPLIER = {1: 1.00, 2: 1.00, 3: 0.50, 4: 0.25}`, default 0.25.
-Nothing to build. It has never been tested in isolation, so the run list below
-includes an on/off comparison.
+### 4.1 Base stage — the ONLY size factor
+
+| Base | Multiplier | vs production |
+|---|---|---|
+| 1 | 1.00× | unchanged |
+| **2** | **0.75×** | **was 1.00× — the only change** |
+| 3 | 0.50× | unchanged |
+| 4 | 0.25× | unchanged |
+
+Applied exactly as production applies it — scaling **both** limits, so the
+existing formula is untouched apart from the dict:
+
+```python
+risk_amt    = CAPITAL * 0.0025 * stage_mult
+max_capital = CAPITAL * 0.10   * stage_mult
+qty         = min(risk_amt / risk_per_share, max_capital / entry)
+```
+
+The ceiling stays 1.00×, so no position can exceed 10% of capital or 0.25% risk —
+the same limits production runs today. A 2.00× Base-1 tier was considered and
+rejected: it would have allowed 20% of capital in one name, and with 3 picks/day
+up to 60% across three names.
+
+Sizing already lives in `_size_qty()` (backtest) reading
+`screen_gpt.BASE_STAGE_SIZE_MULTIPLIER` directly, so this is a one-dict change
+that keeps backtest and production in sync by construction.
+
+### 4.2 Trigger-based sizing — considered and REJECTED
+
+Every trigger deploys the **same** allocation. Recorded here because it was
+explicitly evaluated, not overlooked.
+
+Two reasons it was dropped:
+
+1. **Stop width is already neutralised.** Sizing is risk-based —
+   `qty = risk_amt / (entry - stop)` — so an HH-HL with a wide stop already buys
+   fewer shares than an inside bar with a tight one. The rupees at risk are
+   identical. Trigger-based sizing would therefore not be compensating for stop
+   geometry; it would be a pure conviction bet.
+2. **No evidence exists for such a bet.** Nothing in production sizes on entry
+   type — `entry_type` is captured and used only for display in the Telegram
+   alert and the GPT prompt. Inventing a multiplier ladder would be a free
+   parameter with nothing behind it.
+
+If it is ever revisited, the honest route is to first measure win rate and
+average R **by trigger type** from `backtest_trades`, and let those numbers set
+the ladder rather than judgement.
 
 ---
 
@@ -133,12 +176,20 @@ Each isolates a single change against the same production baseline, continuous
 
 | # | Run | Isolates |
 |---|---|---|
-| 0 | production + baseStage≤2, daily | in-batch reference |
-| 1 | + fundamental gate (missing = pass) | the one new information source |
-| 2 | + fundamental gate (missing = fail) | sensitivity to the coverage policy |
-| 3 | + base-stage sizing OFF | whether the size ladder does anything |
-| 4 | + entry v2 (buy point AND trigger) | the deck's two-level model |
+| 0 | production baseline, **next-open exits** | in-batch reference — see note |
+| 1 | + new base ladder (1.00/0.75/0.50/0.25) | the Base-2 change |
+| 2 | + entry v2 (buy point AND trigger) | the deck's two-level model |
+| 3 | + fundamental gate (missing = pass) | the one new information source |
+| 4 | + fundamental gate (missing = fail) | sensitivity to the coverage policy |
 | 5 | best of 1-4 + weekly cadence | already-validated turnover reduction |
+
+**The baseline uses `next_open_exit = True`.** Production's `sl_engine.py` runs at
+18:00 IST, when Dhan rejects market orders, so it places forever orders with a
+trigger just below the close **which fill at the next open**. The close-fill model
+every earlier breakout run used is therefore *not* what production does, and it
+understates it badly — measured at Rs.35,406 (close-fill) vs Rs.125,437
+(next-open) over the same decade. Comparing entry v2 against the close-fill
+number would flatter it by ~Rs.90k of pure modelling artifact.
 
 The 4 × 4 buy-point × trigger grid is **reported in full, not searched.** If one
 cell looks outstanding, that is 16 cells of noise doing what 16 cells of noise
