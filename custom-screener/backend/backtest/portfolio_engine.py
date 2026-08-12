@@ -20,6 +20,18 @@ So this runs ONE simulation start to finish:
   * metrics that describe the PATH (maxDD, ulcer, worst rolling 12m), not just
     the destination (total P&L)
 
+STRUCTURE. Data access and simulation are deliberately separated:
+
+    load_market_data(pool, cfg) -> dict     one pass over Postgres
+    simulate(data, cfg)         -> dict     pure, synchronous, no I/O
+    run_portfolio(pool, **cfg)  -> dict     the two composed
+
+That split exists so a Monte Carlo can load once and then run thousands of
+paths, which is impossible when every path re-queries the database. Crucially it
+is the SAME simulate() in both cases — a separate fast implementation for the
+Monte Carlo would be two copies of the logic that could silently disagree, and
+the disagreement would show up as a plausible number rather than an error.
+
 THE CONTROLS, and the reasoning behind how each is implemented:
 
 1. EXPOSURE BUDGET (volatility scaling). Earlier "sit out bad regimes" rules were
@@ -77,6 +89,8 @@ import random
 import statistics as st
 from datetime import date
 
+import numpy as np
+
 # Dhan equity delivery, identical to simulator._leg_costs and positional_sweep.
 STT_PCT, STAMP_PCT, EXCH_PCT, DP_CHARGE = 0.100, 0.015, 0.0030, 14.75
 TRADING_DAYS = 252
@@ -131,9 +145,57 @@ DEFAULTS = {
 }
 
 
-async def _load_sectors(pool) -> dict[str, str]:
-    return {r["symbol"]: r["sector"] for r in await pool.fetch(
+# ------------------------------------------------------------------ data load
+
+async def load_market_data(pool, cfg: dict) -> dict:
+    """One pass over Postgres: sessions, the ranked list at each rebalance, and
+    an open/close matrix for every symbol that could ever be bought.
+
+    Prices are numpy float32 matrices rather than dict-of-dicts. The candidate
+    universe is ~1,100 symbols over ~2,600 sessions; as nested Python dicts that
+    is millions of boxed floats and hundreds of MB on a 2GB box, which matters
+    because the Monte Carlo forks worker processes."""
+    cfg = {**DEFAULTS, **cfg}
+    days = [r["d"] for r in await pool.fetch(
+        "SELECT DISTINCT time::date AS d FROM ohlcv_data "
+        "WHERE time::date BETWEEN $1 AND $2 ORDER BY d", cfg["start"], cfg["end"])]
+    if not days:
+        return {}
+    day_ix = {d: i for i, d in enumerate(days)}
+
+    rank_sql = f"""
+        SELECT symbol FROM stock_indicators
+        WHERE indicator_date=$1 AND turnover_1m_avg_cr>=$2 AND close>sma_200
+          AND {cfg['momentum']} IS NOT NULL
+        ORDER BY {cfg['momentum']} DESC LIMIT $3
+    """
+    ranks: dict[int, list[str]] = {}
+    for i in range(0, len(days), cfg["rebalance_days"]):
+        if i + 1 >= len(days):
+            break
+        ranks[i] = [r["symbol"] for r in
+                    await pool.fetch(rank_sql, days[i], cfg["min_turnover"],
+                                     cfg["buffer_n"])]
+
+    universe = sorted({s for lst in ranks.values() for s in lst})
+    sym_ix = {s: j for j, s in enumerate(universe)}
+    opens = np.full((len(universe), len(days)), np.nan, dtype=np.float32)
+    closes = np.full((len(universe), len(days)), np.nan, dtype=np.float32)
+    for row in await pool.fetch(
+            "SELECT symbol, time::date AS d, open, close FROM ohlcv_data "
+            "WHERE symbol = ANY($1) AND time::date BETWEEN $2 AND $3",
+            universe, cfg["start"], cfg["end"]):
+        j = sym_ix.get(row["symbol"])
+        i = day_ix.get(row["d"])
+        if j is not None and i is not None:
+            opens[j, i] = float(row["open"])
+            closes[j, i] = float(row["close"])
+
+    sectors = {r["symbol"]: r["sector"] for r in await pool.fetch(
         "SELECT symbol, sector FROM symbols_meta WHERE sector IS NOT NULL")}
+
+    return {"days": days, "ranks": ranks, "sym_ix": sym_ix,
+            "opens": opens, "closes": closes, "sectors": sectors}
 
 
 def _exposure_from_vol(vol: float, history: list[float], cfg) -> float:
@@ -210,9 +272,13 @@ def _metrics(curve: list[tuple], capital: float, buy_val: float, sell_val: float
     }
 
 
-async def run_portfolio(pool, _audit=None, _audit_trade=None, _audit_rebal=None,
-                        **overrides) -> dict:
-    """Audit hooks, all None in production and costing nothing. They exist so
+# ------------------------------------------------------------------ simulation
+
+def simulate(data: dict, cfg: dict, _audit=None, _audit_trade=None,
+             _audit_rebal=None) -> dict:
+    """Pure, synchronous, no I/O. Everything it needs is in `data`.
+
+    Audit hooks are all None in production and cost nothing. They exist so
     test_portfolio_engine.py can assert the accounting identities DIRECTLY,
     rather than re-implementing the engine and proving only that two copies of
     the same logic agree.
@@ -227,36 +293,20 @@ async def run_portfolio(pool, _audit=None, _audit_trade=None, _audit_rebal=None,
     proves nothing. An engine that wrongly sized every slot from the INITIAL
     capital would scale just as linearly and pass. Only comparing the slot size
     against the equity AT THAT REBALANCE can distinguish the two."""
-    cfg = {**DEFAULTS, **overrides}
+    cfg = {**DEFAULTS, **cfg}
     cap0 = cfg["capital"]
     slip = cfg["slippage"]
     top_n = cfg["top_n"]
-    sectors = await _load_sectors(pool)
 
-    days = [r["d"] for r in await pool.fetch(
-        "SELECT DISTINCT time::date AS d FROM ohlcv_data "
-        "WHERE time::date BETWEEN $1 AND $2 ORDER BY d", cfg["start"], cfg["end"])]
+    days = data["days"]
+    ranks = data["ranks"]
+    sym_ix = data["sym_ix"]
+    opens = data["opens"]
+    closes = data["closes"]
+    sectors = data["sectors"]
     if not days:
         return {}
 
-    rank_sql = f"""
-        SELECT symbol FROM stock_indicators
-        WHERE indicator_date=$1 AND turnover_1m_avg_cr>=$2 AND close>sma_200
-          AND {cfg['momentum']} IS NOT NULL
-        ORDER BY {cfg['momentum']} DESC LIMIT $3
-    """
-
-    series: dict[str, dict] = {}
-
-    async def warm(sym: str) -> None:
-        if sym not in series:
-            series[sym] = {r["d"]: float(r["c"]) for r in await pool.fetch(
-                "SELECT time::date AS d, close AS c FROM ohlcv_data "
-                "WHERE symbol=$1 AND time::date BETWEEN $2 AND $3",
-                sym, cfg["start"], cfg["end"])}
-
-    # Survivorship stress. Its own RNG instance, seeded, so a run is exactly
-    # reproducible and does not perturb any other random state in the process.
     rng = random.Random(cfg["delist_seed"])
     daily_hazard = cfg["delist_hazard_pa"] / TRADING_DAYS
     n_delisted = 0
@@ -270,9 +320,9 @@ async def run_portfolio(pool, _audit=None, _audit_trade=None, _audit_rebal=None,
     n_trades = n_win = 0
     throttle_step = 0          # 0 = no throttle, 1 = halved, 2 = partial restore
     peak_eq = cap0
-    exposure_log: list[tuple] = []
+    exposure_log: list[float] = []
 
-    def equity(day) -> float:
+    def equity() -> float:
         return cash + sum(h["last"] * h["qty"] for h in holdings.values())
 
     def sell(sym: str, day, px: float, reason: str) -> None:
@@ -294,10 +344,23 @@ async def run_portfolio(pool, _audit=None, _audit_trade=None, _audit_rebal=None,
     for i, day in enumerate(days):
         # ---- daily mark to market
         for sym, h in holdings.items():
-            px = series.get(sym, {}).get(day)
-            if px is not None:
-                h["last"] = px
-                h["peak"] = max(h.get("peak", px), px)
+            px = closes[h["j"], i]
+            if not math.isnan(px):
+                h["last"] = float(px)
+                h["peak"] = max(h["peak"], h["last"])
+
+        # ---- survivorship stress, applied BEFORE the stop check.
+        #      Ordering is deliberate and conservative. A fraud halt or a
+        #      suspension gaps straight through the stop: there is no session at
+        #      which the position could have been exited at -15% first. Running
+        #      the stop first would let the book escape most blow-ups at a
+        #      controlled loss and would understate the harm, which defeats the
+        #      point of a stress test.
+        if daily_hazard > 0 and holdings:
+            for sym in [s for s in holdings if rng.random() < daily_hazard]:
+                sell(sym, day, holdings[sym]["last"] * cfg["delist_recovery"],
+                     "DELISTED")
+                n_delisted += 1
 
         # ---- daily stop check (a stopped slot stays in cash until rebalance)
         if cfg["sl_pct"] > 0 and holdings:
@@ -307,22 +370,10 @@ async def run_portfolio(pool, _audit=None, _audit_trade=None, _audit_rebal=None,
                 # level. Only daily bars are available, so a fill at exactly the
                 # stop price would assume the resting order was filled intraday
                 # at its limit — which is precisely what does NOT happen on the
-                # gap-downs that cause the worst losses. Exiting at the close is
-                # the conservative choice and it is what produced the numbers in
-                # BACKTEST_REPORT.md section 9.
+                # gap-downs that cause the worst losses.
                 sell(sym, day, holdings[sym]["last"], "STOP")
 
-        # ---- survivorship stress: force the blow-up losses the dataset cannot
-        #      contain. Applied BEFORE the equity mark so the hit lands on the
-        #      curve the same day, and after the stop check so a name that would
-        #      have stopped out normally is not double-counted as a blow-up.
-        if daily_hazard > 0 and holdings:
-            for sym in [s for s in holdings if rng.random() < daily_hazard]:
-                sell(sym, day, holdings[sym]["last"] * cfg["delist_recovery"],
-                     "DELISTED")
-                n_delisted += 1
-
-        eq = equity(day)
+        eq = equity()
         curve.append((day, eq))
         if _audit:
             _audit({"day": day, "cash": cash, "equity": eq,
@@ -333,7 +384,8 @@ async def run_portfolio(pool, _audit=None, _audit_trade=None, _audit_rebal=None,
             daily_ret.append(eq / prev - 1 if prev else 0.0)
         peak_eq = max(peak_eq, eq)
 
-        if i % cfg["rebalance_days"] != 0 or i + 1 >= len(days):
+        ranked_all = ranks.get(i)
+        if ranked_all is None or i + 1 >= len(days):
             continue
         nxt = days[i + 1]
 
@@ -360,13 +412,10 @@ async def run_portfolio(pool, _audit=None, _audit_trade=None, _audit_rebal=None,
                 exposure *= (1 + cfg["dd_throttle_factor"]) / 2
 
         n_slots = max(1, round(top_n * exposure))
-        exposure_log.append((day, round(exposure, 3), round(vol, 1), n_slots))
+        exposure_log.append(exposure)
 
-        # ---- ranking ---------------------------------------------------------
-        ranked = [r["symbol"] for r in
-                  await pool.fetch(rank_sql, day, cfg["min_turnover"], cfg["buffer_n"])]
-        if cfg["require_sector"]:
-            ranked = [s for s in ranked if s in sectors]
+        ranked = ([s for s in ranked_all if s in sectors]
+                  if cfg["require_sector"] else ranked_all)
         keep = set(ranked)
 
         # ---- sells: fell out of the buffer, or over the slot budget ----------
@@ -379,76 +428,71 @@ async def run_portfolio(pool, _audit=None, _audit_trade=None, _audit_rebal=None,
             survivors = sorted((s for s in holdings if s in keep),
                                key=lambda s: order.get(s, 10**6), reverse=True)
             drop += survivors[:len(holdings) - len(drop) - n_slots]
-        if drop:
-            fills = {r["symbol"]: float(r["open"]) for r in await pool.fetch(
-                "SELECT symbol, open FROM ohlcv_data WHERE symbol=ANY($1) AND time::date=$2",
-                drop, nxt)}
-            for s in drop:
-                if s in fills:
-                    sell(s, nxt, fills[s], "ROTATE")
+        for s in drop:
+            o = opens[holdings[s]["j"], i + 1]
+            if not math.isnan(o):
+                sell(s, nxt, float(o), "ROTATE")
 
         # ---- buys ------------------------------------------------------------
         free = n_slots - len(holdings)
         if free > 0:
-            eq_now = equity(nxt)
-            cand = [s for s in ranked if s not in holdings][:free * 4]
-            if cand:
-                fills = {r["symbol"]: float(r["open"]) for r in await pool.fetch(
-                    "SELECT symbol, open FROM ohlcv_data WHERE symbol=ANY($1) AND time::date=$2",
-                    cand, nxt)}
-                # Slot size is 1/top_n of equity REGARDLESS of exposure, so
-                # cutting exposure cuts the number of positions and raises cash,
-                # instead of quietly concentrating the book.
-                slot = eq_now / top_n
-                slot = min(slot, eq_now * cfg["max_per_stock_pct"] / 100)
-                if _audit_rebal:
-                    _audit_rebal({"day": nxt, "equity": eq_now, "slot": slot,
-                                  "top_n": top_n, "n_slots": n_slots,
-                                  "exposure": exposure,
-                                  "capped": cfg["max_per_stock_pct"] < 100})
+            eq_now = equity()
+            # Slot size is 1/top_n of equity REGARDLESS of exposure, so cutting
+            # exposure cuts the number of positions and raises cash, instead of
+            # quietly concentrating the book.
+            slot = min(eq_now / top_n, eq_now * cfg["max_per_stock_pct"] / 100)
+            if _audit_rebal:
+                _audit_rebal({"day": nxt, "equity": eq_now, "slot": slot,
+                              "top_n": top_n, "n_slots": n_slots,
+                              "exposure": exposure,
+                              "capped": cfg["max_per_stock_pct"] < 100})
 
-                sec_val: dict[str, float] = {}
-                sec_cnt: dict[str, int] = {}
-                for s, h in holdings.items():
-                    sec = sectors.get(s)
-                    if sec:
-                        sec_val[sec] = sec_val.get(sec, 0) + h["last"] * h["qty"]
-                        sec_cnt[sec] = sec_cnt.get(sec, 0) + 1
+            sec_val: dict[str, float] = {}
+            sec_cnt: dict[str, int] = {}
+            for s, h in holdings.items():
+                sec = sectors.get(s)
+                if sec:
+                    sec_val[sec] = sec_val.get(sec, 0) + h["last"] * h["qty"]
+                    sec_cnt[sec] = sec_cnt.get(sec, 0) + 1
 
-                for sym in cand:
-                    if free <= 0:
-                        break
-                    o = fills.get(sym)
-                    if not o or o <= 0:
+            for sym in ranked:
+                if free <= 0:
+                    break
+                if sym in holdings:
+                    continue
+                j = sym_ix.get(sym)
+                if j is None:
+                    continue
+                o = opens[j, i + 1]
+                if math.isnan(o) or o <= 0:
+                    continue
+                sec = sectors.get(sym)
+                if sec:      # unknown sector => unconstrained (see docstring)
+                    if sec_cnt.get(sec, 0) >= cfg["max_stocks_per_sector"]:
                         continue
-                    sec = sectors.get(sym)
-                    if sec:      # unknown sector => unconstrained (see docstring)
-                        if sec_cnt.get(sec, 0) >= cfg["max_stocks_per_sector"]:
-                            continue
-                        if (sec_val.get(sec, 0) + slot
-                                > eq_now * cfg["max_per_sector_pct"] / 100):
-                            continue
-                    entry = o * (1 + slip / 100)
-                    qty = int(slot / entry)
-                    if qty <= 0:
+                    if (sec_val.get(sec, 0) + slot
+                            > eq_now * cfg["max_per_sector_pct"] / 100):
                         continue
-                    gross = entry * qty
-                    outlay = gross + _leg_cost(gross, False)
-                    if outlay > cash:
-                        continue
-                    cash -= outlay
-                    buy_val += gross
-                    await warm(sym)
-                    holdings[sym] = {"qty": qty, "cost": outlay, "entry": entry,
-                                     "last": entry, "peak": entry,
-                                     "raw_open": o, "date": nxt}
-                    if sec:
-                        sec_val[sec] = sec_val.get(sec, 0) + gross
-                        sec_cnt[sec] = sec_cnt.get(sec, 0) + 1
-                    free -= 1
+                entry = float(o) * (1 + slip / 100)
+                qty = int(slot / entry)
+                if qty <= 0:
+                    continue
+                gross = entry * qty
+                outlay = gross + _leg_cost(gross, False)
+                if outlay > cash:
+                    continue
+                cash -= outlay
+                buy_val += gross
+                holdings[sym] = {"qty": qty, "cost": outlay, "entry": entry,
+                                 "last": entry, "peak": entry,
+                                 "raw_open": float(o), "date": nxt, "j": j}
+                if sec:
+                    sec_val[sec] = sec_val.get(sec, 0) + gross
+                    sec_cnt[sec] = sec_cnt.get(sec, 0) + 1
+                free -= 1
 
     m = _metrics(curve, cap0, buy_val, sell_val, n_trades, n_win)
-    m["avgExposure"] = (round(sum(e for _, e, _, _ in exposure_log) / len(exposure_log), 3)
+    m["avgExposure"] = (round(sum(exposure_log) / len(exposure_log), 3)
                         if exposure_log else 1.0)
     m["openAtEnd"] = len(holdings)
     m["delisted"] = n_delisted
@@ -456,6 +500,16 @@ async def run_portfolio(pool, _audit=None, _audit_trade=None, _audit_rebal=None,
     # curve is downsampled to weekly for storage: 2,600 daily points per run is
     # more than any chart needs and it bloats every list query that selects *.
     m["_open"] = [{"sym": s, **h} for s, h in holdings.items()]
-    m["_curve"] = [(d.isoformat(), round(v)) for i, (d, v) in enumerate(curve)
-                   if i % 5 == 0 or i == len(curve) - 1]
+    m["_curve"] = [(d.isoformat(), round(v)) for k, (d, v) in enumerate(curve)
+                   if k % 5 == 0 or k == len(curve) - 1]
     return m
+
+
+async def run_portfolio(pool, _audit=None, _audit_trade=None, _audit_rebal=None,
+                        **overrides) -> dict:
+    """Load once, simulate once. The convenience path for a single run."""
+    cfg = {**DEFAULTS, **overrides}
+    data = await load_market_data(pool, cfg)
+    if not data:
+        return {}
+    return simulate(data, cfg, _audit, _audit_trade, _audit_rebal)

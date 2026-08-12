@@ -207,24 +207,25 @@ const PRESETS = {
   },
   portfolio: {
     label: 'Portfolio (continuous)',
-    hint: 'ONE compounding run 2016→2026 — capital carried forward, positions '
-        + 'held across year ends, daily mark-to-market. Reports CAGR / maxDD / '
-        + 'ulcer, not summed annual P&L. Top-35 is a PROVISIONAL diversification '
-        + 'setting inside the 30–40 zone that was tested — not an optimised '
-        + 'optimum, and backed by only one split-sample experiment.',
+    hint: 'FROZEN CANDIDATE. ONE compounding run 2016→2026 — capital carried '
+        + 'forward, positions held across year ends, daily mark-to-market. '
+        + 'Reports CAGR / maxDD / ulcer, not summed annual P&L. top-20 is the '
+        + 'frozen baseline: the pre-registered selection rule did not identify '
+        + 'a better value, and a pre-registered rule cannot be discarded after '
+        + 'seeing the data it was written to judge.',
     values: {
-      // top-35 is PROVISIONAL: a value inside the 30-40 zone that was tested,
-      // chosen because the out-of-sample risk metrics improved monotonically
-      // across it — NOT because 35 scored best. top-30 was the best in-sample
-      // cell and FAILED split-sample validation, ranking 6th of 10 on 2021-26
-      // (BACKTEST_REPORT §9.10). The evidence supports the DIRECTION only, and
-      // rests on a single split-sample experiment; a precise number is not
-      // supported at all, and the metrics were still improving at 40.
+      // FROZEN (BACKTEST_REPORT section 10). top-20 is the baseline because the
+      // pre-registered Martin criterion did NOT select any value in 30-50 - not
+      // because 20 scored best (it did not; it was worst on TEST). A separate,
+      // legitimate finding is that going 20 -> 45 reduced out-of-sample drawdown
+      // by ~8pp at a cost of ~2-3pp CAGR. Substituting 35 or 45 is permitted
+      // ONLY as an explicit pre-registered preference for lower drawdown over
+      // return, recorded BEFORE paper trading - never chosen afterwards.
       // The stop is a supported RANGE of 15-20%; 15 is the midpoint, not a
       // proven optimum. Every risk control is off: vol scaling and the
       // drawdown throttle both measured NET NEGATIVE.
       strategy: 'PORTFOLIO', pos_momentum: 'pct_chg_6m', pos_rebalance_days: 63,
-      pos_top_n: 35, pos_buffer_n: 70, pos_min_turnover_cr: 5, capital: 400000,
+      pos_top_n: 20, pos_buffer_n: 40, pos_min_turnover_cr: 5, capital: 400000,
       pos_sl_pct: 15, pf_vol_mode: 'none', pf_dd_throttle_at: 0,
       pf_max_stocks_per_sector: 3, pf_max_per_sector_pct: 30,
       pf_require_sector: false,

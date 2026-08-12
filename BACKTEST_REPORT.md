@@ -970,25 +970,40 @@ on a rare event, so the seed spread is shown):
 | 2.0% | 30% | 14.43 | 13.2–15.5 | 38.4 | 17.12 | 0.84 | 4.8 |
 | 4.0% | 30% | 12.84 | 11.9–13.7 | 39.2 | 17.81 | 0.72 | 10.4 |
 
-**Verdict: the bias is material but not fatal.** Across the empirical range
-(0.3–2.7%/yr) CAGR falls from 15.7% to roughly **13.5–15%**, and even at a
-deliberately pessimistic 4%/yr with total loss it is 11.2%. The strategy degrades
-smoothly rather than collapsing; there is no cliff inside the plausible range.
+**How to state this result — the wording matters and an earlier draft got it
+wrong.** This is **a deliberately simplified random-loss stress test. It is NOT a
+correction for survivorship bias, and it is not a bound.** The correct phrasing
+is:
 
-**Three caveats that keep this a bound and not a result:**
+> *Under a deliberately simplified random-loss stress test, CAGR falls by roughly
+> 1–4pp. This is not a correction for survivorship bias; actual results could be
+> materially worse.*
 
-1. **The hazard is applied uniformly at random.** Real blow-ups cluster — in
-   time (2018 NBFC crisis, 2019 promoter-pledge unwinds) and by sector. Clustered
-   losses hurt a 35-name book far more than independent ones, so the drawdown
-   figures here are optimistic even at a given hazard rate.
-2. **The correct number is unknown, not merely uncertain.** Only the *shape* of
-   the degradation is established.
-3. **Universe composition is untouched.** This injects losses into stocks that
-   were bought; it does not restore the ~550 companies missing from the 2016
-   pool, whose absence also changes which stocks ranked top-N in the first place.
+Calling it a "bound" or quoting a precise "2–4pp discount" would imply the true
+effect is contained within these numbers. It is not, for three structural
+reasons:
 
-**Practical reading: discount the headline CAGR by roughly 2–4 percentage points
-and treat drawdown as a floor rather than an estimate.**
+1. **The hazard is independent and uniform.** Real blow-ups cluster — in time
+   (2018 NBFC crisis, 2019 promoter-pledge unwinds) and by sector. Clustered
+   losses hit a concentrated book far harder than independent ones, so the
+   drawdowns here are optimistic *even at a given hazard rate*.
+2. **Universe composition is untouched.** This injects losses into stocks that
+   *were bought*. It cannot restore the ~550 companies missing from the 2016
+   pool, whose absence also changed **which stocks ranked top-N in the first
+   place** — a first-order effect on selection that no injection model reaches.
+3. **The true rate is unknown, not merely uncertain.** Only the *shape* of the
+   degradation is established.
+
+**Ordering fix (2026-08-12).** The first version ran the normal stop check
+*before* injecting the delisting, which let the book escape most blow-ups at a
+controlled −15% loss. That is not how a fraud halt or suspension behaves: it gaps
+straight through the stop, with no session at which the position could have been
+exited first. Running the stop first understated the harm and defeated the point
+of a stress test. **The shock is now applied before the stop check**, and §9.14
+supersedes the table above.
+
+**Practical reading: treat the headline CAGR as optimistic by a few percentage
+points, and treat drawdown as a floor rather than an estimate.**
 
 ### 9.12 Final bounded diversification test — the rule fired, and it conflicts with the data
 
@@ -1006,15 +1021,23 @@ half of *both* stop columns on TEST, then take its middle; otherwise keep top-20
 Upper half of both columns intersects at `{50}` only — not contiguous, not three
 wide. **The rule says: keep top-20.**
 
-**But the rule's fallback is contradicted by the same data.** Top-20 is the
-*worst* value on TEST in **both** stop columns, by a wide margin, and it was also
-worst in the previous round. The rule was designed to stop me picking a peak; its
-default was "the incumbent, on no evidence." There is now evidence, and it points
-away from the incumbent.
+**The rule stands. Top-20 remains the frozen baseline.**
 
-The reason the rule mis-fires is that **Martin mixes return into a risk question**,
-and the return component is noisy. Look at the risk metrics alone — which is what
-diversification is *for* — and both columns are essentially monotone:
+An earlier draft argued the rule should be overridden because top-20 is the
+*worst* TEST value in both stop columns. That reasoning is not admissible:
+**Martin was pre-registered as the selection criterion, and a pre-registered rule
+cannot be discarded after seeing the data it was written to adjudicate.** Doing
+so converts it from a safeguard into a formality. What the rule's outcome means
+is precisely and only this: *do not select a specific top-N yet.*
+
+A separate, legitimate statement can be made about risk, because it does not
+involve selecting a value:
+
+> Increasing holdings from 20 toward 45–50 consistently reduced out-of-sample
+> drawdown, at a cost of roughly 2–3pp of CAGR.
+
+That is a valid **risk trade-off**, not proof that top-45 is better overall. The
+supporting evidence — both columns essentially monotone on the risk axis:
 
 | Stop | Metric | 20 | 30 | 35 | 40 | 45 | 50 |
 |---|---|---|---|---|---|---|---|
@@ -1026,16 +1049,18 @@ diversification is *for* — and both columns are essentially monotone:
 Four series, all monotone but for single-step wobbles at the last point. **This is
 the cleanest out-of-sample relationship found anywhere in the programme.**
 
-**Conclusion, stated in two parts because the parts differ in strength:**
+**Conclusion, in two parts of differing strength:**
 
-- **Strongly supported:** more names monotonically reduces drawdown and worst
-  12-month loss out of sample. Top-20 is rejected.
-- **Not supported:** any specific value within 30–50. The Martin ordering does not
-  transfer, and 45 vs 50 vs 35 is not distinguishable.
+- **Supported:** more names consistently reduced out-of-sample drawdown and worst
+  12-month loss, at a cost of ~2–3pp CAGR. Going 20 → 45 traded roughly **2–3pp
+  of CAGR for about 8pp of max drawdown**.
+- **Not supported:** any specific top-N, including whether 45 is *better overall*
+  than 20. The pre-registered criterion did not separate them.
 
-Choose within 30–50 on how much CAGR you are willing to pay for drawdown, not on
-a backtest number. Roughly, across the TEST window, going 20 → 45 traded about
-**2–3pp of CAGR for about 8pp of max drawdown**.
+**Frozen decision: top-20 stays as the baseline.** Top-35 or top-45 may be chosen
+instead *only* as an explicit, pre-registered statement that lower drawdown is
+preferred over return — recorded before paper trading begins, not selected
+afterwards from the results.
 
 ### 9.13 The breakout sleeve — remove it
 
@@ -1059,14 +1084,142 @@ Annual-return correlation, breakout vs positional: **+0.57** (config C), **+0.51
 risk it adds. It is not diversifying; it is a second correlated bet held in
 smaller size, with its own execution cost and operational complexity.
 
-**Decision: remove the breakout sleeve.** Holding cash in its place achieves the
-same risk reduction, free.
+**Decision, stated provisionally because the evidence is weak:**
 
-*(Caveat: this uses 11 annual observations of the breakout book from the
-annual-reset harness, not a continuous daily curve — 11 points is a weak
-correlation estimate. But the conclusion does not rest on the correlation alone;
-it rests on the sleeve failing to beat cash on risk-adjusted return, which is a
-much lower bar than it needed to clear.)*
+> Do not allocate to breakout in the live candidate unless a future
+> shared-capital continuous test demonstrates an improvement over the equivalent
+> cash allocation.
+
+This is **not** a demonstration that breakout is useless. It rests on **11 annual
+observations** from the annual-reset harness, not a shared-capital continuous
+simulation — 11 points is a weak correlation estimate and the blend is
+reconstructed arithmetically rather than simulated. What it does establish is
+that the sleeve has not cleared a low bar: beating cash. Absent that, it should
+not be carried into a live allocation, and the burden of proof sits with a proper
+shared-capital test that has not been run.
+
+### 9.14 Monte Carlo stress, corrected ordering — 1,000 paths per cell
+
+Supersedes §9.11's table. Two changes: **the delisting shock is applied *before*
+the stop check** (a suspension gaps through a stop; there is no session at which
+the position could have exited at −15% first), and results are reported by
+**percentile** rather than mean, on the frozen top-20 baseline.
+
+The engine was refactored into `load_market_data()` + a pure `simulate()` to make
+this affordable — one simulation went from ~50s to **0.10s**, a ~500× speedup, and
+the refactor reproduces the pre-refactor figures **exactly** (CAGR 19.51, maxDD
+39.3, ulcer 18.99, Martin 1.03, 530 trades) with all 12 invariant tests passing.
+
+| Hazard/yr | Recovery | CAGR p50 | **CAGR p5** | maxDD p50 | **maxDD WORST** | worst-12m p5 | Blow-ups |
+|---|---|---|---|---|---|---|---|
+| 0.0% | — | 19.51 | 19.51 | 39.3 | 39.3 | −30.7 | 0.0 |
+| 0.5% | 0% | 19.33 | 17.42 | 39.3 | **50.8** | −34.1 | 0.7 |
+| 1.0% | 0% | 18.82 | 16.03 | 39.3 | **54.5** | −35.1 | 1.4 |
+| **2.0%** | **0%** | **17.82** | **14.21** | 39.9 | **60.3** | −37.5 | 2.7 |
+| 4.0% | 0% | 15.90 | 10.40 | 42.6 | **65.1** | −40.4 | 5.5 |
+| 0.5% | 30% | 19.37 | 16.77 | 39.3 | 46.7 | −32.9 | 0.7 |
+| 1.0% | 30% | 19.07 | 15.72 | 39.3 | 49.1 | −33.8 | 1.4 |
+| 2.0% | 30% | 18.28 | 14.88 | 39.3 | 50.0 | −35.4 | 2.7 |
+| 4.0% | 30% | 16.85 | 12.77 | 41.4 | 54.3 | −37.3 | 5.5 |
+
+**The percentiles change the conclusion, and the earlier mean-based table was
+misleading.** The *median* path barely moves — 19.51 → 17.82 at a 2% hazard, less
+than 2pp. But:
+
+- **CAGR p5 falls to 14.21%** at 2% hazard — a **5.3pp** hit in the bad case.
+- **Worst drawdown balloons from 39.3% to 60.3%**, and to **65.1%** at 4%.
+
+A mean would have reported "small effect." The tail says something different: a
+handful of blow-ups is enough to turn a 39% drawdown into a 60% one, and the
+median is silent about it because most paths never hit that cluster. **This is the
+number that should drive position sizing, not the median.**
+
+Stating it as agreed:
+
+> *Under a deliberately simplified random-loss stress test, CAGR falls by roughly
+> 1–4pp (median to 5th percentile across the empirical hazard range). This is not
+> a correction for survivorship bias; actual drawdown could be materially worse.*
+
+And it genuinely could: the hazard here is **independent**, while real blow-ups
+cluster in time and sector. A clustered version of this test would show worse
+tails than 60%.
+
+---
+
+## 10. FROZEN CONFIGURATION
+
+Research is closed. No further filters, AI rules, regime signals, exit variants
+or parameter sweeps. The following is fixed for the paper-trading period.
+
+```
+Strategy      Positional momentum, long only, NSE equities
+Ranking       pct_chg_6m, descending
+Universe      turnover_1m_avg_cr >= 5, close > SMA200
+Rebalance     every 63 sessions
+Holdings      top 20            <- frozen baseline; the pre-registered rule did
+                                   NOT select a different value (§9.12)
+Buffer        rank 40 (2 x top-N)
+Stop          fixed 15%, checked daily, exit at the close that breaches
+Exposure      100%. No volatility scaling.
+Regime        None.
+Throttle      None.
+Sector caps   None (data covers only ~55% of traded names).
+Breakout      NOT allocated (§9.13, provisional).
+Sizing        equal weight, current equity / 20, recomputed each rebalance
+Costs         0.10% slippage/fill, STT 0.10% both legs, stamp 0.015% buy,
+              exchange 0.003%, DP Rs.14.75/sell, brokerage 0
+```
+
+**Observed on this data (not expected forward):** CAGR 19.5%, maxDD 39.3%,
+ulcer 18.99, worst 12-month −30.7%, ~50 trades/yr, turnover 2.6x/yr.
+
+**Under stress:** CAGR p5 14–17%, worst drawdown 50–60%.
+
+### 10.1 The one permitted variation, if pre-registered
+
+Top-35 or top-45 may be substituted **only** as an explicit prior statement that
+lower drawdown is preferred over return — written down *before* paper trading
+starts. Out of sample, 20 → 45 traded roughly 2–3pp of CAGR for ~8pp of max
+drawdown. Choosing it *after* seeing paper-trade results would be the same error
+this programme has already made twice.
+
+### 10.2 Paper-trading protocol
+
+Minimum 6 months, target 12. **No setting changes during the test** except for a
+documented operational failure.
+
+Log every rebalance:
+
+| Field | Why |
+|---|---|
+| Intended symbol, qty, limit | The backtest's decision |
+| Actual fill price and time | Realised slippage vs the assumed 0.10% |
+| Orders not filled / partial | The backtest assumes every order fills |
+| All charges, itemised | Verify the 0.52% round-trip model |
+| Stop fills, and the gap through the stop | The backtest exits at the close |
+| Any suspension/halt in a held name | **The one input the backtest can never supply** |
+| Deviation from backtest signal | Data or timing differences |
+
+The last two matter most. Suspensions in live holdings are the only *empirical*
+evidence about the survivorship channel that §9.14 can only model, and gap-through
+behaviour on stops is where a −15% stop becomes a −30% loss in reality.
+
+### 10.3 Allocation
+
+Sizing is now the decision, not signals. As a rough linear scaling of the ~39%
+observed drawdown (and noting the stressed worst case is 50–60%):
+
+| Max drawdown you can hold through | Allocation to the strategy |
+|---|---|
+| ~15% | ~40% |
+| ~20% | ~55% |
+| ~25% | ~65% |
+| ~39% | fully invested |
+
+**These are rough translations of an observed number, not guarantees**, and the
+stress test suggests the honest planning figure sits above 39% rather than below.
+The remainder belongs in cash or low-risk assets — which, per §9.13, is also
+strictly better than the breakout sleeve.
 
 ### 9.9 Still open
 
