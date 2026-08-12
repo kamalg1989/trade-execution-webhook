@@ -1036,6 +1036,79 @@ const SERIES = [
   { key: 'aiUnrealizedPnl', label: 'AI unrealized', color: '#c084fc', dash: '4,3', group: 'unrealized' },
 ];
 
+// The account LEVEL over time, for continuous compounding runs, drawn from the
+// engine's own daily mark-to-market rather than reconstructed from trade rows.
+//
+// This is a different quantity from the chart below it. EquityCurve plots
+// cumulative realized P&L and unrealized as separate series against zero —
+// flows. For a compounding book what matters is the level of the account and how
+// far below its own high-water mark it goes, so this shades the drawdown.
+function PortfolioEquity({ points, capital }) {
+  if (!points?.length) {
+    return <div className="text-sm text-slate-500 py-8 text-center">No equity data for this run.</div>;
+  }
+  const W = 760, H = 260;
+  const M = { top: 28, right: 16, bottom: 30, left: 74 };
+  const plotW = W - M.left - M.right, plotH = H - M.top - M.bottom;
+
+  const vals = points.map((p) => p.equity);
+  const { ticks: yTicks, min: yMin, max: yMax } =
+    niceTicks(Math.min(capital, ...vals), Math.max(capital, ...vals), 5);
+  const yRange = yMax - yMin || 1;
+  const x = (i) => M.left + (i / Math.max(points.length - 1, 1)) * plotW;
+  const y = (v) => M.top + plotH - ((v - yMin) / yRange) * plotH;
+
+  // Running high-water mark, so the shaded band is the actual underwater period
+  // rather than a guess from the single worst point.
+  let peak = -Infinity;
+  const peaks = vals.map((v) => (peak = Math.max(peak, v)));
+  const line = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(p.equity)}`).join(' ');
+  const peakLine = peaks.map((v, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(v)}`).join(' ');
+  const band = `${peakLine} L ${x(points.length - 1)} ${y(vals[vals.length - 1])} `
+    + points.map((p, i) => `L ${x(points.length - 1 - i)} ${y(vals[points.length - 1 - i])}`).join(' ') + ' Z';
+
+  const nTicks = Math.min(7, points.length);
+  const tickIdx = Array.from({ length: nTicks }, (_, i) =>
+    Math.round((i / Math.max(nTicks - 1, 1)) * (points.length - 1)));
+
+  const final = vals[vals.length - 1];
+  const maxDD = Math.max(...vals.map((v, i) => (peaks[i] - v) / peaks[i])) * 100;
+
+  return (
+    <div>
+      <div className="flex flex-wrap gap-4 text-xs mb-2">
+        <span className="text-slate-400">Start <b className="text-slate-200">{fmtInrCompact(capital)}</b></span>
+        <span className="text-slate-400">End <b className="text-emerald-300">{fmtInrCompact(final)}</b></span>
+        <span className="text-slate-400">Peak <b className="text-slate-200">{fmtInrCompact(Math.max(...vals))}</b></span>
+        <span className="text-slate-400">Max drawdown <b className="text-rose-300">−{maxDD.toFixed(1)}%</b></span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="w-full h-64">
+        {yTicks.map((v, i) => (
+          <g key={i}>
+            <line x1={M.left} y1={y(v)} x2={W - M.right} y2={y(v)} stroke="#334155" strokeWidth="1" strokeDasharray="3,3" />
+            <text x={M.left - 8} y={y(v) + 3} fontSize="10" fill="#94a3b8" textAnchor="end">{fmtInrCompact(v)}</text>
+          </g>
+        ))}
+        {/* starting capital — the line the book must stay above to have made money */}
+        <line x1={M.left} y1={y(capital)} x2={W - M.right} y2={y(capital)} stroke="#64748b" strokeWidth="1.5" />
+        <text x={M.left + 4} y={y(capital) - 4} fontSize="9" fill="#94a3b8">start</text>
+        <path d={band} fill="#f43f5e" opacity="0.13" />
+        <path d={peakLine} fill="none" stroke="#475569" strokeWidth="1" strokeDasharray="4,3" />
+        <path d={line} fill="none" stroke="#34d399" strokeWidth="1.8" />
+        {tickIdx.map((idx, i) => (
+          <text key={i} x={x(idx)} y={H - 10} fontSize="9" fill="#94a3b8" textAnchor="middle">
+            {String(points[idx].date).slice(0, 7)}
+          </text>
+        ))}
+      </svg>
+      <div className="text-[11px] text-slate-500 mt-1">
+        Green = account equity. Dashed = running high-water mark. Shaded = drawdown.
+        Sampled weekly.
+      </div>
+    </div>
+  );
+}
+
 function EquityCurve({ points, capital }) {
   const [showRealized, setShowRealized] = useState(true);
   const [showUnrealized, setShowUnrealized] = useState(true);
@@ -1180,8 +1253,12 @@ function RunSummary({ runId, status }) {
         <KpiCard title="🤖 AI track" stats={summary.ai} color="text-purple-300" capital={summary.capital} />
       </div>
       <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-4">
-        <div className="text-sm font-semibold text-slate-200 mb-2">Equity curve</div>
-        <EquityCurve points={summary.equityCurve} capital={summary.capital} />
+        <div className="text-sm font-semibold text-slate-200 mb-2">
+          {summary.portfolioEquity ? 'Account equity (cash + marked holdings)' : 'Equity curve'}
+        </div>
+        {summary.portfolioEquity
+          ? <PortfolioEquity points={summary.portfolioEquity} capital={summary.capital} />
+          : <EquityCurve points={summary.equityCurve} capital={summary.capital} />}
       </div>
       <div className="flex flex-wrap gap-4 text-sm text-slate-300">
         <span>Open positions: <b className="text-blue-300">{summary.openCount}</b></span>

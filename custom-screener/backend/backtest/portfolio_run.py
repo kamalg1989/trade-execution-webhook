@@ -89,9 +89,9 @@ async def run_portfolio_persisted(run: dict, pool) -> None:
               (run_id, symbol, signal_date, entry_trigger_price, structural_sl,
                risk_per_share, quantity, entry_type, status, entry_fill_date,
                entry_fill_price, exit_date, exit_price, exit_reason,
-               realized_pnl, gross_pnl, r_multiple, holding_days)
+               realized_pnl, gross_pnl, r_multiple, holding_days, quant_rank)
             VALUES ($1,$2,$3,$4,$5,$6,$7,'PORTFOLIO','CLOSED',$8,$9,$10,$11,$12,
-                    $13,$14,$15,$16)
+                    $13,$14,$15,$16,1)
             """,
             run_id, t["sym"], t["entry"], round(t["raw_open"], 2),
             stop, round(risk, 2) if risk is not None else None, qty,
@@ -107,8 +107,8 @@ async def run_portfolio_persisted(run: dict, pool) -> None:
             INSERT INTO backtest_trades
               (run_id, symbol, signal_date, entry_trigger_price, structural_sl,
                risk_per_share, quantity, entry_type, status, entry_fill_date,
-               entry_fill_price, realized_pnl, gross_pnl)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,'PORTFOLIO','OPEN',$8,$9,0,0)
+               entry_fill_price, realized_pnl, gross_pnl, quant_rank)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,'PORTFOLIO','OPEN',$8,$9,0,0,1)
             """,
             run_id, o["sym"], o["date"], round(o["raw_open"], 2),
             sl_of(o["entry"]),

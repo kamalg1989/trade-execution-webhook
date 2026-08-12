@@ -557,17 +557,23 @@ def _track_stats(closed: list[dict], open_trades: list[dict], price_map: dict, r
     }
 
 
-async def _daily_unrealized(pool, run_id: int, end_date: date) -> dict:
+async def _daily_unrealized(pool, run_id: int, end_date: date,
+                            all_quant: bool = False) -> dict:
     """Per-day mark-to-market snapshot (not cumulative — a level, not a
     flow) of unrealized P&L for every day a position was actually open,
     split by track. For each trade, joins its symbol's close price across
     every day from entry_fill_date up to (but excluding) exit_date — or
     through the run's end_date if it's still open — so a position open for
     N days contributes N daily mark-to-market rows."""
+    # all_quant: PORTFOLIO runs have a single book with no quant/AI split, so
+    # their trades carry no quant_rank. Without this the CASE matches nothing,
+    # every series sums to zero, and the equity chart renders blank — which is
+    # exactly what happened.
+    quant_when = "TRUE" if all_quant else "t.quant_rank IS NOT NULL"
     rows = await pool.fetch(
-        """
+        f"""
         SELECT o.time::date AS d,
-          SUM(CASE WHEN t.quant_rank IS NOT NULL
+          SUM(CASE WHEN {quant_when}
                     THEN (o.close - t.entry_fill_price) * t.quantity ELSE 0 END) AS quant_unrealized,
           SUM(CASE WHEN t.ai_rank IS NOT NULL
                     THEN (o.close - t.entry_fill_price) * t.quantity ELSE 0 END) AS ai_unrealized
@@ -587,13 +593,25 @@ async def _daily_unrealized(pool, run_id: int, end_date: date) -> dict:
 @router.get("/backtest/runs/{run_id}/summary")
 async def get_summary(run_id: int, request: Request):
     pool = _pool(request)
-    run = await pool.fetchrow("SELECT end_date, capital FROM backtest_runs WHERE id = $1", run_id)
+    run = await pool.fetchrow(
+        "SELECT end_date, capital, strategy, pf_equity_curve "
+        "FROM backtest_runs WHERE id = $1", run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     capital = float(run["capital"])
+    is_pf = run["strategy"] == "PORTFOLIO"
     trades = [dict(r) for r in await pool.fetch(
         "SELECT * FROM backtest_trades WHERE run_id = $1", run_id
     )]
+    if is_pf:
+        # A PORTFOLIO run is one undivided book — there is no quant/AI split to
+        # make. Every downstream stat filters on quant_rank, so the trades are
+        # normalised onto the quant track here rather than duplicating each of
+        # those filters. Rank 1 is a placeholder for grouping only; the trade
+        # log's own Rank column is not meaningful for this strategy.
+        for t in trades:
+            if t.get("quant_rank") is None:
+                t["quant_rank"] = 1
     closed = [t for t in trades if t["status"] == "CLOSED" and t.get("exit_date")]
     open_trades = [t for t in trades if t["status"] == "OPEN"]
     price_map = await _latest_close_map(pool, list({t["symbol"] for t in open_trades}), run["end_date"])
@@ -607,7 +625,8 @@ async def get_summary(run_id: int, request: Request):
         if t.get("ai_rank") is not None:
             row["ai"] += float(t["realized_pnl"] or 0)
 
-    unrealized_by_day = await _daily_unrealized(pool, run_id, run["end_date"])
+    unrealized_by_day = await _daily_unrealized(pool, run_id, run["end_date"],
+                                                all_quant=is_pf)
 
     all_days = sorted(set(realized_by_day) | set(unrealized_by_day))
     equity_curve = []
@@ -629,10 +648,20 @@ async def get_summary(run_id: int, request: Request):
     # picked by both tracks the same day (by design, same as their P&L).
     total_deployed = round(sum(_deployed(t) for t in open_trades), 2)
 
+    # The engine's own daily equity (cash + marked holdings), stored at run time.
+    # For a compounding book this is the chart that matters: the generic
+    # equityCurve above plots cumulative realized P&L and unrealized as separate
+    # series against zero, which describes flows, not the level of the account.
+    pf_curve = run["pf_equity_curve"]
+    if isinstance(pf_curve, str):
+        pf_curve = json.loads(pf_curve)
+
     return {
         "runId": run_id,
         "capital": capital,
         "equityCurve": equity_curve,
+        "portfolioEquity": ([{"date": d, "equity": v} for d, v in pf_curve]
+                            if pf_curve else None),
         "quant": _track_stats(closed, open_trades, price_map, "quant_rank", capital),
         "ai": _track_stats(closed, open_trades, price_map, "ai_rank", capital),
         "openCount": len(open_trades),
