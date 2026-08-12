@@ -687,5 +687,177 @@ Only three things have survived every re-test:
 
 ---
 
+---
+
+## 9. The continuous portfolio test (2026-08-12)
+
+### 9.1 Why the earlier numbers were the wrong measurement
+
+Everything in §1–8 came from **eleven independent one-year backtests summed
+together**. That is not a portfolio. It resets capital to ₹4L every January,
+throws away open positions at each year end, and therefore cannot compound and
+cannot express a drawdown that spans a year boundary. A book that falls 40% in
+December and recovers in January appears as "bad year / good year" instead of as
+one 40% drawdown — which is what it actually was.
+
+`portfolio_engine.py` runs **one continuous simulation, 2016 → 2026**: capital
+carried forward, positions held across year ends, daily mark-to-market, costs and
+caps applied at portfolio level, cash held explicitly. Metrics describe the
+*path*, not just the destination. The headline is the **Martin ratio (CAGR ÷
+ulcer index)** rather than CAGR/maxDD, because the ulcer index accounts for how
+*long* the book is underwater, not only how deep the single worst hole got.
+
+### 9.2 Results — all controls, full period, ₹4L start
+
+| Config | CAGR% | maxDD% | Ulcer | Worst 12m% | **Martin** | Turn/yr | Final |
+|---|---|---|---|---|---|---|---|
+| No stop (true baseline) | 19.91 | **57.1** | 22.22 | −37.9 | 0.90 | 2.39 | ₹26.5L |
+| **Stop 15% only** | 19.51 | 39.3 | 18.99 | −30.7 | 1.03 | 2.60 | ₹25.6L |
+| **+ mild vol scaling (floor 75%)** | **20.04** | 37.9 | 18.53 | −29.8 | **1.08** | 2.48 | ₹26.8L |
+| **+ top-30 instead of top-20** | 16.73 | 33.8 | **15.30** | −26.5 | **1.09** | 2.53 | ₹20.0L |
+| + sector cap 3/sector | 19.14 | 39.1 | 18.46 | −31.3 | 1.04 | 2.58 | ₹24.8L |
+| + gentle vol scaling (floor 60%) | 17.76 | 38.2 | 19.11 | −30.1 | 0.93 | 2.38 | ₹22.0L |
+| + sector cap 2/sector | 16.95 | 38.3 | 18.86 | −31.0 | 0.90 | 2.66 | ₹20.4L |
+| + vol scaling, absolute bands | 15.92 | 41.1 | 18.33 | −27.0 | 0.87 | 2.22 | ₹18.6L |
+| + vol scaling, percentile (25% floor) | 14.10 | 39.3 | 18.50 | −26.7 | 0.76 | 2.07 | ₹15.8L |
+| + DD throttle at −10% | 11.34 | 35.9 | 19.91 | −27.9 | 0.57 | 1.87 | ₹12.2L |
+| + DD throttle at −20% | 11.17 | 36.6 | 19.89 | −28.6 | 0.56 | 2.01 | ₹12.1L |
+| **FULL STACK (recommended set)** | 9.15 | **28.5** | 14.56 | **−19.7** | 0.63 | 1.45 | ₹10.0L |
+| Full stack, gentle vol | 12.93 | 29.3 | 15.70 | −20.9 | 0.82 | 1.49 | ₹14.2L |
+| *Strict sector — see §9.5* | *28.14* | *32.4* | *13.22* | *−27.8* | *2.13* | *2.22* | *₹52.9L* |
+| *Full stack, strict sector — see §9.5* | *21.14* | *22.6* | *9.77* | *−17.7* | *2.16* | *1.35* | *₹29.5L* |
+
+### 9.3 What survived, and what did not
+
+**The stop pays for itself — confirmed, and more clearly than before.** It costs
+**0.4pp of CAGR** (19.91 → 19.51) and removes **18pp of drawdown** (57.1% → 39.3%).
+Martin 0.90 → 1.03. In the old annual framework this looked like a modest gain;
+measured on a continuous equity curve it is the single best trade available.
+
+**Volatility scaling largely failed.** The percentile version cost **5.4pp of
+CAGR and delivered zero drawdown reduction** (39.3% → 39.3%). Only the *mildest*
+version — never cutting below 75% — helped at all, and only marginally
+(Martin 1.03 → 1.08). The graded design did not fix the binary version's problem;
+it diluted it.
+
+**The drawdown throttle failed at every threshold tested.** At −10% Martin falls
+to 0.57; at −20%, 0.56. The mechanism is visible in the calendar returns: it turns
+**2017 from +91.6% into +43.0%**. It throttles into recoveries. Note especially
+that the **ulcer index got *worse*** (18.99 → 19.89) — the throttle makes the book
+spend *longer* underwater, because it is not participating in the rebound. This is
+the same late-and-wrong pathology that killed the binary regime filter in campaign
+v5, and grading it did not cure it.
+
+**Sector caps at 2/sector cost more than they buy** (Martin 0.90); at 3/sector
+they are roughly neutral (1.04). Caveat in §9.5.
+
+**The full recommended stack achieves the stated goal and fails the trade-off
+test.** It does exactly what it was designed to do — maxDD 28.5%, worst 12-month
+−19.7%, turnover down to 1.45/yr. But CAGR falls to 9.15% and Martin to 0.63,
+**worse than applying no controls at all**. It buys survivability at a price that
+exceeds what it is worth.
+
+### 9.4 The control that worked was not on the list
+
+**Holding 30 names instead of 20** produced the best unbiased risk-adjusted result
+in the whole test: CAGR 19.51 → 16.73 (−2.8pp), but maxDD 39.3% → 33.8%, ulcer
+18.99 → **15.30** (the largest single improvement in the table), and worst 12-month
+−30.7% → −26.5%. Martin **1.09**, the highest of any unbiased config.
+
+That is a meaningful result for the original hypothesis. The thesis was *"use
+position sizing, diversification, cash and portfolio limits to control the return
+path."* Split into its parts: **diversification worked; cash did not.** Cutting
+exposure to cash reduced returns roughly in proportion to the risk it removed, or
+worse. Spreading the same full exposure across more names reduced risk while
+keeping most of the return — because it attacks single-name blowups, which is what
+actually drives this book's drawdowns, rather than attacking market beta, which is
+what pays it.
+
+### 9.5 A result that looks spectacular and should be discarded
+
+The two strict-sector configs (universe restricted to symbols with a known sector,
+i.e. **current** NSE index constituents) produce the best numbers ever measured in
+this project: 28.14% CAGR at 32.4% maxDD, and 21.14% CAGR at **22.6%** maxDD with
+Martin 2.16.
+
+**These are almost certainly survivorship artifacts and must not be acted on.**
+`symbols_meta.sector` is populated only for today's NIFTY500 / MICROCAP250
+members. Filtering the 2016 universe by "is in an NSE index in 2026" is selecting
+the winners with a decade of hindsight. The result is reported only because
+omitting it would be worse — and because it sets an upper bound on how much of
+this programme's apparent edge could be survivorship-driven. That bound is
+uncomfortably large.
+
+### 9.6 Walk-forward on the stop (stop as the only control)
+
+| Stop | FIT CAGR% | FIT maxDD% | FIT Martin | TEST CAGR% | TEST maxDD% | TEST Martin | TEST worst 12m% |
+|---|---|---|---|---|---|---|---|
+| 10% | 19.04 | **29.5** | **1.25** | 9.06 | 34.4 | 0.46 | −29.0 |
+| 15% | **23.48** | 39.3 | 1.10 | 13.45 | 38.1 | 0.64 | −32.4 |
+| 20% | 21.11 | 41.8 | 0.91 | **14.60** | 42.8 | **0.66** | −37.2 |
+
+The in-sample ordering (15 > 10 > 20 on Martin) does **not** reproduce out of
+sample (20 ≈ 15 > 10). What *is* consistent: **10% is the worst on TEST on both
+CAGR and Martin**, and 15% and 20% are close on every measure. So the supported
+conclusion is the range, not the point — **15–20%, with 10% rejected**. This is
+exactly the "moderate fixed stop" finding and nothing more precise than that is
+justified. The first walk-forward run was discarded because it evaluated the stop
+*inside* the full control stack, which this test then showed to be net negative.
+
+### 9.7 A bug worth recording
+
+The first version of the matrix shipped **sector caps ON by default**. The "no
+caps" baseline therefore silently had them, and the "+sectorcaps" variant came out
+byte-identical to it — which read as the clean finding *"sector caps make no
+difference."* They make a large difference: a mid-2018 top-20 held **nine names in
+a single sector**. The bug produced a plausible number, no error, and a wrong
+conclusion. Defaults are now inert; a control whose default is active cannot be
+measured against a baseline.
+
+### 9.8 Where this leaves the strategy
+
+**Recommended configuration, on the evidence:**
+
+```
+Core:      Positional 6m momentum / 63-session rebalance / buffer rank
+Breadth:   top 30 (not top 20) — the best risk reduction found
+Stop:      Fixed 15% (supported range 15–20%; 10% rejected)
+Exposure:  Full, or mild vol scaling with a 75% floor. NOT the 25% ladder.
+Sector:    3 per sector; 2 is too tight
+Throttle:  None — it fails at every threshold tested
+```
+
+Expected: **~17% CAGR, ~34% maxDD, worst 12-month ~−26%.** On ₹4L over the
+measured decade that is ₹20L.
+
+**What this does not do is make the book comfortable.** A 34% drawdown and a
+−26% worst year remain. The honest conclusion of this test is that the original
+diagnosis was right — you cannot engineer consistency out of a long-only momentum
+book — but that the *proposed remedy* mostly does not work either. Volatility
+scaling and drawdown throttles are late by construction: they reduce exposure
+after the loss and restore it after the recovery. Only two things reduced pain at
+an acceptable price: **a moderate per-stock stop, and more names.**
+
+If a ~34% drawdown is unacceptable, the remaining lever is not inside this
+strategy — it is **allocation**. Running the positional book at half size against
+cash or a bond sleeve is mathematically equivalent to the exposure-scaling that
+failed here, except it is decided once rather than timed badly. That is a
+portfolio decision, and it is the honest answer to "how do I make this
+survivable."
+
+### 9.9 Still open
+
+- **Survivorship bias remains unquantified**, and §9.5 suggests it could be large.
+  This now clearly outranks any further strategy work.
+- **The breakout sleeve has not been tested inside this framework.** The stated
+  condition was "a 10–20% sleeve only if the combined backtest improves drawdown."
+  The two books can now share capital in one engine; the correlation has never
+  been measured.
+- **Top-30 was one data point, not a sweep.** Top-25/35/40 should be checked for a
+  plateau before top-30 is trusted — the finding is currently a single cell.
+
+---
+
 *Every figure in this report is generated from the raw run data by
-`custom-screener/backend/backtest/report/tables.py`; none is transcribed by hand.*
+`custom-screener/backend/backtest/report/tables.py` and the portfolio sweep logs;
+none is transcribed by hand.*
