@@ -804,41 +804,40 @@ function RunRow({ run, selected, onSelect, onCancel, cancelling, rowRef, onKeyDo
         {run.status === 'RUNNING' && pct != null && <span className="text-slate-400 font-normal"> · {pct}%</span>}
       </td>
       <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap">{run.tradeCount ?? '—'}</td>
-      {run.strategy === 'PORTFOLIO' ? (
-        // A continuous compounding book is judged on the PATH, so the three P&L
-        // columns carry CAGR / maxDD / Martin instead. Summed P&L is not a
-        // meaningful headline for it — and showing it next to annual-reset runs
-        // would invite exactly the comparison that is invalid.
-        <>
-          <td className="py-1.5 px-2 text-xs font-medium whitespace-nowrap tabular-nums text-emerald-300"
-            title="Compound annual growth rate over the whole continuous run">
-            {run.pfCagrPct != null ? `${run.pfCagrPct.toFixed(1)}%` : '—'}
-          </td>
-          <td className="py-1.5 px-2 text-xs whitespace-nowrap tabular-nums text-rose-300"
-            title="Peak-to-trough drawdown on the daily equity curve">
-            {run.pfMaxDDPct != null ? `−${run.pfMaxDDPct.toFixed(1)}%` : '—'}
-          </td>
-          <td className="py-1.5 px-2 text-xs font-semibold whitespace-nowrap tabular-nums text-slate-200"
-            title="Martin ratio = CAGR / ulcer index. Return per unit of time-weighted pain.">
-            {run.pfMartin != null ? run.pfMartin.toFixed(2) : '—'}
-          </td>
-        </>
-      ) : (
-        <>
-          <td className={`py-1.5 px-2 text-xs font-medium whitespace-nowrap tabular-nums ${pnlColor(run.realizedPnl)}`}
-            title={run.realizedPnl != null ? `Realized ₹${run.realizedPnl.toLocaleString('en-IN')}` : undefined}>
-            {fmtPnl(run.realizedPnl)}
-          </td>
-          <td className={`py-1.5 px-2 text-xs whitespace-nowrap tabular-nums ${pnlColor(run.unrealizedPnl)}`}
-            title={run.unrealizedPnl != null ? `Unrealized (open positions marked to run end) ₹${run.unrealizedPnl.toLocaleString('en-IN')}` : undefined}>
-            {fmtPnl(run.unrealizedPnl)}
-          </td>
-          <td className={`py-1.5 px-2 text-xs font-semibold whitespace-nowrap tabular-nums ${pnlColor(run.totalPnl)}`}
-            title={run.totalPnl != null ? `Total ₹${run.totalPnl.toLocaleString('en-IN')}` : undefined}>
-            {fmtPnl(run.totalPnl)}
-          </td>
-        </>
-      )}
+      {/* Realized / unrealized / total apply to EVERY strategy — a portfolio run
+          still has banked P&L and open positions, and hiding them (as an earlier
+          version did, substituting the path metrics in their place) meant the
+          rupee outcome of a portfolio run could not be seen at all. */}
+      <td className={`py-1.5 px-2 text-xs font-medium whitespace-nowrap tabular-nums ${pnlColor(run.realizedPnl)}`}
+        title={run.realizedPnl != null ? `Realized ₹${run.realizedPnl.toLocaleString('en-IN')}` : undefined}>
+        {fmtPnl(run.realizedPnl)}
+      </td>
+      <td className={`py-1.5 px-2 text-xs whitespace-nowrap tabular-nums ${pnlColor(run.unrealizedPnl)}`}
+        title={run.unrealizedPnl != null ? `Unrealized (open positions marked to run end) ₹${run.unrealizedPnl.toLocaleString('en-IN')}` : undefined}>
+        {fmtPnl(run.unrealizedPnl)}
+      </td>
+      <td className={`py-1.5 px-2 text-xs font-semibold whitespace-nowrap tabular-nums ${pnlColor(run.totalPnl)}`}
+        title={run.totalPnl != null ? `Total ₹${run.totalPnl.toLocaleString('en-IN')}` : undefined}>
+        {fmtPnl(run.totalPnl)}
+      </td>
+      {/* Path metrics — NULL on non-PORTFOLIO runs, shown as em-dash rather than
+          0 so an empty cell is never mistaken for a measured zero. */}
+      <td className="py-1.5 px-2 text-xs font-medium whitespace-nowrap tabular-nums text-emerald-300"
+        title="Compound annual growth rate. Only meaningful on a continuous compounding run.">
+        {run.pfCagrPct != null ? `${run.pfCagrPct.toFixed(1)}%` : '—'}
+      </td>
+      <td className="py-1.5 px-2 text-xs whitespace-nowrap tabular-nums text-rose-300"
+        title="Peak-to-trough drawdown on the daily equity curve">
+        {run.pfMaxDDPct != null ? `−${run.pfMaxDDPct.toFixed(1)}%` : '—'}
+      </td>
+      <td className="py-1.5 px-2 text-xs whitespace-nowrap tabular-nums text-amber-300/90"
+        title="Worst return over any rolling 252-session window">
+        {run.pfWorst12mPct != null ? `${run.pfWorst12mPct.toFixed(1)}%` : '—'}
+      </td>
+      <td className="py-1.5 px-2 text-xs font-semibold whitespace-nowrap tabular-nums text-slate-200"
+        title="Martin ratio = CAGR / ulcer index. Return per unit of time-weighted pain.">
+        {run.pfMartin != null ? run.pfMartin.toFixed(2) : '—'}
+      </td>
       <SettingsCell run={run} />
       <td className="py-1.5 px-2 text-xs">
         {run.status === 'RUNNING' && (
@@ -945,15 +944,13 @@ function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
             <th className="py-1.5 px-2">Capital</th>
             <th className="py-1.5 px-2">Status</th>
             <th className="py-1.5 px-2">Trades</th>
-            <th className="py-1.5 px-2" title="Closed-trade P&L — or CAGR on PORTFOLIO runs">
-              Realized <span className="text-slate-500 font-normal">/ CAGR</span>
-            </th>
-            <th className="py-1.5 px-2" title="Open positions marked to the run's end date — or max drawdown on PORTFOLIO runs">
-              Unreal. <span className="text-slate-500 font-normal">/ maxDD</span>
-            </th>
-            <th className="py-1.5 px-2" title="Realized + unrealized — or Martin ratio (CAGR/ulcer) on PORTFOLIO runs">
-              Total <span className="text-slate-500 font-normal">/ Martin</span>
-            </th>
+            <th className="py-1.5 px-2" title="Banked P&L from closed trades">Realized</th>
+            <th className="py-1.5 px-2" title="Open positions marked to the run's end date">Unreal.</th>
+            <th className="py-1.5 px-2" title="Realized + unrealized">Total</th>
+            <th className="py-1.5 px-2 text-emerald-400/80" title="Compound annual growth rate (PORTFOLIO runs only)">CAGR</th>
+            <th className="py-1.5 px-2 text-rose-400/80" title="Max peak-to-trough drawdown on the daily equity curve (PORTFOLIO runs only)">maxDD</th>
+            <th className="py-1.5 px-2 text-amber-400/80" title="Worst rolling 252-session return (PORTFOLIO runs only)">w12m</th>
+            <th className="py-1.5 px-2" title="Martin = CAGR / ulcer index (PORTFOLIO runs only)">Martin</th>
             <th className="py-1.5 px-2">Settings</th>
             <th className="py-1.5 px-2"></th>
           </tr>

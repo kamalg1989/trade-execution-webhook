@@ -294,7 +294,7 @@ async def list_runs(request: Request):
              ) lc
             WHERE t.run_id = r.id AND t.status = 'OPEN'
               AND t.entry_fill_price IS NOT NULL) AS unrealized_pnl
-        FROM backtest_runs r ORDER BY r.created_at DESC LIMIT 50
+        FROM backtest_runs r ORDER BY r.created_at DESC LIMIT 250
         """
     )
     return [_run_to_json(r) for r in rows]

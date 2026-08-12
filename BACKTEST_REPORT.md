@@ -1118,10 +1118,16 @@ scenario.
 | 2.0% | 30% | 18.25 | 14.84 | 39.3 | 44.2 | **44.9** | 47.1 | *50.6* | −35.5 |
 | 4.0% | 30% | 16.86 | 12.53 | 41.5 | 46.1 | **47.4** | 50.8 | *56.7* | −37.0 |
 
-**The corrected stress-sizing figure is ~45–48% max drawdown, not 50–60%.**
-Across the empirical hazard range (0.3–2.7%/yr), **DD p95 lands at 43–48%** —
-meaningfully worse than the 39.3% observed with no stress, but well short of the
-sampled extremes.
+**43–48% is a MODEL-CONDITIONAL p95, not "the" sizing figure.** Across the
+empirical hazard range, DD p95 lands at 43–48% — worse than the 39.3% observed
+with no stress, well short of the sampled extremes.
+
+The wording matters. This is a p95 **conditional on** a deliberately conservative
+but **unvalidated** 0.5–2%/yr hazard applied to held names, with losses assumed
+independent. It is **not** a statistical 95% confidence statement about live
+performance, and nothing here estimates the probability that the hazard
+assumption itself is right. Read it as a **planning stress range** — a defensible
+number to size against — rather than as a measured property of the strategy.
 
 *A note on the order-statistic point, verified empirically:* doubling from 1,000
 to 2,000 paths left every sampled worst **unchanged** (50.8 / 54.5 / 60.3 / 65.1)
@@ -1260,7 +1266,8 @@ relevant drawdown figures**, never against the median CAGR:
 - **observed** max drawdown: **39.3%** (no stress)
 - **stress p95** max drawdown: **~48%** (§9.15, 2%/yr hazard, total loss)
 
-Using ~48% as the planning denominator:
+Using ~48% as the planning denominator — a **model-conditional** stress figure,
+not a confidence interval:
 
 | Max drawdown you can hold through | Allocation to the strategy |
 |---|---|
