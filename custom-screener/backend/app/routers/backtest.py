@@ -609,7 +609,9 @@ async def _daily_unrealized(pool, run_id: int, end_date: date,
 async def get_summary(run_id: int, request: Request):
     pool = _pool(request)
     run = await pool.fetchrow(
-        "SELECT end_date, capital, strategy, pf_equity_curve "
+        "SELECT end_date, start_date, capital, strategy, pf_equity_curve, "
+        "       pf_cagr_pct, pf_max_dd_pct, pf_ulcer, pf_worst_12m_pct, "
+        "       pf_martin, pf_turnover_per_yr, pf_final_equity, pf_calendar "
         "FROM backtest_runs WHERE id = $1", run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -675,10 +677,33 @@ async def get_summary(run_id: int, request: Request):
     if isinstance(pf_curve, str):
         pf_curve = json.loads(pf_curve)
 
+    # Headline metrics for a continuous run, so the results panel can lead with
+    # CAGR and drawdown instead of a quant/AI split that does not apply to it.
+    pf_cal = run["pf_calendar"]
+    if isinstance(pf_cal, str):
+        pf_cal = json.loads(pf_cal)
+    portfolio = None
+    if is_pf and run["pf_final_equity"] is not None:
+        portfolio = {
+            "cagrPct": float(run["pf_cagr_pct"] or 0),
+            "maxDDPct": float(run["pf_max_dd_pct"] or 0),
+            "ulcer": float(run["pf_ulcer"] or 0),
+            "worst12mPct": float(run["pf_worst_12m_pct"] or 0),
+            "martin": float(run["pf_martin"] or 0),
+            "turnoverPerYr": float(run["pf_turnover_per_yr"] or 0),
+            "finalEquity": float(run["pf_final_equity"]),
+            "totalPnl": float(run["pf_final_equity"]) - capital,
+            "calendar": pf_cal or {},
+            # A window under ~2 years restarts at the initial capital, so its
+            # CAGR annualises one short period and is not comparable.
+            "shortWindow": (run["end_date"] - run["start_date"]).days < 730,
+        }
+
     return {
         "runId": run_id,
         "capital": capital,
         "equityCurve": equity_curve,
+        "portfolio": portfolio,
         "portfolioEquity": ([{"date": d, "equity": v} for d, v in pf_curve]
                             if pf_curve else None),
         "quant": _track_stats(closed, open_trades, price_map, "quant_rank", capital),

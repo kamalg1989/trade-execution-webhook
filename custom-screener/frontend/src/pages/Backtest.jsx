@@ -3,6 +3,7 @@ import {
   createBacktestRun, listBacktestRuns, getBacktestRun, getBacktestSummary,
   getBacktestTrades, getBacktestDay, cancelBacktestRun, backtestTradeChartUrl,
 } from '../api/client.js';
+import { HELP, Info, LabelWithInfo, Pill, Stat, useIsMobile } from '../components/ui.jsx';
 
 const fmtInr = (n) =>
   n == null ? '—' : `₹${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
@@ -306,12 +307,32 @@ function Toggle({ label, checked, onChange, hint }) {
   );
 }
 
-function Field({ label, hint, value, onChange, type = 'text', ...rest }) {
+function Field({ label, hint, help, value, onChange, type = 'text', ...rest }) {
   return (
     <label className="text-xs text-slate-400 flex flex-col gap-1">
-      <span>{label}</span>
+      <LabelWithInfo help={help}>{label}</LabelWithInfo>
+      {/* text-base on mobile: iOS Safari zooms the page when focusing an input
+          under 16px, and that zoom does not undo itself on blur. */}
       <input type={type} value={value} onChange={(e) => onChange(e.target.value)}
-        className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" {...rest} />
+        className="bg-slate-800 border border-slate-600 rounded px-2.5 py-2 text-slate-100
+          text-base sm:text-sm focus:border-sky-500 focus:outline-none focus:ring-1
+          focus:ring-sky-500/40 transition-colors" {...rest} />
+      {hint && <span className="text-[11px] text-slate-500 leading-snug">{hint}</span>}
+    </label>
+  );
+}
+
+/** Select with the same label / help / touch treatment as Field. */
+function SelectField({ label, hint, help, value, onChange, children }) {
+  return (
+    <label className="text-xs text-slate-400 flex flex-col gap-1">
+      <LabelWithInfo help={help}>{label}</LabelWithInfo>
+      <select value={value} onChange={(e) => onChange(e.target.value)}
+        className="bg-slate-800 border border-slate-600 rounded px-2.5 py-2 text-slate-100
+          text-base sm:text-sm focus:border-sky-500 focus:outline-none focus:ring-1
+          focus:ring-sky-500/40 transition-colors">
+        {children}
+      </select>
       {hint && <span className="text-[11px] text-slate-500 leading-snug">{hint}</span>}
     </label>
   );
@@ -432,43 +453,32 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
               Load frozen config
             </button>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <label className="text-xs text-slate-400 flex flex-col gap-1">
-              Start date
-              <input type="date" value={f.start_date} onChange={(e) => set('start_date')(e.target.value)}
-                className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" required />
-            </label>
-            <label className="text-xs text-slate-400 flex flex-col gap-1">
-              End date
-              <input type="date" value={f.end_date} onChange={(e) => set('end_date')(e.target.value)}
-                className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" required />
-            </label>
-            <label className="text-xs text-slate-400 flex flex-col gap-1">
-              Capital (₹)
-              <input type="number" value={f.capital} onChange={(e) => set('capital')(e.target.value)}
-                className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" min="10000" step="10000" />
-            </label>
-            <Field label="Hold top N"
-              hint="Provisional 30–40 lowers drawdown at ~2–3pp CAGR. 20 is frozen."
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+            <Field label="Start date" help={HELP.startDate} type="date"
+              value={f.start_date} onChange={set('start_date')} required />
+            <Field label="End date" help={HELP.endDate} type="date"
+              value={f.end_date} onChange={set('end_date')} required />
+            <Field label="Capital (₹)" help={HELP.capital} type="number"
+              value={f.capital} onChange={set('capital')} min="10000" step="10000" />
+            <Field label="Hold top N" help={HELP.topN}
+              hint="20 frozen · 30–45 lowers drawdown, costs ~2–3pp CAGR"
               value={f.pos_top_n}
               onChange={(v) => setF((s0) => ({ ...s0, pos_top_n: v, pos_buffer_n: Number(v) * 2 }))}
               type="number" min="1" max="60" />
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
-            <Field label="Fixed stop (%)" hint="Supported range 15–20%. 10% rejected."
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mt-3">
+            <Field label="Fixed stop (%)" help={HELP.slPct}
+              hint="Range 15–20% · 10% rejected"
               value={f.pos_sl_pct} onChange={set('pos_sl_pct')} type="number" min="0" max="50" step="0.5" />
-            <Field label="Rebalance (sessions)" hint="63 ≈ quarterly."
+            <Field label="Rebalance (sessions)" help={HELP.rebalance} hint="63 ≈ quarterly"
               value={f.pos_rebalance_days} onChange={set('pos_rebalance_days')} type="number" min="1" max="250" />
-            <label className="text-xs text-slate-400 flex flex-col gap-1">
-              <span>Momentum lookback</span>
-              <select value={f.pos_momentum} onChange={(e) => set('pos_momentum')(e.target.value)}
-                className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
-                <option value="pct_chg_3m">3 months</option>
-                <option value="pct_chg_6m">6 months (frozen)</option>
-                <option value="pct_chg_1y">12 months</option>
-              </select>
-            </label>
-            <Field label="Min turnover (₹ cr)" hint="Liquidity floor."
+            <SelectField label="Momentum lookback" help={HELP.momentum}
+              value={f.pos_momentum} onChange={set('pos_momentum')}>
+              <option value="pct_chg_3m">3 months</option>
+              <option value="pct_chg_6m">6 months (frozen)</option>
+              <option value="pct_chg_1y">12 months</option>
+            </SelectField>
+            <Field label="Min turnover (₹ cr)" help={HELP.minTurnover} hint="Liquidity floor"
               value={f.pos_min_turnover_cr} onChange={set('pos_min_turnover_cr')} type="number" min="0" step="0.5" />
           </div>
           {f.strategy !== 'PORTFOLIO' && (
@@ -892,6 +902,18 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
 // "26-01-01".
 const fmtWindowShort = (s, e) => `${s?.slice(2) ?? ''} → ${e?.slice(2) ?? ''}`;
 
+/** One label/value pair inside a mobile run card. */
+function MobileStat({ label, value, tone }) {
+  const cls = tone == null ? 'text-slate-200'
+    : tone > 0 ? 'text-emerald-300' : tone < 0 ? 'text-rose-300' : 'text-slate-200';
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+      <div className={`text-sm font-semibold tabular-nums ${cls}`}>{value}</div>
+    </div>
+  );
+}
+
 // Compact signed rupee for the P&L columns: 38856.71 -> "+38.9k", -3200 -> "-3.2k"
 const fmtPnl = (v) => {
   if (v == null) return '—';
@@ -980,6 +1002,7 @@ const SORTS = {
 };
 
 function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
+  const isMobile = useIsMobile();
   const rowRefs = useRef({});
   const [sortKey, setSortKey] = useState('newest');
   const [statusFilter, setStatusFilter] = useState('ALL');
@@ -1052,26 +1075,81 @@ function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
         <div className="text-sm text-slate-400 px-1">No backtest runs yet — configure one above.</div>
       ) : !visible.length ? (
         <div className="text-sm text-slate-400 px-1">No runs match these filters.</div>
+      ) : isMobile ? (
+        /* A 15-column table does not become usable on a phone by scrolling
+           sideways — the columns you need are always the ones off-screen. Each
+           run becomes a card with the four numbers that decide whether to open
+           it, and the rest lives in the detail view. */
+        <div className="space-y-2 max-h-[70vh] overflow-y-auto pr-0.5">
+          {visible.map((r) => {
+            const sel = r.id === selectedId;
+            const isPf = r.strategy === 'PORTFOLIO';
+            return (
+              <button key={r.id} type="button" onClick={() => onSelect(r.id)}
+                className={`w-full text-left rounded-lg border p-3 transition-colors
+                  ${sel ? 'border-sky-500 bg-sky-950/30' : 'border-slate-700 bg-slate-900/60 active:bg-slate-800'}`}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-slate-100">
+                      #{r.id}
+                      <span className="ml-2 text-[11px] font-normal text-slate-400">
+                        {fmtWindowShort(r.startDate, r.endDate)}
+                      </span>
+                    </div>
+                    {r.params?.notes && (
+                      <div className="text-[11px] text-slate-400 truncate mt-0.5">{r.params.notes}</div>
+                    )}
+                  </div>
+                  <Pill tone={r.status === 'COMPLETED' ? 'good' : r.status === 'FAILED' ? 'bad'
+                    : r.status === 'RUNNING' ? 'info' : 'slate'}>
+                    {r.status}
+                  </Pill>
+                </div>
+
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 mt-2.5">
+                  <MobileStat label="Total P&L" value={fmtPnl(r.totalPnl)} tone={r.totalPnl} />
+                  <MobileStat label="Trades" value={r.tradeCount ?? '—'} />
+                  {isPf ? (<>
+                    <MobileStat label="CAGR"
+                      value={r.pfCagrPct != null ? `${r.pfCagrPct.toFixed(1)}%${isShortWindow(r) ? '*' : ''}` : '—'}
+                      tone={r.pfCagrPct} />
+                    <MobileStat label="Max drawdown"
+                      value={r.pfMaxDDPct != null ? `−${r.pfMaxDDPct.toFixed(1)}%` : '—'} tone={-1} />
+                  </>) : (<>
+                    <MobileStat label="Realized" value={fmtPnl(r.realizedPnl)} tone={r.realizedPnl} />
+                    <MobileStat label="Unrealized" value={fmtPnl(r.unrealizedPnl)} tone={r.unrealizedPnl} />
+                  </>)}
+                </div>
+
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {summarizeRunSettings(r).slice(0, 4).map((t, i) => (
+                    <Pill key={i} tone={t.startsWith('⚠') ? 'warn' : 'slate'}>{t}</Pill>
+                  ))}
+                </div>
+              </button>
+            );
+          })}
+        </div>
       ) : (
     <div className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto max-h-[480px] overflow-y-auto">
       <table className="w-full table-auto">
         <thead className="sticky top-0 bg-slate-900 z-10">
           <tr className="text-left text-[10px] text-slate-500 uppercase tracking-wide">
-            <th className="py-1.5 px-2">Run</th>
-            <th className="py-1.5 px-2">Window</th>
-            <th className="py-1.5 px-2">Track</th>
-            <th className="py-1.5 px-2">Capital</th>
-            <th className="py-1.5 px-2">Status</th>
-            <th className="py-1.5 px-2">Trades</th>
-            <th className="py-1.5 px-2" title="Banked P&L from closed trades">Realized</th>
-            <th className="py-1.5 px-2" title="Open positions marked to the run's end date">Unreal.</th>
-            <th className="py-1.5 px-2" title="Realized + unrealized">Total</th>
-            <th className="py-1.5 px-2 text-emerald-400/80" title="Compound annual growth rate (PORTFOLIO runs only)">CAGR</th>
-            <th className="py-1.5 px-2 text-rose-400/80" title="Max peak-to-trough drawdown on the daily equity curve (PORTFOLIO runs only)">maxDD</th>
-            <th className="py-1.5 px-2 text-amber-400/80" title="Worst rolling 252-session return (PORTFOLIO runs only)">w12m</th>
-            <th className="py-1.5 px-2" title="Martin = CAGR / ulcer index (PORTFOLIO runs only)">Martin</th>
-            <th className="py-1.5 px-2">Settings</th>
-            <th className="py-1.5 px-2"></th>
+            <th className="py-2 px-2">Run</th>
+            <th className="py-2 px-2"><LabelWithInfo help={HELP.window}>Window</LabelWithInfo></th>
+            <th className="py-2 px-2">Track</th>
+            <th className="py-2 px-2"><LabelWithInfo help={HELP.capital}>Capital</LabelWithInfo></th>
+            <th className="py-2 px-2"><LabelWithInfo help={HELP.status}>Status</LabelWithInfo></th>
+            <th className="py-2 px-2"><LabelWithInfo help={HELP.trades}>Trades</LabelWithInfo></th>
+            <th className="py-2 px-2"><LabelWithInfo help={HELP.realized}>Realized</LabelWithInfo></th>
+            <th className="py-2 px-2"><LabelWithInfo help={HELP.unrealized}>Unreal.</LabelWithInfo></th>
+            <th className="py-2 px-2"><LabelWithInfo help={HELP.total}>Total</LabelWithInfo></th>
+            <th className="py-2 px-2 text-emerald-400/80"><LabelWithInfo help={HELP.cagr}>CAGR</LabelWithInfo></th>
+            <th className="py-2 px-2 text-rose-400/80"><LabelWithInfo help={HELP.maxDD}>maxDD</LabelWithInfo></th>
+            <th className="py-2 px-2 text-amber-400/80"><LabelWithInfo help={HELP.worst12m}>w12m</LabelWithInfo></th>
+            <th className="py-2 px-2"><LabelWithInfo help={HELP.martin} align="right">Martin</LabelWithInfo></th>
+            <th className="py-2 px-2"><LabelWithInfo help={HELP.settings} align="right">Settings</LabelWithInfo></th>
+            <th className="py-2 px-2"></th>
           </tr>
         </thead>
         <tbody>
@@ -1345,15 +1423,57 @@ function RunSummary({ runId, status }) {
   if (error) return <div className="text-sm text-red-300">{error}</div>;
   if (!summary) return <div className="text-sm text-slate-400">Loading summary…</div>;
 
+  const pf = summary.portfolio;
+
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <KpiCard title="📐 Quant track" stats={summary.quant} color="text-sky-300" capital={summary.capital} />
-        <KpiCard title="🤖 AI track" stats={summary.ai} color="text-purple-300" capital={summary.capital} />
-      </div>
-      <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-4">
+      {pf ? (
+        /* A continuous book is judged on the PATH, so lead with CAGR and
+           drawdown. The quant/AI split below does not apply to it — it is one
+           undivided book — and showing an always-empty "AI track" card next to
+           it was pure noise. */
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+            <Stat label="CAGR" size="lg" tone={pf.cagrPct >= 0 ? 'good' : 'bad'} help={HELP.cagr}
+              value={`${pf.cagrPct.toFixed(1)}%${pf.shortWindow ? '*' : ''}`}
+              hint={pf.shortWindow ? 'annualised from <2 yrs — not comparable' : undefined} />
+            <Stat label="Max drawdown" size="lg" tone="bad" help={HELP.maxDD}
+              value={`−${pf.maxDDPct.toFixed(1)}%`}
+              hint="what you must sit through" />
+            <Stat label="Total P&L" size="lg" tone={pf.totalPnl >= 0 ? 'good' : 'bad'} help={HELP.total}
+              value={fmtInr(pf.totalPnl)}
+              hint={`ends at ${fmtInr(pf.finalEquity)}`} />
+            <Stat label="Martin ratio" size="lg" help={HELP.martin}
+              value={pf.martin.toFixed(2)} hint="return ÷ time-weighted pain" />
+          </div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+            <Stat label="Worst 12 months" tone="warn" help={HELP.worst12m}
+              value={`${pf.worst12mPct.toFixed(1)}%`} />
+            <Stat label="Ulcer index" help={HELP.ulcer} value={pf.ulcer.toFixed(2)} />
+            <Stat label="Turnover / yr" help={HELP.turnover} value={`${pf.turnoverPerYr.toFixed(2)}×`} />
+            <Stat label="Closed trades" help={HELP.trades}
+              value={summary.quant?.count ?? '—'}
+              hint={summary.quant?.winRate != null ? `${summary.quant.winRate}% won` : undefined} />
+          </div>
+          {pf.shortWindow && (
+            <div className="text-[11px] text-amber-300/90 bg-amber-950/25 border border-amber-800/50 rounded px-3 py-2">
+              ⚠ This run covers under two years and restarts at the initial capital.
+              Its CAGR annualises a single short window, and its P&amp;L cannot be
+              added to — or compared with — the compounded continuous run.
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <KpiCard title="📐 Quant track" stats={summary.quant} color="text-sky-300" capital={summary.capital} />
+          <KpiCard title="🤖 AI track" stats={summary.ai} color="text-purple-300" capital={summary.capital} />
+        </div>
+      )}
+      <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-3 sm:p-4">
         <div className="text-sm font-semibold text-slate-200 mb-2">
-          {summary.portfolioEquity ? 'Account equity (cash + marked holdings)' : 'Equity curve'}
+          <LabelWithInfo help={summary.portfolioEquity ? HELP.equityChart : undefined}>
+            {summary.portfolioEquity ? 'Account equity' : 'Equity curve'}
+          </LabelWithInfo>
         </div>
         {summary.portfolioEquity
           ? <PortfolioEquity points={summary.portfolioEquity} capital={summary.capital} />
