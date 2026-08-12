@@ -29,7 +29,20 @@ TEST = {"2021", "2022", "2023", "2024", "2025", "2026ytd"}
 
 
 def key(r):
-    return (r["momentum"], r["rebalance"], r["top_n"])
+    """What identifies a config. The rotation params were the varying axes in
+    round 1; in the stop-loss rounds they are held constant and the stop varies
+    instead, so both are included and whichever is constant simply collapses.
+    Hard-coding only the rotation params (as the first version did) would have
+    silently merged every stop variant into one bucket and reported their
+    average as if it were a single config."""
+    if r.get("label"):
+        # Round 3 names each variant explicitly, because the config is now a
+        # combination of five modifiers and a derived tag would be unreadable.
+        return (r["momentum"].replace("pct_chg_", ""), r["rebalance"],
+                r["top_n"], r["label"])
+    sl = r.get("sl_mode", "none")
+    sl_tag = f"{sl}{r.get('sl_pct') or ''}" if sl != "none" else "none"
+    return (r["momentum"].replace("pct_chg_", ""), r["rebalance"], r["top_n"], sl_tag)
 
 
 def spearman(a: dict, b: dict) -> float:
@@ -83,7 +96,8 @@ def main():
     print("\n" + "=" * 100)
     print("2. PER-AXIS MARGINALS  (plateau = real, spike = luck)")
     print("=" * 100)
-    for axis, idx in (("momentum", 0), ("rebalance_days", 1), ("top_n", 2)):
+    for axis, idx in (("momentum", 0), ("rebalance_days", 1), ("top_n", 2),
+                      ("stop_loss", 3)):
         buckets = defaultdict(list)
         for k, a in agg.items():
             buckets[k[idx]].append(a["total"])
@@ -96,11 +110,19 @@ def main():
     print("\n" + "=" * 100)
     print("3. RANKED BY ROBUSTNESS  (worst year and drawdown, not peak P&L)")
     print("=" * 100)
-    print(f"{'config':<34}{'total':>10}{'yrs+':>6}{'worst yr':>11}{'maxDD%':>9}{'trades/yr':>11}")
+    print(f"{'config':<40}{'total':>10}{'yrs+':>6}{'worst yr':>11}{'maxDD%':>9}{'trades/yr':>11}")
     ranked = sorted(agg.items(), key=lambda kv: (-kv[1]["yrs_pos"], kv[1]["worst"]), reverse=False)
     ranked = sorted(agg.items(), key=lambda kv: (kv[1]["yrs_pos"], -kv[1]["maxDDpct"]), reverse=True)
-    for k, a in ranked[:12]:
-        print(f"{str(k):<34}{a['total']/1000:>9.0f}k{a['yrs_pos']:>4}/{a['n']}"
+    for k, a in ranked[:30]:
+        print(f"{str(k):<40}{a['total']/1000:>9.0f}k{a['yrs_pos']:>4}/{a['n']}"
+              f"{a['worst']/1000:>10.0f}k{a['maxDDpct']:>8.0f}%{a['trades']:>11.0f}")
+
+    # Ranked by pure return as well, because the robustness sort above is
+    # deliberately blind to it and a stop that halves drawdown by halving
+    # returns is a different proposition from one that does not.
+    print("\n  ...same configs ranked by TOTAL RETURN, for contrast:")
+    for k, a in sorted(agg.items(), key=lambda kv: -kv[1]["total"])[:12]:
+        print(f"{str(k):<40}{a['total']/1000:>9.0f}k{a['yrs_pos']:>4}/{a['n']}"
               f"{a['worst']/1000:>10.0f}k{a['maxDDpct']:>8.0f}%{a['trades']:>11.0f}")
 
     print("\nReminder: a ~100%-deployed book is judged on worst year and maxDD.")

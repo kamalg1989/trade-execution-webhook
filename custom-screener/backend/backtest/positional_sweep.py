@@ -53,7 +53,10 @@ def _leg_cost(value: float, is_sell: bool) -> float:
 
 async def _run_one(pool, start: date, end: date, capital: float, slip: float,
                    momentum: str, rebalance: int, top_n: int, buffer_n: int,
-                   min_turnover: float, sl_mode: str = "none", sl_pct: float = 0.0):
+                   min_turnover: float, sl_mode: str = "none", sl_pct: float = 0.0,
+                   sl_confirm: int = 1, sl_buffer: float = 0.0,
+                   sl_arm_pct: float = 0.0, reentry_block: int = 0,
+                   entry_max_ext: float | None = None):
     """sl_mode, checked EVERY DAY (the base strategy only ever checked at
     rebalance, which is why it drew down ~45%):
         none    -- exit only at rebalance (rank drop / lost SMA200)
@@ -70,15 +73,47 @@ async def _run_one(pool, start: date, end: date, capital: float, slip: float,
     (fast -> slow) where a plateau is meaningful and a lone spike is not.
     After a stop fires the slot stays in CASH until the next rebalance, which is
     what a real trader does; refilling instantly would quietly re-buy the same
-    falling names and flatter the result."""
+    falling names and flatter the result.
+
+    ---- de-whipsaw modifiers (round 3) ----
+    Round 2 found the MA stops monotonically WORSE the faster they are, and the
+    diagnosis was churn: EMA21 doubled the trade count (407 -> 834) because
+    momentum leaders routinely dip below their 21-day line mid-trend, get
+    stopped, and are then re-bought at the next rebalance. Critically, the extra
+    trades are NOT extra names — they are the SAME names round-tripping. So the
+    fix is not a stricter entry filter; it is refusing to act on a dip that
+    isn't a real breakdown. Each modifier attacks that from a different angle:
+
+      sl_confirm    require N CONSECUTIVE closes in violation. A one-day poke
+                    through the line stops meaning anything.
+      sl_buffer     violation needs close < MA*(1 - buffer%), i.e. a noise band
+                    around the line rather than a hair trigger.
+      sl_arm_pct    the stop does not exist until the trade is up this much.
+                    Turns the MA into a profit-protector rather than something
+                    that kills positions before they've done anything.
+      reentry_block a stopped symbol cannot be re-bought for N rebalance cycles.
+                    Attacks the round-trip directly: it cannot re-buy what it
+                    just sold, so a whipsaw costs one exit rather than an
+                    exit-plus-re-entry pair.
+      entry_max_ext only buy names within this % of their EMA21 — the one
+                    genuine ENTRY-quality axis here, on the theory that a name
+                    bought far extended is the one most likely to mean-revert
+                    into its stop immediately.
+
+    All five default to inert, so a run with defaults reproduces round 2 exactly
+    and the two rounds stay directly comparable."""
     days = [r["d"] for r in await pool.fetch(
         "SELECT DISTINCT time::date AS d FROM ohlcv_data "
         "WHERE time::date BETWEEN $1 AND $2 ORDER BY d", start, end)]
     if not days:
         return None
 
+    # The extension filter is applied to the BUY list only, never to the "still
+    # ranked" set: a name must be able to stay held once bought even if it later
+    # runs far from its EMA21, otherwise the filter silently becomes an exit
+    # rule as well and its effect could not be attributed to entries.
     rank_sql = f"""
-        SELECT symbol, sma_200 FROM stock_indicators
+        SELECT symbol, sma_200, dist_ema_21_pct FROM stock_indicators
         WHERE indicator_date=$1 AND turnover_1m_avg_cr>=$2 AND close>sma_200
           AND {momentum} IS NOT NULL
         ORDER BY {momentum} DESC LIMIT $3
@@ -89,6 +124,9 @@ async def _run_one(pool, start: date, end: date, capital: float, slip: float,
     realized = 0.0
     n_closed = n_win = 0
     equity_curve: list[float] = []
+    # symbol -> the rebalance number it becomes buyable again at
+    blocked: dict[str, int] = {}
+    rebal_no = 0
 
     # Per-symbol close series for the whole window, fetched ONCE on first hold
     # and reused. The obvious implementation — one query per day for the current
@@ -133,16 +171,31 @@ async def _run_one(pool, start: date, end: date, capital: float, slip: float,
             stopped = []
             for s, h in holdings.items():
                 px = h["last"]
-                if sl_mode == "fixed" and px <= h["entry_px"] * (1 - sl_pct / 100):
-                    stopped.append(s)
-                elif sl_mode == "trail" and px <= h["peak"] * (1 - sl_pct / 100):
-                    stopped.append(s)
+                # armed: below the profit threshold the stop simply does not
+                # exist. Uses PEAK, not last price — once a trade has been up
+                # 10% the stop stays armed even if it gives that back, which is
+                # the whole point of arming it.
+                armed = (sl_arm_pct <= 0
+                         or h["peak"] >= h["entry_px"] * (1 + sl_arm_pct / 100))
+                hit = False
+                if not armed:
+                    pass
+                elif sl_mode == "fixed":
+                    hit = px <= h["entry_px"] * (1 - sl_pct / 100)
+                elif sl_mode == "trail":
+                    hit = px <= h["peak"] * (1 - sl_pct / 100)
                 elif sl_mode in MA_STOPS:
                     ma = (h.get("ma") or {}).get(MA_STOPS[sl_mode])
-                    if ma and px < ma:
-                        stopped.append(s)
+                    hit = bool(ma) and px < ma * (1 - sl_buffer / 100)
+                # Consecutive-day counter, reset the moment price recovers, so
+                # sl_confirm means "N days in a row" and not "N days total".
+                h["viol"] = h.get("viol", 0) + 1 if hit else 0
+                if h["viol"] >= sl_confirm:
+                    stopped.append(s)
             for s in stopped:
                 h = holdings.pop(s)
+                if reentry_block:
+                    blocked[s] = rebal_no + reentry_block
                 net = h["last"] * (1 - slip / 100)
                 proceeds = net * h["qty"] - _leg_cost(net * h["qty"], True)
                 cash += proceeds
@@ -156,9 +209,17 @@ async def _run_one(pool, start: date, end: date, capital: float, slip: float,
         if i % rebalance != 0 or i + 1 >= len(days):
             continue
         nxt = days[i + 1]
+        rebal_no += 1
         ranked = await pool.fetch(rank_sql, day, min_turnover, buffer_n)
         keep = {r["symbol"] for r in ranked}
-        want = [r["symbol"] for r in ranked][:top_n]
+        # Buy list = ranked, minus anything still cooling off from a stop-out,
+        # minus anything too far extended from its EMA21 if that filter is on.
+        buyable = [r for r in ranked if blocked.get(r["symbol"], -1) < rebal_no]
+        if entry_max_ext is not None:
+            buyable = [r for r in buyable
+                       if r["dist_ema_21_pct"] is not None
+                       and float(r["dist_ema_21_pct"]) <= entry_max_ext]
+        want = [r["symbol"] for r in buyable][:top_n]
 
         drop = [s for s in holdings if s not in keep]
         if drop:
@@ -213,9 +274,18 @@ async def _run_one(pool, start: date, end: date, capital: float, slip: float,
             "maxDDpct": round(max_dd / capital * 100, 1)}
 
 
-def _worker(job):
-    momentum, rebalance, top_n, buffer_n, min_turnover, capital, slip, sl_mode, sl_pct = job
+def _worker(job: dict):
+    """job is a dict rather than a positional tuple: with 12 knobs a tuple is
+    one silent mis-ordering away from a whole sweep measuring the wrong thing,
+    and that failure is invisible in the output."""
     from app.db import create_pool
+
+    cfg = {"momentum": "pct_chg_6m", "rebalance": 63, "top_n": 20, "buffer_n": 40,
+           "min_turnover": 5.0, "capital": 400000.0, "slip": 0.10,
+           "sl_mode": "none", "sl_pct": 0.0, "sl_confirm": 1, "sl_buffer": 0.0,
+           "sl_arm_pct": 0.0, "reentry_block": 0, "entry_max_ext": None,
+           "label": ""}
+    cfg.update(job)
 
     async def go():
         pool = await create_pool()
@@ -224,13 +294,15 @@ def _worker(job):
             for y in range(2016, 2027):
                 s = date(y, 1, 1)
                 e = date(2026, 8, 8) if y == 2026 else date(y, 12, 31)
-                r = await _run_one(pool, s, e, capital, slip, momentum, rebalance,
-                                   top_n, buffer_n, min_turnover, sl_mode, sl_pct)
+                r = await _run_one(
+                    pool, s, e, cfg["capital"], cfg["slip"], cfg["momentum"],
+                    cfg["rebalance"], cfg["top_n"], cfg["buffer_n"],
+                    cfg["min_turnover"], cfg["sl_mode"], cfg["sl_pct"],
+                    cfg["sl_confirm"], cfg["sl_buffer"], cfg["sl_arm_pct"],
+                    cfg["reentry_block"], cfg["entry_max_ext"])
                 if r:
-                    r.update({"window": str(y) if y < 2026 else "2026ytd",
-                              "momentum": momentum, "rebalance": rebalance,
-                              "top_n": top_n, "buffer_n": buffer_n,
-                              "sl_mode": sl_mode, "sl_pct": sl_pct})
+                    r.update({k: v for k, v in cfg.items()})
+                    r["window"] = str(y) if y < 2026 else "2026ytd"
                     out.append(r)
         finally:
             await pool.close()
@@ -260,13 +332,57 @@ def main():
     # line does the job that SMA200 is too slow to do. `none` and `fixed 15`
     # (round 1's winner) stay in as fixed reference points so the two rounds are
     # directly comparable rather than merely adjacent.
-    SLS = [("none", 0.0),
-           ("fixed", 10.0), ("fixed", 15.0), ("fixed", 20.0), ("fixed", 25.0),
-           ("trail", 15.0), ("trail", 20.0), ("trail", 25.0), ("trail", 30.0),
-           ("sma200", 0.0), ("sma50", 0.0), ("ema21", 0.0), ("ema50", 0.0)]
-    jobs = [(m, 63, 20, 40, a.min_turnover, a.capital, a.slippage, sm, sp)
-            for m in ("pct_chg_6m", "pct_chg_1y")
-            for sm, sp in SLS]
+    # Round 3 — can the EMA21 stop keep its drawdown advantage (25% vs 42%)
+    # WITHOUT its churn (834 trades vs 407)? Round 2 established the raw MA
+    # ladder; this asks whether the fast line's problem is the line itself or
+    # merely its hair trigger. Two reference rows are kept so the comparison is
+    # in-batch rather than against remembered numbers from a previous run.
+    jobs = [
+        {"label": "ref-none", "sl_mode": "none"},
+        {"label": "ref-fixed15", "sl_mode": "fixed", "sl_pct": 15.0},
+        {"label": "ref-ema21", "sl_mode": "ema21"},
+
+        # (a) confirmation days — a one-day poke through the line stops counting
+        {"label": "ema21-confirm2", "sl_mode": "ema21", "sl_confirm": 2},
+        {"label": "ema21-confirm3", "sl_mode": "ema21", "sl_confirm": 3},
+        {"label": "ema21-confirm5", "sl_mode": "ema21", "sl_confirm": 5},
+
+        # (b) noise band below the line
+        {"label": "ema21-buf2", "sl_mode": "ema21", "sl_buffer": 2.0},
+        {"label": "ema21-buf4", "sl_mode": "ema21", "sl_buffer": 4.0},
+        {"label": "ema21-buf6", "sl_mode": "ema21", "sl_buffer": 6.0},
+
+        # (c) arm only once the trade has actually worked — turns the MA into a
+        #     profit-protector instead of an early-life killer
+        {"label": "ema21-arm10", "sl_mode": "ema21", "sl_arm_pct": 10.0},
+        {"label": "ema21-arm20", "sl_mode": "ema21", "sl_arm_pct": 20.0},
+
+        # (d) attack the round-trip directly: can't re-buy what you just sold
+        {"label": "ema21-noreentry1", "sl_mode": "ema21", "reentry_block": 1},
+        {"label": "ema21-noreentry2", "sl_mode": "ema21", "reentry_block": 2},
+
+        # (e) combinations of whichever levers are individually plausible
+        {"label": "ema21-c3+buf4", "sl_mode": "ema21", "sl_confirm": 3, "sl_buffer": 4.0},
+        {"label": "ema21-c3+arm20", "sl_mode": "ema21", "sl_confirm": 3, "sl_arm_pct": 20.0},
+        {"label": "ema21-c3+buf4+nore1", "sl_mode": "ema21", "sl_confirm": 3,
+         "sl_buffer": 4.0, "reentry_block": 1},
+        {"label": "ema21-arm20+buf4", "sl_mode": "ema21", "sl_arm_pct": 20.0,
+         "sl_buffer": 4.0},
+
+        # (f) same de-whipsaw treatment on the mid-speed line, to check any
+        #     finding is about the MECHANISM and not specific to EMA21
+        {"label": "sma50-c3+buf4", "sl_mode": "sma50", "sl_confirm": 3, "sl_buffer": 4.0},
+        {"label": "sma50-arm20", "sl_mode": "sma50", "sl_arm_pct": 20.0},
+
+        # (g) the entry-quality axis, on the round-2 winner — the only variant
+        #     here that reduces trades by buying LESS rather than selling less
+        {"label": "fixed15+ext15", "sl_mode": "fixed", "sl_pct": 15.0, "entry_max_ext": 15.0},
+        {"label": "ema21+ext15", "sl_mode": "ema21", "entry_max_ext": 15.0},
+    ]
+    for j in jobs:
+        j.setdefault("min_turnover", a.min_turnover)
+        j.setdefault("capital", a.capital)
+        j.setdefault("slip", a.slippage)
     print(f"positional sweep: {len(jobs)} configs x 11 windows = {len(jobs)*11} backtests, "
           f"{a.workers} workers", flush=True)
 
