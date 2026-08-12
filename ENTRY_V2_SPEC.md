@@ -98,8 +98,30 @@ and re-report.
 - Need three troughs L-H-R within the last **60** sessions where
   `head < left shoulder` and `head < right shoulder`.
 - Shoulder symmetry: `abs(left - right) <= 15%` of head depth.
-- Neckline = higher of the two intervening peaks; qualifies when the bar's high
-  is within **2%** of the neckline.
+- Neckline = higher of the two intervening peaks; qualifies on the bar that
+  **crosses** it — `high > neckline` **and** `previous high <= neckline`.
+
+> **§2.1c — amended after a persistence measurement, before any P&L existed.**
+>
+> The original rule was `high >= neckline OR within 2%`. The neckline is fixed by
+> pivots inside the 60-bar window, so once price clears it the condition stays
+> true for the whole advance. Measured across 40 symbols × 246 sessions:
+>
+> | Detector | Fires | Real setups | Fires/setup | Longest run |
+> |---|---|---|---|---|
+> | HIGH_BREAKOUT | 810 | 553 | 1.46 | 5 |
+> | PULLBACK | 986 | 707 | 1.39 | 8 |
+> | BREAKOUT_RETEST | 600 | 437 | 1.37 | 5 |
+> | **REVERSE_HS** | **100** | **20** | **5.00** | **12** |
+>
+> Half of all REVERSE_HS setups re-signalled for 4+ consecutive sessions, one for
+> 12. A buy point is an **event**, not a state; requiring the previous bar to be
+> below the neckline makes it one, and adds no parameter. The other three sit
+> near 1.4, which is natural — a breakout day is often followed by another day
+> still above the base high — and were left alone.
+>
+> Effect: REVERSE_HS 40 → 8 on the 2023 sample, matching the 5.00 fires/setup
+> almost exactly. The pattern is far rarer than the raw count implied.
 - *60 sessions ≈ one quarter, the shortest window in which a three-trough
   structure is visible on daily bars. 15% symmetry is deliberately loose — a
   tight tolerance would find almost nothing and would be fitted.*

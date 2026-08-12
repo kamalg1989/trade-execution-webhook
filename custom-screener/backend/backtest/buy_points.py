@@ -163,7 +163,17 @@ def detect_buy_points(df, symbol: str = "?") -> list[str]:
             if depth > 0 and abs(left - right) <= HS_SYMMETRY * depth:
                 win_highs = highs[-HS_WINDOW:]
                 neck = max(max(win_highs[li:hi_ + 1]), max(win_highs[hi_:ri + 1]))
-                if neck > 0 and (bar_high >= neck or _near(bar_high, neck)):
+                # The bar that CROSSES the neckline, not any bar above it
+                # (ENTRY_V2_SPEC §2.1c). The neckline is fixed by pivots inside
+                # the window, so once price clears it `bar_high >= neck` stays
+                # true for as long as the advance lasts. Measured: 100 fires
+                # from 20 real setups — 5 per setup, half re-signalling for 4+
+                # consecutive days, one for 12 — while the other three
+                # detectors sat at ~1.4. A buy point is an EVENT; requiring
+                # yesterday to be below the level makes it one, and adds no
+                # parameter.
+                prev_high = highs[-2] if len(highs) >= 2 else 0.0
+                if neck > 0 and bar_high > neck and prev_high <= neck:
                     found.append("REVERSE_HS")
 
     return found
