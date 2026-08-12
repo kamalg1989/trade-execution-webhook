@@ -43,6 +43,28 @@ const GATE_LABELS = [
   ['gateMinIfpScore', (v) => `ifp≥${v}`],
 ];
 
+// The positional stop-loss choices, ordered the way they should be REASONED
+// about rather than alphabetically: no stop, then the two price-distance stops,
+// then the moving-average stops from fastest (EMA21, exits early and often) to
+// slowest (SMA200, barely fires). Presenting the MA group as an ordered speed
+// ladder is what lets a plateau across neighbours be read as a real effect.
+const POS_SL_MODES = [
+  { v: 'none', label: 'None — exit only at rebalance' },
+  { v: 'fixed', label: 'Fixed % below entry', pct: true },
+  { v: 'trail', label: 'Trailing % below peak', pct: true },
+  { v: 'ema21', label: 'Structural — close < EMA21 (fastest)' },
+  { v: 'sma50', label: 'Structural — close < SMA50' },
+  { v: 'ema50', label: 'Structural — close < EMA50' },
+  { v: 'sma200', label: 'Structural — close < SMA200 (slowest)' },
+];
+const POS_SL_NEEDS_PCT = new Set(POS_SL_MODES.filter((m) => m.pct).map((m) => m.v));
+
+function slLabel(mode, pct) {
+  if (!mode || mode === 'none') return null;
+  if (POS_SL_NEEDS_PCT.has(mode)) return `SL ${mode} ${Number(pct)}%`;
+  return `SL ${mode.toUpperCase()}`;
+}
+
 // Compact list of tags describing what actually differs from stock defaults
 // on this run — shown as the "Settings" column in the run list, and as a
 // fuller tooltip (title attr) on hover. Intentionally omits anything at its
@@ -55,7 +77,8 @@ function summarizeRunSettings(run) {
     // them on their own terms rather than showing a wall of "not set".
     return [`POSITIONAL`, `${run.posMomentum?.replace('pct_chg_', '') ?? '6m'} mom`,
             `top${run.posTopN}/buf${run.posBufferN}`,
-            `rebal ${run.posRebalanceDays}d`].filter(Boolean);
+            `rebal ${run.posRebalanceDays}d`,
+            slLabel(run.posSlMode, run.posSlPct)].filter(Boolean);
   }
   if (run.quantFunnelVariant === 'v2') tags.push('rank:v2');
   // The validated edges — shown first-class so a run's identity is obvious
@@ -105,6 +128,7 @@ const DEFAULT_FORM = {
   strategy: 'BREAKOUT',
   pos_momentum: 'pct_chg_6m', pos_rebalance_days: 21, pos_top_n: 10,
   pos_buffer_n: 20, pos_min_turnover_cr: 5,
+  pos_sl_mode: 'none', pos_sl_pct: 15,
   start_date: '', end_date: '', track_mode: 'QUANT', capital: 400000,
   restIndefinite: true, resting_window_days: 5,
   stacking_guard: true, stacking_guard_mode: 'OVERRIDE',
@@ -145,10 +169,26 @@ const PRESETS = {
   },
   positional: {
     label: 'Positional momentum',
-    hint: 'Low-turnover rotation: ~43 trades/yr held ~66d. Cost drag ~0.7%/yr vs ~5.7%.',
+    hint: 'Low-turnover rotation, 11-window validated: 63d rebalance, top-20, '
+        + 'fixed 15% stop. Cost drag ~1.6%/yr vs ~5.7% for breakout.',
     values: {
-      strategy: 'POSITIONAL', pos_momentum: 'pct_chg_6m', pos_rebalance_days: 21,
-      pos_top_n: 10, pos_buffer_n: 20, pos_min_turnover_cr: 5, capital: 400000,
+      // These are the plateau-supported settings from the 11-window sweep, not
+      // the grid maximum: 63d/top-20 sit in the middle of a smooth region, and
+      // the 15% stop was the one change that improved return AND drawdown at
+      // once (969k -> 1034k total, 42% -> 33% maxDD).
+      strategy: 'POSITIONAL', pos_momentum: 'pct_chg_6m', pos_rebalance_days: 63,
+      pos_top_n: 20, pos_buffer_n: 40, pos_min_turnover_cr: 5, capital: 400000,
+      pos_sl_mode: 'fixed', pos_sl_pct: 15,
+    },
+  },
+  positionalNoSl: {
+    label: 'Positional (no stop)',
+    hint: 'Same rotation with exits only at rebalance — the original behaviour, '
+        + 'kept as the reference point the stop is measured against.',
+    values: {
+      strategy: 'POSITIONAL', pos_momentum: 'pct_chg_6m', pos_rebalance_days: 63,
+      pos_top_n: 20, pos_buffer_n: 40, pos_min_turnover_cr: 5, capital: 400000,
+      pos_sl_mode: 'none', pos_sl_pct: 0,
     },
   },
   production: {
@@ -211,6 +251,10 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
         pos_top_n: Number(f.pos_top_n) || 10,
         pos_buffer_n: Number(f.pos_buffer_n) || 20,
         pos_min_turnover_cr: Number(f.pos_min_turnover_cr) || 5,
+        pos_sl_mode: f.pos_sl_mode || 'none',
+        // The MA stops ignore a percentage; send 0 rather than a stale value so
+        // the run row can't imply a threshold that was never applied.
+        pos_sl_pct: POS_SL_NEEDS_PCT.has(f.pos_sl_mode) ? Number(f.pos_sl_pct) || 0 : 0,
         start_date: f.start_date, end_date: f.end_date, track_mode: f.track_mode,
         capital: Number(f.capital) || 400000,
         resting_window_days: f.restIndefinite ? null : Number(f.resting_window_days) || null,
@@ -338,7 +382,42 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
               value={f.pos_min_turnover_cr} onChange={set('pos_min_turnover_cr')}
               type="number" min="0" step="0.5" />
           </div>
-          <div className="text-[11px] text-amber-300/80 mt-2 leading-snug">
+          <div className="mt-4 pt-3 border-t border-slate-800">
+            <div className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-1">
+              Stop-loss
+            </div>
+            <p className="text-[11px] text-slate-500 mb-2 leading-snug">
+              Checked on <b>every session</b>, not just rebalance days. A stopped slot
+              stays in cash until the next rebalance rather than refilling immediately —
+              refilling would re-buy from the same ranking that just stopped a name out.
+              With no stop this book drew down ~42%; a fixed 15% stop cut that to ~33%
+              while <i>raising</i> total return, which is why it is the preset default.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
+              <label className="text-xs text-slate-400 flex flex-col gap-1">
+                <span>Stop type</span>
+                <select value={f.pos_sl_mode} onChange={(e) => set('pos_sl_mode')(e.target.value)}
+                  className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
+                  {POS_SL_MODES.map((m) => (
+                    <option key={m.v} value={m.v}>{m.label}</option>
+                  ))}
+                </select>
+                <span className="text-[11px] text-slate-500 leading-snug">
+                  The four structural stops are one mechanism at four speeds. EMA21 exits
+                  earliest and most often; SMA200 is so slow it barely differs from no stop.
+                </span>
+              </label>
+              {POS_SL_NEEDS_PCT.has(f.pos_sl_mode) && (
+                <Field label="Stop distance (%)"
+                  hint={f.pos_sl_mode === 'trail'
+                    ? 'Below the highest close since entry — ratchets up, never down.'
+                    : 'Below the entry fill price — fixed for the life of the trade.'}
+                  value={f.pos_sl_pct} onChange={set('pos_sl_pct')}
+                  type="number" min="1" max="50" step="0.5" />
+              )}
+            </div>
+          </div>
+          <div className="text-[11px] text-amber-300/80 mt-3 leading-snug">
             Note: this runs ~100% deployed, so its swings are much larger than the
             breakout book&rsquo;s — measured calendar years include +95% and −34%.
           </div>

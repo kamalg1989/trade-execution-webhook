@@ -59,7 +59,15 @@ async def _run_one(pool, start: date, end: date, capital: float, slip: float,
         none    -- exit only at rebalance (rank drop / lost SMA200)
         fixed   -- hard stop sl_pct below the entry price
         trail   -- stop sl_pct below the highest close since entry
-        struct  -- daily close below the stock's own SMA200
+        sma200  -- daily close below the stock's own SMA200  (alias: struct)
+        sma50   -- daily close below SMA50   (a mid-tier structural stop)
+        ema21   -- daily close below EMA21   (the tightest structural stop;
+                   there is no sma_21 column, and EMA21 is the line the breakout
+                   book already trails on, so it is the like-for-like choice)
+        ema50   -- daily close below EMA50
+    The three MA stops are the same MECHANISM at three speeds, which is the point
+    of testing them together: it turns "which stop" into a monotonic axis
+    (fast -> slow) where a plateau is meaningful and a lone spike is not.
     After a stop fires the slot stays in CASH until the next rebalance, which is
     what a real trader does; refilling instantly would quietly re-buy the same
     falling names and flatter the result."""
@@ -91,15 +99,25 @@ async def _run_one(pool, start: date, end: date, capital: float, slip: float,
 
     async def closes_for(sym: str) -> dict:
         if sym not in series:
-            # sma_200 comes along for the ride so the 'struct' stop can be
-            # evaluated daily without a second round trip per symbol.
-            series[sym] = {r["d"]: (float(r["c"]), float(r["s"]) if r["s"] is not None else None)
-                           for r in await pool.fetch(
-                "SELECT o.time::date AS d, o.close AS c, si.sma_200 AS s "
-                "FROM ohlcv_data o LEFT JOIN stock_indicators si "
-                "  ON si.symbol=o.symbol AND si.indicator_date=o.time::date "
-                "WHERE o.symbol=$1 AND o.time::date BETWEEN $2 AND $3", sym, start, end)}
+            # Every MA the structural stops can reference comes along for the
+            # ride, so switching stop type costs no extra round trips per symbol.
+            def _f(v):
+                return float(v) if v is not None else None
+            series[sym] = {
+                r["d"]: (float(r["c"]),
+                         {"sma200": _f(r["sma_200"]), "sma50": _f(r["sma_50"]),
+                          "ema21": _f(r["ema_21"]), "ema50": _f(r["ema_50"])})
+                for r in await pool.fetch(
+                    "SELECT o.time::date AS d, o.close AS c, "
+                    "       si.sma_200, si.sma_50, si.ema_21, si.ema_50 "
+                    "FROM ohlcv_data o LEFT JOIN stock_indicators si "
+                    "  ON si.symbol=o.symbol AND si.indicator_date=o.time::date "
+                    "WHERE o.symbol=$1 AND o.time::date BETWEEN $2 AND $3",
+                    sym, start, end)}
         return series[sym]
+
+    MA_STOPS = {"struct": "sma200", "sma200": "sma200", "sma50": "sma50",
+                "ema21": "ema21", "ema50": "ema50"}
 
     for i, day in enumerate(days):
         # --- daily mark to market (this is what makes real drawdown possible)
@@ -108,7 +126,7 @@ async def _run_one(pool, start: date, end: date, capital: float, slip: float,
             if row is not None:
                 h["last"] = row[0]
                 h["peak"] = max(h.get("peak", h["last"]), h["last"])
-                h["sma"] = row[1]
+                h["ma"] = row[1]
 
         # --- DAILY stop-loss check (the base strategy had none at all)
         if sl_mode != "none" and holdings:
@@ -119,8 +137,10 @@ async def _run_one(pool, start: date, end: date, capital: float, slip: float,
                     stopped.append(s)
                 elif sl_mode == "trail" and px <= h["peak"] * (1 - sl_pct / 100):
                     stopped.append(s)
-                elif sl_mode == "struct" and h.get("sma") and px < h["sma"]:
-                    stopped.append(s)
+                elif sl_mode in MA_STOPS:
+                    ma = (h.get("ma") or {}).get(MA_STOPS[sl_mode])
+                    if ma and px < ma:
+                        stopped.append(s)
             for s in stopped:
                 h = holdings.pop(s)
                 net = h["last"] * (1 - slip / 100)
@@ -179,7 +199,7 @@ async def _run_one(pool, start: date, end: date, capital: float, slip: float,
                     cash -= outlay
                     await closes_for(s)   # warm this symbol's series for MTM
                     holdings[s] = {"qty": qty, "cost_basis": outlay, "last": entry,
-                                   "entry_px": entry, "peak": entry, "sma": None}
+                                   "entry_px": entry, "peak": entry, "ma": None}
 
     final = equity_curve[-1] if equity_curve else capital
     peak = equity_curve[0] if equity_curve else capital
@@ -234,10 +254,16 @@ def main():
     # Stop-loss study, held on the plateau-supported settings from the first
     # sweep (6m/12m momentum, 63-day rebalance, top-20) so the SL effect is not
     # confounded by re-optimising everything else at the same time.
+    # Round 2 adds the MA-stop speed ladder (ema21 < sma50 < ema50 < sma200).
+    # Round 1's only structural stop was SMA200, which barely differed from no
+    # stop at all (40% vs 42% maxDD) — the obvious follow-up is whether a FASTER
+    # line does the job that SMA200 is too slow to do. `none` and `fixed 15`
+    # (round 1's winner) stay in as fixed reference points so the two rounds are
+    # directly comparable rather than merely adjacent.
     SLS = [("none", 0.0),
            ("fixed", 10.0), ("fixed", 15.0), ("fixed", 20.0), ("fixed", 25.0),
            ("trail", 15.0), ("trail", 20.0), ("trail", 25.0), ("trail", 30.0),
-           ("struct", 0.0)]
+           ("sma200", 0.0), ("sma50", 0.0), ("ema21", 0.0), ("ema50", 0.0)]
     jobs = [(m, 63, 20, 40, a.min_turnover, a.capital, a.slippage, sm, sp)
             for m in ("pct_chg_6m", "pct_chg_1y")
             for sm, sp in SLS]

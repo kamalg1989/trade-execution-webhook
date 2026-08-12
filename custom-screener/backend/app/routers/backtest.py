@@ -65,6 +65,10 @@ class RunCreate(BaseModel):
     pos_top_n: int = Field(10, ge=1, le=50)
     pos_buffer_n: int = Field(20, ge=1, le=100)
     pos_min_turnover_cr: float = 5.0
+    # sql/021 — daily-checked stop for the positional book. Default 'none'
+    # reproduces the original rebalance-only exits, so old runs stay comparable.
+    pos_sl_mode: str = Field("none", pattern="^(none|fixed|trail|sma200|sma50|ema50|ema21)$")
+    pos_sl_pct: float = Field(0.0, ge=0, le=50)
     track_mode: str = Field("BOTH", pattern="^(QUANT|AI|BOTH)$")
     capital: float = 400000
     resting_window_days: int | None = None
@@ -198,10 +202,11 @@ async def create_run(body: RunCreate, request: Request):
            avoid_entry_days_before_earnings, exit_days_before_earnings,
            regime_ma_days, regime_confirm_days, regime_action,
            strategy, pos_momentum, pos_rebalance_days, pos_top_n, pos_buffer_n,
-           pos_min_turnover_cr)
+           pos_min_turnover_cr, pos_sl_mode, pos_sl_pct)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
                 $21,$22,$23,$24,$25,$26,$27,$28,
-                $29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56)
+                $29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,
+                $57,$58)
         RETURNING id
         """,
         body.start_date, body.end_date, body.track_mode, body.capital,
@@ -227,6 +232,7 @@ async def create_run(body: RunCreate, request: Request):
         body.regime_ma_days, body.regime_confirm_days, body.regime_action,
         body.strategy, body.pos_momentum, body.pos_rebalance_days, body.pos_top_n,
         body.pos_buffer_n, body.pos_min_turnover_cr,
+        body.pos_sl_mode, body.pos_sl_pct,
     )
     run_id = row["id"]
 
@@ -386,6 +392,8 @@ def _run_to_json(r) -> dict:
         "posTopN": d.get("pos_top_n"),
         "posBufferN": d.get("pos_buffer_n"),
         "posMinTurnoverCr": float(d["pos_min_turnover_cr"]) if d.get("pos_min_turnover_cr") is not None else None,
+        "posSlMode": d.get("pos_sl_mode") or "none",
+        "posSlPct": float(d["pos_sl_pct"]) if d.get("pos_sl_pct") is not None else 0.0,
     }
 
 
