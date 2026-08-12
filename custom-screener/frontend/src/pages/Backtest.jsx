@@ -156,10 +156,15 @@ function SettingsCell({ run }) {
 // ---------------- Run config form ----------------
 
 const DEFAULT_FORM = {
-  strategy: 'BREAKOUT',
-  pos_momentum: 'pct_chg_6m', pos_rebalance_days: 21, pos_top_n: 10,
-  pos_buffer_n: 20, pos_min_turnover_cr: 5,
-  pos_sl_mode: 'none', pos_sl_pct: 15,
+  // The form opens on the FROZEN strategy over the full continuous window, so
+  // the default action is "run the thing we concluded is right" rather than
+  // "assemble a config from 47 blank fields". The breakout defaults below are
+  // retained for the advanced panel but are no longer what loads first.
+  strategy: 'PORTFOLIO',
+  // Frozen values (BACKTEST_REPORT section 10), so the form is runnable as-is.
+  pos_momentum: 'pct_chg_6m', pos_rebalance_days: 63, pos_top_n: 20,
+  pos_buffer_n: 40, pos_min_turnover_cr: 5,
+  pos_sl_mode: 'fixed', pos_sl_pct: 15,
   // PORTFOLIO risk controls. Every one defaults to INERT — a control that is on
   // by default cannot be measured against a baseline, which is exactly the bug
   // that made the first sector-cap run identical to the run it should have
@@ -168,7 +173,10 @@ const DEFAULT_FORM = {
   pf_max_per_stock_pct: 100, pf_max_per_sector_pct: 100,
   pf_max_stocks_per_sector: 99, pf_require_sector: false,
   pf_dd_throttle_at: 0,
-  start_date: '', end_date: '', track_mode: 'QUANT', capital: 400000,
+  // Full continuous window by default — a portfolio run over a few months
+  // annualises noise, and the whole point of this strategy is compounding.
+  start_date: '2016-01-01', end_date: '2026-08-08',
+  track_mode: 'QUANT', capital: 400000,
   restIndefinite: true, resting_window_days: 5,
   stacking_guard: true, stacking_guard_mode: 'OVERRIDE',
   max_picks_per_track: 2,
@@ -311,6 +319,9 @@ function Field({ label, hint, value, onChange, type = 'text', ...rest }) {
 
 function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }) {
   const [f, setF] = useState(DEFAULT_FORM);
+  // Collapsed by default. The frozen config is the intended path; the other 40+
+  // fields are research surface for re-verifying findings, not a starting point.
+  const [advanced, setAdvanced] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const set = (k) => (v) => setF((s) => ({ ...s, [k]: v }));
@@ -398,6 +409,90 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
           className="text-xs text-slate-400 hover:text-white px-2 py-1">Collapse ✕</button>
       </div>
 
+      {/* ---- FROZEN QUICK START ------------------------------------------
+          The default path. One click loads the configuration that survived
+          validation (BACKTEST_REPORT section 10) over the full continuous
+          window. Everything else on this form exists for research and is
+          hidden until asked for — 47 fields, most of which belong to a
+          strategy the evidence says not to trade, is not a starting point. */}
+      {!advanced && (
+        <div className="rounded-lg border border-emerald-800/60 bg-emerald-950/20 p-3">
+          <div className="flex items-start justify-between gap-3 mb-2">
+            <div>
+              <div className="text-sm font-semibold text-emerald-300">Frozen strategy</div>
+              <div className="text-[11px] text-slate-400 leading-snug mt-0.5">
+                6-month momentum · 63-session rebalance · top 20 · buffer 40 ·
+                15% stop · no overlays. Observed 19.5% CAGR / 39.3% max drawdown
+                over 2016–2026.
+              </div>
+            </div>
+            <button type="button"
+              onClick={() => setF((s0) => ({ ...s0, ...PRESETS.portfolio.values }))}
+              className="shrink-0 text-xs px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 text-white font-medium">
+              Load frozen config
+            </button>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <label className="text-xs text-slate-400 flex flex-col gap-1">
+              Start date
+              <input type="date" value={f.start_date} onChange={(e) => set('start_date')(e.target.value)}
+                className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" required />
+            </label>
+            <label className="text-xs text-slate-400 flex flex-col gap-1">
+              End date
+              <input type="date" value={f.end_date} onChange={(e) => set('end_date')(e.target.value)}
+                className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" required />
+            </label>
+            <label className="text-xs text-slate-400 flex flex-col gap-1">
+              Capital (₹)
+              <input type="number" value={f.capital} onChange={(e) => set('capital')(e.target.value)}
+                className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" min="10000" step="10000" />
+            </label>
+            <Field label="Hold top N"
+              hint="Provisional 30–40 lowers drawdown at ~2–3pp CAGR. 20 is frozen."
+              value={f.pos_top_n}
+              onChange={(v) => setF((s0) => ({ ...s0, pos_top_n: v, pos_buffer_n: Number(v) * 2 }))}
+              type="number" min="1" max="60" />
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
+            <Field label="Fixed stop (%)" hint="Supported range 15–20%. 10% rejected."
+              value={f.pos_sl_pct} onChange={set('pos_sl_pct')} type="number" min="0" max="50" step="0.5" />
+            <Field label="Rebalance (sessions)" hint="63 ≈ quarterly."
+              value={f.pos_rebalance_days} onChange={set('pos_rebalance_days')} type="number" min="1" max="250" />
+            <label className="text-xs text-slate-400 flex flex-col gap-1">
+              <span>Momentum lookback</span>
+              <select value={f.pos_momentum} onChange={(e) => set('pos_momentum')(e.target.value)}
+                className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
+                <option value="pct_chg_3m">3 months</option>
+                <option value="pct_chg_6m">6 months (frozen)</option>
+                <option value="pct_chg_1y">12 months</option>
+              </select>
+            </label>
+            <Field label="Min turnover (₹ cr)" hint="Liquidity floor."
+              value={f.pos_min_turnover_cr} onChange={set('pos_min_turnover_cr')} type="number" min="0" step="0.5" />
+          </div>
+          {f.strategy !== 'PORTFOLIO' && (
+            <div className="text-[11px] text-amber-300/90 mt-2">
+              ⚠ Strategy is <b>{f.strategy}</b>, so these fields may not all apply.
+              Click <b>Load frozen config</b> to switch to the continuous portfolio.
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="flex items-center justify-between gap-2 pt-1">
+        <button type="button" onClick={() => setAdvanced((v) => !v)}
+          className="text-xs px-2.5 py-1 rounded border border-slate-600 bg-slate-800 hover:bg-slate-700 text-slate-200">
+          {advanced ? '▾ Hide advanced / research settings' : '▸ Advanced / research settings'}
+        </button>
+        {!advanced && (
+          <span className="text-[11px] text-slate-500">
+            Other strategies, rejected overlays and cost model live in here
+          </span>
+        )}
+      </div>
+
+      {advanced && (<>
       <div className="flex flex-wrap items-center gap-2 pb-1">
         <span className="text-[11px] uppercase tracking-wide text-slate-500">Start from</span>
         {Object.entries(PRESETS).map(([key, p]) => (
@@ -425,8 +520,8 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
           Strategy
           <select value={f.strategy} onChange={(e) => set('strategy')(e.target.value)}
             className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
-            <option value="BREAKOUT">Breakout (swing)</option>
-            <option value="POSITIONAL">Positional momentum</option>
+            <option value="BREAKOUT">Breakout (swing) — not allocated</option>
+            <option value="POSITIONAL">Positional momentum (annual-reset)</option>
             <option value="PORTFOLIO">Portfolio (continuous, compounding)</option>
           </select>
         </label>
@@ -765,11 +860,15 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
       </details>
 
       </>)}
+      </>)}
 
+      {/* Notes and the error/blocked banners sit OUTSIDE the advanced block on
+          purpose: a validation error hidden inside a collapsed section is an
+          error the user never sees. */}
       <label className="text-xs text-slate-400 flex flex-col gap-1">
         Notes (optional)
         <input type="text" value={f.notes} onChange={(e) => set('notes')(e.target.value)}
-          placeholder="e.g. baseline 6-month run"
+          placeholder="e.g. frozen config, full window"
           className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" />
       </label>
 
