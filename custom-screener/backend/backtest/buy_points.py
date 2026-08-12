@@ -125,16 +125,28 @@ def detect_buy_points(df, symbol: str = "?") -> list[str]:
         if trend_ok and bar_low <= ema21 <= bar_close:
             found.append("PULLBACK")
 
-    # ---- BREAKOUT RETEST: cleared the base, came back to test it -----------
+    # ---- BREAKOUT RETEST: cleared the base, came back DOWN to test it ------
+    #
+    # STRENGTHENED after visual inspection (ENTRY_V2_SPEC §2.1b). The original
+    # band was `low <= base_high * 1.02`, which permits the low to sit up to 2%
+    # ABOVE the level. In a strong advance that passes trivially: JINDALSTEL on
+    # 2023-01-02 broke out at 573.50 on 27 Dec then ran 578 -> 584 -> 598 -> 602
+    # without ever returning, yet its low of 584.50 fell inside the band and it
+    # was labelled a retest. Price was 5% above the level and still climbing.
+    #
+    # A retest means price came BACK DOWN to the breakout level. So the low must
+    # actually reach it. Again this REMOVES a tolerance rather than adding a
+    # parameter — there is no new number to fit.
     prior = highs[-(BASE_LOOKBACK_BARS + RETEST_MAX_BARS + 1):-(RETEST_MAX_BARS + 1)]
     if prior:
         prior_base_high = max(prior)
         recent = highs[-(RETEST_MAX_BARS + 1):-1]
         broke_out = any(h > prior_base_high for h in recent)
-        # Came back DOWN to the level and held it: low at/below the old high,
-        # close still above. That is the retest; a close below is a failure.
+        # Low touches or breaches the old high (a genuine return to the level),
+        # close still above it (the level held). A close below is a failed
+        # retest, which is the opposite of a buy signal.
         if (broke_out and prior_base_high
-                and bar_low <= prior_base_high * (1 + NEAR_PCT)
+                and bar_low <= prior_base_high
                 and bar_close > prior_base_high):
             found.append("BREAKOUT_RETEST")
 

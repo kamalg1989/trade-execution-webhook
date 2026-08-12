@@ -69,11 +69,28 @@ and re-report.
 - *EMA21 because that is the trail production already uses; introducing a
   different MA here would add a parameter with no justification.*
 
-**`BREAKOUT_RETEST`** — cleared the base, came back to test it.
+**`BREAKOUT_RETEST`** — cleared the base, came back **down** to test it.
 - Base high was exceeded within the last **10** sessions.
-- Bar's low is within **2%** of that base high, close above it.
+- Bar's low **touches or breaches** that base high, and the close is above it.
 - *10 sessions = half the 20-bar base lookback. A retest arriving later than
   half a base-length is a new base, not a retest.*
+
+> **§2.1b — amended after visual inspection, before any P&L existed.**
+>
+> The original band was `low <= base_high * 1.02`, permitting the low to sit up
+> to 2% **above** the level. In a strong advance that passes trivially.
+> **JINDALSTEL, 2023-01-02**: broke out at 573.50 on 27 Dec then ran
+> 578 → 584 → 598 → 602 without ever returning, yet its low of 584.50 fell inside
+> the band and was labelled a retest — price was 5% above the level and still
+> climbing. Nothing had been retested.
+>
+> A retest means price came back **down** to the level, so the low must actually
+> reach it. Like §2.1a this **removes** a tolerance rather than adding a
+> parameter, and was driven by inspecting bars rather than by any return figure.
+>
+> Effect: BREAKOUT_RETEST 535 → 265 on the same 2023 sample. **LICHSGFIN,
+> 2023-01-02** is what survives — cleared 421.95 on 30 Dec, returned to 411.80,
+> closed 424.45 back above the level.
 
 **`REVERSE_HS`** — inverse head-and-shoulders, the one genuinely new detector.
 - Pivots from a **5-bar** fractal (centre bar lowest of 5), matching
