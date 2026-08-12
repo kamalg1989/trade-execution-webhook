@@ -42,12 +42,26 @@ and re-report.
 
 ### 2.1 Buy points
 
-**`HIGH_BREAKOUT`** — price at the top of the base, about to clear it.
-- Base high = highest high of the last `BASE_LOOKBACK_BARS` (20, production value).
-- Qualifies when the bar's high is within **2%** of the base high.
-- *2% because production's `NEAR_BREAKOUT_MAX_DISTANCE` is already 5% for the
-  Stage 1 gate; at the trigger we want tighter. 2% is one round step below it,
-  not an optimised value.*
+**`HIGH_BREAKOUT`** — price actually clearing the base and holding it.
+- Base high = highest high of the last `BASE_LOOKBACK_BARS` (20, production value),
+  **excluding today's bar** (otherwise the test is self-referential).
+- Qualifies when `bar.high > base_high` **and** `bar.close > base_high`.
+
+> **§2.1a — amended after the first spot check, before any P&L existed.**
+>
+> The original rule was `>= base_high OR within 2%`. Measured on 2023 it fired on
+> **1,369 of 1,754 survivors (78%)**, and the whole entry-v2 gate passed 73.6% —
+> i.e. it barely gated at all. The cause: Stage 1 already gates on
+> `NEAR_BREAKOUT_MAX_DISTANCE = 5%`, so **every survivor is near its base high by
+> construction**, and a detector asking "is this near the base high?" merely
+> re-tested an upstream filter.
+>
+> This amendment is legitimate under pre-registration because it was driven by an
+> observed **redundancy with an existing filter**, not by any return figure — no
+> backtest had been run. It also **removes** a tolerance rather than introducing a
+> threshold, so there is no new number to fit. Had it instead been changed because
+> a P&L looked disappointing, that would be exactly the behaviour this document
+> exists to prevent, and the run would have to be labelled exploratory.
 
 **`PULLBACK`** — price has retraced into support inside an uptrend.
 - Close above SMA200 **and** above EMA50 (trend intact).

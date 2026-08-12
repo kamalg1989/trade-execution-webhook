@@ -81,12 +81,24 @@ def detect_buy_points(df, symbol: str = "?") -> list[str]:
     bar_high, bar_low, bar_close = highs[-1], lows[-1], closes[-1]
     found: list[str] = []
 
-    # ---- HIGH BREAKOUT: at the top of the base, about to clear it ----------
+    # ---- HIGH BREAKOUT: actually CLEARING the base, not merely near it -----
+    #
     # Base high EXCLUDES today's bar: including it would make the test
     # self-referential — today's high is trivially "near" itself.
+    #
+    # STRENGTHENED after the first spot check (see ENTRY_V2_SPEC §2.1a). The
+    # original `>= base_high OR within 2%` fired on 1,369 of 1,754 survivors —
+    # 78% — because Stage 1 ALREADY gates on NEAR_BREAKOUT_MAX_DISTANCE = 5%.
+    # Every survivor is near its base high by construction, so asking "is it
+    # near the base high" re-tested an upstream filter and gated nothing.
+    #
+    # Now it must genuinely break out AND hold it into the close. Note this
+    # REMOVES a tolerance rather than inventing a threshold — there is no new
+    # number to fit. A bar that pokes above the base high and closes back below
+    # is a failed breakout, which is the opposite of a buy signal.
     base_slice = highs[-(BASE_LOOKBACK_BARS + 1):-1]
     base_high = max(base_slice) if base_slice else 0.0
-    if base_high and (bar_high >= base_high or _near(bar_high, base_high)):
+    if base_high and bar_high > base_high and bar_close > base_high:
         found.append("HIGH_BREAKOUT")
 
     # ---- PULLBACK: retrace into support with the trend intact --------------
