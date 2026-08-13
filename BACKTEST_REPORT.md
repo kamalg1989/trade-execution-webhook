@@ -1431,6 +1431,103 @@ IFP and base tightness and picks the top 3 of ~23, is a strictly better selector
 cadence and pick-count are for quantity. Conflating them uses the wrong tool and
 gets neither.
 
+### 9.19 THE EXIT LADDER IS THE PROBLEM — the first finding to survive every test
+
+Nine ideas have been killed in this report. This is the first that survives.
+
+**Production's exit ladder — half-book at 2R, R-ladder ratchet, EMA21 trail —
+is the single largest drag on the breakout system.** Removing half-booking and
+the ratchet roughly **triples return at unchanged drawdown**, and unlike every
+previous candidate it wins in *both* halves of a split sample.
+
+#### The 2×2 — the ratchet, not half-booking, is the main culprit
+
+| half-book | R-ladder | Total | maxDD | Return/DD |
+|---|---|---|---|---|
+| ON | ON *(production)* | ₹99,339 | ₹51,613 | 1.92 |
+| OFF | ON | ₹135,832 | ₹64,979 | 2.09 |
+| **ON** | **OFF** | ₹181,086 | ₹49,932 | **3.63** |
+| **OFF** | **OFF** *(B5)* | **₹315,597** | ₹51,203 | **6.16** |
+
+The R-ladder tightens the stop as each R level is crossed, strangling exactly the
+trades that carry the system. Note the combination is **superadditive**
+(6.16 > 3.63 + 2.09 − 1.92); interaction effects are less robust than main
+effects, so 6.16 should not be treated as an expected value.
+
+#### It transfers — the first candidate that does
+
+| Return/DD | FIT 2016-20 | TEST 2021-26 |
+|---|---|---|
+| production ladder | **−0.04** | 2.08 |
+| B5 (EMA21) | 1.37 | 4.62 |
+| **EMA50** | **1.90** | **5.58** |
+
+**Production's ladder loses money across 2016-2020** (−₹1,918 over five years).
+It is not merely suboptimal on that half; it is net destructive.
+
+#### The axis is monotone, and it TURNS — which is what makes it real
+
+| Trail (loosest → tightest) | Win% | Total | maxDD | Return/DD |
+|---|---|---|---|---|
+| none (structural SL only) | **5.2** | ₹2,835,570 | ₹778,051 | *3.64 — see below* |
+| chandelier 5 ATR | 25.6 | ₹745,541 | ₹132,387 | 5.63 |
+| **EMA50** | 29.2 | ₹671,983 | ₹94,418 | **7.12** ← peak |
+| chandelier 3 ATR | 34.0 | ₹393,787 | ₹77,172 | 5.10 |
+| EMA21 | 34.1 | ₹315,597 | ₹51,203 | 6.16 |
+| EMA10 | 35.8 | ₹149,872 | ₹59,719 | 2.51 |
+
+**The curve rises to EMA50 and then falls.** That was the pre-registered
+falsification test: a metric still rising at "no trail at all" would have meant
+return/DD was rewarding risk it does not measure. It peaks and turns, so there is
+a genuine optimum rather than a runaway score.
+
+**The no-trail row is degenerate and must not be read as a result.** Win rate
+5.2%, realized **−₹778,051** against a total of +₹2,835,570 — the entire figure
+is unrealized markup on positions that never exit. Without a trail the strategy
+stops being a strategy and becomes buy-and-hold. Its maxDD (₹778,051) exactly
+equals its realized loss, which also exposes a metric limitation: the summary's
+drawdown is computed from realized P&L, so it is not comparable across configs
+with wildly different open/closed mixes.
+
+#### Why this one is believable when eight others were not
+
+| Test | Result |
+|---|---|
+| Split-sample transfer | **Wins both halves** (all prior candidates won one) |
+| Ordered axis | **Monotone with a turning point**, not an isolated spike |
+| Mechanism | Winners held 32 days (+₹883k), losers 9 days (−₹492k) |
+| Realized vs unrealized | ₹302k of ₹316k **realized** — not markup |
+| Independent corroboration | 5 separate tests point the same way |
+
+Those five: half-booking off > on · ratchet off > on · safety stop 15% > 12% > 8%
+· looser EMA > tighter EMA · failed-breakout exit catastrophic (22.8% win rate,
+negative return). **Every mechanism that cuts a winner early costs money.**
+
+#### The choice, and the honest trade-off
+
+| | EMA21 (B5) | EMA50 |
+|---|---|---|
+| Total | ₹315,597 | ₹671,983 |
+| maxDD | **₹51,203** | ₹94,418 |
+| Win rate | 34.1% | **29.2%** |
+| Return/DD | 6.16 | **7.12** |
+| FIT / TEST | 1.37 / 4.62 | **1.90 / 5.58** |
+
+**EMA50 is better on every ratio and in both halves — but nearly doubles the
+drawdown and means being wrong 7 times in 10.** A 29% win rate is
+psychologically brutal to trade, and a strategy abandoned mid-drawdown returns
+nothing at all. **EMA21 is the defensible choice**: it triples return against
+production at *unchanged* drawdown, which is the rarest kind of improvement.
+
+#### What this does NOT establish
+
+- **Survivorship bias is untouched** (§9.11) and applies to all of these equally.
+- **The magnitude is uncertain** even though the direction is not — the
+  superadditive interaction and the FIT/TEST gap (1.37 vs 4.62) both argue for
+  expecting less than the headline.
+- **It has not been tested on the live production cadence** (daily × 3). Every
+  figure here is weekly × 3.
+
 ### 9.9 Still open
 
 - **Survivorship bias remains unquantified**, and §9.5 suggests it could be large.
