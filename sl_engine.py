@@ -396,6 +396,41 @@ def get_trade_book():
         return []
 
 
+def get_trade_history(from_date, to_date):
+    """Executed trade fills across a date range (YYYY-MM-DD, inclusive) —
+    unlike get_trade_book() which is TODAY-only, this covers any prior day.
+
+    Needed because reconcile_open_trades() detects a closed position from
+    "no longer in holdings", which can lag the actual fill by more than a
+    day (weekend, a missed/late reconcile run, etc.) — when that happens,
+    get_trade_book() has already rolled past the day the sell actually
+    happened and returns nothing for it, and confirm_fill() can't help
+    either (forever-order IDs never resolve via GET /v2/orders/{id} — see
+    get_trade_book()'s docstring). This is the same paginated
+    GET /v2/trades/{from}/{to}/{page} endpoint used for the one-off
+    historical backfill (reconcile_historical_trades.py), exposed here so
+    the nightly reconciliation can self-heal instead of getting stuck."""
+    token = get_token()
+    if not token:
+        return []
+    all_trades = []
+    for page in range(0, 20):
+        try:
+            r = session.get(f"https://api.dhan.co/v2/trades/{from_date}/{to_date}/{page}",
+                            headers={"access-token": token, "client-id": DHAN_CLIENT_ID}, timeout=20)
+            if r.status_code != 200:
+                break
+            data = r.json()
+            if not data:
+                break
+            all_trades.extend(data)
+        except Exception as e:
+            logger.error(f"❌ Get trade history page {page} failed: {e}")
+            break
+    logger.info(f"📊 Found {len(all_trades)} historical trade fills ({from_date} → {to_date})")
+    return all_trades
+
+
 # ==========================
 # DAILY CLOSE  (Dhan → yfinance → None)
 # ==========================

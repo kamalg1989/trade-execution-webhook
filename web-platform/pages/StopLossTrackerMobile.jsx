@@ -37,10 +37,14 @@ const TABLE_COLUMNS = [
   { key: 'status', label: 'Status', align: 'left' },
 ];
 
-const statusOf = (p) => (p.pendingExit ? 'EXIT_PENDING' : p.danger ? 'DANGER' : p.riskZone);
+const statusOf = (p) => (
+  p.recommendation?.action === 'EXIT_STALE' ? 'EXIT_STALE' :
+  p.pendingExit ? 'EXIT_PENDING' : p.danger ? 'DANGER' : p.riskZone
+);
 const statusClass = (s) => ({
   DANGER: 'text-red-300', CRITICAL: 'text-red-400', WARNING: 'text-yellow-300',
   SAFE: 'text-green-300', NO_SL: 'text-orange-400', EXIT_PENDING: 'text-blue-300',
+  EXIT_STALE: 'text-amber-300',
 }[s] || 'text-slate-300');
 
 const fmtNum = (v, decimals = 2) => (v == null ? '—' : Number(v).toFixed(decimals));
@@ -376,11 +380,16 @@ export default function StopLossTrackerMobile() {
               <div key={p.id} className={`rounded-lg p-3 ${rowTint(p)}`}>
                 <div className="flex justify-between items-start mb-1.5">
                   <div className="flex items-center gap-2"><p className="font-bold text-sm">{p.symbol}</p>{rBadge(p.rMultiple)}</div>
-                  <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${p.pendingExit ? 'bg-blue-900/60 text-blue-300' : p.danger ? zoneColor('DANGER') : zoneColor(p.riskZone)}`}>
-                    {p.pendingExit ? 'EXIT PENDING' : p.danger ? 'DANGER' : (p.slBasis || p.riskZone)}
+                  <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${p.recommendation?.action === 'EXIT_STALE' ? 'bg-amber-900/60 text-amber-300' : p.pendingExit ? 'bg-blue-900/60 text-blue-300' : p.danger ? zoneColor('DANGER') : zoneColor(p.riskZone)}`}>
+                    {p.recommendation?.action === 'EXIT_STALE' ? 'EXIT STALE' : p.pendingExit ? 'EXIT PENDING' : p.danger ? 'DANGER' : (p.slBasis || p.riskZone)}
                   </span>
                 </div>
-                {p.pendingExit ? (
+                {p.recommendation?.action === 'EXIT_STALE' ? (
+                  <div className="mb-2 text-[11px] font-semibold flex items-start gap-1 text-amber-300">
+                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />
+                    ⚠️ Exit order resting but price recovered above structural SL — cancel or review
+                  </div>
+                ) : p.pendingExit ? (
                   <div className="mb-2 text-[11px] font-semibold flex items-start gap-1 text-blue-300">
                     <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />
                     ⏳ Exit order already placed — resting at broker, fills at next open

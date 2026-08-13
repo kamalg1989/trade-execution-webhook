@@ -249,6 +249,35 @@ def reconcile_open_trades():
                         break
 
             if fill_price is None:
+                # Both of the above only ever see TODAY (trade book) or
+                # never resolve at all (forever-order IDs via GET /orders/
+                # {id}) — a position that closed on some earlier day this
+                # job didn't catch it on (confirmed 2026-08-13: KTKBANK sold
+                # before 2026-08-12's run and sat stuck with a "no exit price
+                # found" warning every run since) needs the actual historical
+                # trade book. Look back 30 days from the buy date, or 30 days
+                # from today if we don't even have that.
+                lookback_from = (buy_filled_at.date() if buy_filled_at else datetime.now().date())
+                from_date = lookback_from.isoformat()
+                to_date = datetime.now().date().isoformat()
+                try:
+                    hist = sl_engine.get_trade_history(from_date, to_date)
+                except Exception as e:
+                    hist = []
+                    logger.warning(f"reconcile_open_trades: trade history fetch failed for {symbol}: {e}")
+                hist_sells = [t for t in hist if str(t.get("securityId")) == sec_id
+                              and str(t.get("transactionType", "")).upper() == "SELL"]
+                if hist_sells:
+                    hist_sells.sort(key=lambda t: t.get("exchangeTime") or "")
+                    total_qty = sum(int(t.get("tradedQuantity") or 0) for t in hist_sells)
+                    total_val = sum(float(t.get("tradedPrice") or 0) * int(t.get("tradedQuantity") or 0) for t in hist_sells)
+                    if total_qty > 0:
+                        fill_price = round(total_val / total_qty, 4)
+                        order_id_used = hist_sells[-1].get("orderId")
+                        logger.info(f"Trade journal: {symbol} exit price recovered from trade history "
+                                    f"({len(hist_sells)} fill(s), {from_date}→{to_date}) @ {fill_price}")
+
+            if fill_price is None:
                 logger.warning(f"Trade journal: {symbol} no longer held but no exit price found yet "
                                 f"(will retry next run)")
                 continue

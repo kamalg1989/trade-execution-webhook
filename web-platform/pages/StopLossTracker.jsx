@@ -99,11 +99,11 @@ const TABLE_COLUMNS = [
 const actionOf = (p) => p.recommendation?.action || 'NONE';
 const actionLabel = (a) => ({
   EXIT: 'Exit', SET_SL: 'Set SL', SELL_HALF: 'Sell half', TRAIL: 'Trail', NONE: 'OK',
-  EXIT_PENDING: 'Exit pending', HALF_EXIT_PENDING: 'Half-exit pending',
+  EXIT_PENDING: 'Exit pending', HALF_EXIT_PENDING: 'Half-exit pending', EXIT_STALE: 'Exit stale',
 }[a] || a);
 const actionClass = (a) => ({
   EXIT: 'text-red-400', SET_SL: 'text-amber-400', SELL_HALF: 'text-emerald-400', TRAIL: 'text-green-400',
-  EXIT_PENDING: 'text-blue-400', HALF_EXIT_PENDING: 'text-blue-400',
+  EXIT_PENDING: 'text-blue-400', HALF_EXIT_PENDING: 'text-blue-400', EXIT_STALE: 'text-amber-400',
 }[a] || 'text-slate-400');
 
 const fmtNum = (v, decimals = 2) => (v == null ? '—' : Number(v).toFixed(decimals));
@@ -309,7 +309,8 @@ export default function StopLossTracker() {
   const trailDue = positions.filter(p => ['SELL_HALF', 'TRAIL'].includes(reco(p).action));
   const done = positions.filter(p => reco(p).action === 'NONE');
   const exitPending = positions.filter(p => ['EXIT_PENDING', 'HALF_EXIT_PENDING'].includes(reco(p).action));
-  const pending = exits.length + unprotected.length + trailDue.length;
+  const staleExits = positions.filter(p => reco(p).action === 'EXIT_STALE');
+  const pending = exits.length + unprotected.length + trailDue.length + staleExits.length;
 
   const btnStyle = {
     EXIT: 'bg-red-600 hover:bg-red-700',
@@ -349,6 +350,10 @@ export default function StopLossTracker() {
             {['EXIT_PENDING', 'HALF_EXIT_PENDING'].includes(r.action) ? (
               <span className="bg-blue-900/50 text-blue-300 font-semibold text-sm px-4 py-2.5 rounded-lg whitespace-nowrap flex items-center gap-2">
                 ⏳ {r.label}
+              </span>
+            ) : r.action === 'EXIT_STALE' ? (
+              <span className="bg-amber-900/50 text-amber-300 font-semibold text-sm px-4 py-2.5 rounded-lg whitespace-nowrap flex items-center gap-2" title="Use the ⋮ menu to cancel the stale exit order">
+                ⚠️ {r.label}
               </span>
             ) : r.action !== 'NONE' && (
               <button onClick={() => executeReco(p)} disabled={isBusy || (!r.trigger && r.action !== 'EXIT')}
@@ -464,6 +469,7 @@ export default function StopLossTracker() {
             {unprotected.length > 0 && <span className="text-[11px] px-2.5 py-1 rounded-full bg-amber-900/60 text-amber-300 font-semibold">{unprotected.length} unprotected</span>}
             {trailDue.length > 0 && <span className="text-[11px] px-2.5 py-1 rounded-full bg-green-900/60 text-green-300 font-semibold">{trailDue.length} trail due</span>}
             {exitPending.length > 0 && <span className="text-[11px] px-2.5 py-1 rounded-full bg-blue-900/60 text-blue-300 font-semibold">{exitPending.length} resting</span>}
+            {staleExits.length > 0 && <span className="text-[11px] px-2.5 py-1 rounded-full bg-amber-900/60 text-amber-300 font-semibold">{staleExits.length} stale exit</span>}
             <div className="flex bg-slate-900 border border-slate-600 rounded-lg p-0.5">
               <button onClick={() => setViewMode('cards')} title="Card view"
                 className={`p-1.5 rounded-md ${viewMode === 'cards' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}>
@@ -526,6 +532,7 @@ export default function StopLossTracker() {
         )}
 
         {viewMode === 'cards' && <Section title="STEP 1 — EXIT REQUIRED" color="text-red-400" items={exits} accent="border-l-red-500" />}
+        {viewMode === 'cards' && <Section title="⚠️ STALE EXIT — PRICE RECOVERED, REVIEW" color="text-amber-400" items={staleExits} accent="border-l-amber-500" />}
         {viewMode === 'cards' && <Section title="RESTING — ORDER PLACED, AWAITING FILL AT OPEN" color="text-blue-400" items={exitPending} accent="border-l-blue-500" />}
         {viewMode === 'cards' && <Section title="STEP 2 — PLACE INITIAL SL" color="text-amber-400" items={unprotected} accent="border-l-amber-500" />}
         {viewMode === 'cards' && <Section title="STEP 3 — BOOK PROFIT / TRAIL (R-LADDER)" color="text-green-400" items={trailDue} accent="border-l-green-500" />}
