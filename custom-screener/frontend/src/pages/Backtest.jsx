@@ -1914,6 +1914,7 @@ function TradeLog({ runId }) {
         <table className="w-full min-w-[980px] text-[11px]">
           <thead>
             <tr className="text-left text-[10px] text-slate-500 uppercase tracking-wide">
+              <th className="py-1.5 px-2"></th>
               <th className="py-1.5 px-2">Symbol</th>
               <th className="py-1.5 px-2">Rank</th>
               <th className="py-1.5 px-2">Signal</th>
@@ -1927,12 +1928,17 @@ function TradeLog({ runId }) {
               <SortableTh label="Unrealized" sortKey="unrealizedPnl" active={sortKey === 'unrealizedPnl'} dir={sortDir} onClick={toggleSort} />
               <th className="py-1.5 px-2">R</th>
               <th className="py-1.5 px-2">Status</th>
-              <th className="py-1.5 px-2"></th>
             </tr>
           </thead>
           <tbody>
             {rows.map((t) => (
               <tr key={t.id} className={`border-t border-slate-800 ${trackRowClass(t)}`}>
+                <td className="py-1 px-2">
+                  <button onClick={() => setChartTrade(t)} title="View chart"
+                    className="px-1.5 py-0.5 text-[10px] rounded bg-slate-800 border border-slate-600 text-slate-300 hover:text-white hover:bg-slate-700 whitespace-nowrap">
+                    📈 Chart
+                  </button>
+                </td>
                 <td className="py-1 px-2 text-slate-200 font-medium whitespace-nowrap">{t.symbol}</td>
                 <td className="py-1 px-2 text-slate-400 whitespace-nowrap">
                   {t.quantRank && <span className="text-sky-300 mr-1">Q{t.quantRank}</span>}
@@ -1954,12 +1960,6 @@ function TradeLog({ runId }) {
                 <td className={`py-1 px-2 font-semibold whitespace-nowrap ${pnlColor(t.unrealizedPnl)}`}>{t.status === 'OPEN' ? fmtInr(t.unrealizedPnl) : '—'}</td>
                 <td className="py-1 px-2 text-slate-300 whitespace-nowrap">{fmtR(t.rMultiple)}</td>
                 <td className={`py-1 px-2 whitespace-nowrap ${TRADE_STATUS_COLOR[t.status]}`}>{t.status}</td>
-                <td className="py-1 px-2">
-                  <button onClick={() => setChartTrade(t)} title="View chart"
-                    className="px-1.5 py-0.5 text-[10px] rounded bg-slate-800 border border-slate-600 text-slate-300 hover:text-white hover:bg-slate-700 whitespace-nowrap">
-                    📈 Chart
-                  </button>
-                </td>
               </tr>
             ))}
           </tbody>
