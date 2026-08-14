@@ -854,7 +854,7 @@ async def get_trade_chart(run_id: int, trade_id: int, request: Request):
     1R/2R/3R, target, entry/exit day markers. See backtest/chart.py."""
     from fastapi import Response
 
-    from backtest.chart import load_trade_window, render_trade_chart
+    from backtest.chart import load_trade_window, load_weekly_trail_sl_series, render_trade_chart
 
     pool = _pool(request)
     run = await pool.fetchrow("SELECT end_date FROM backtest_runs WHERE id = $1", run_id)
@@ -875,7 +875,17 @@ async def get_trade_chart(run_id: int, trade_id: int, request: Request):
     if df is None or df.empty:
         raise HTTPException(status_code=404, detail="No OHLCV data for this symbol/window")
 
-    png = render_trade_chart(df, trade, t["symbol"])
+    # WEEKLY_BOX_BREAKOUT trades trail via a weekly MACD-crossover ratchet
+    # (weekly_simulator.py), not a per-day EMA/R-ladder step — so their trail
+    # SL is worth plotting as the evolving line it actually was, not the
+    # single final hline every other strategy gets. See chart.py docstring.
+    trail_sl_series = None
+    if t.get("entry_type") == "WEEKLY_BOX_BREAKOUT" and t.get("entry_fill_date"):
+        trail_sl_series = await load_weekly_trail_sl_series(
+            pool, t["symbol"], t["entry_fill_date"], t["structural_sl"], anchor_end,
+        )
+
+    png = render_trade_chart(df, trade, t["symbol"], trail_sl_series=trail_sl_series)
     return Response(content=png, media_type="image/png")
 
 

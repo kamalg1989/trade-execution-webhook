@@ -1860,7 +1860,7 @@ function TradeLog({ runId }) {
       {error && <div className="text-sm text-red-300">{error}</div>}
 
       <div className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto">
-        <table className="w-full min-w-[1120px]">
+        <table className="w-full min-w-[1220px]">
           <thead>
             <tr className="text-left text-[11px] text-slate-500 uppercase tracking-wide">
               <th className="py-2 px-3">Symbol</th>
@@ -1870,6 +1870,7 @@ function TradeLog({ runId }) {
               <th className="py-2 px-3">Fill</th>
               <th className="py-2 px-3">Exit</th>
               <th className="py-2 px-3">Reason</th>
+              <th className="py-2 px-3">Trail SL</th>
               <th className="py-2 px-3">Allocation</th>
               <th className="py-2 px-3">Realized P&amp;L</th>
               <th className="py-2 px-3">Unrealized P&amp;L</th>
@@ -1891,6 +1892,12 @@ function TradeLog({ runId }) {
                 <td className="py-1.5 px-3 text-sm text-slate-300">{t.entryFillDate ? `${fmtInr(t.entryFillPrice)} (${t.entryFillDate})` : '—'}</td>
                 <td className="py-1.5 px-3 text-sm text-slate-300">{t.exitDate ? `${fmtInr(t.exitPrice)} (${t.exitDate})` : '—'}</td>
                 <td className="py-1.5 px-3 text-xs text-slate-400">{t.exitReason || '—'}</td>
+                <td className="py-1.5 px-3 text-sm text-amber-300">
+                  {t.trailSl != null ? fmtInr(t.trailSl) : '—'}
+                  {t.trailSl != null && t.structuralSl != null && Math.abs(t.trailSl - t.structuralSl) > 0.01 && (
+                    <span className="text-[10px] text-slate-500 ml-1">(moved)</span>
+                  )}
+                </td>
                 <td className="py-1.5 px-3 text-sm text-slate-300">{fmtInr(t.allocation)}</td>
                 <td className={`py-1.5 px-3 text-sm font-semibold ${pnlColor(t.realizedPnl)}`}>{fmtInr(t.realizedPnl)}</td>
                 <td className={`py-1.5 px-3 text-sm font-semibold ${pnlColor(t.unrealizedPnl)}`}>{t.status === 'OPEN' ? fmtInr(t.unrealizedPnl) : '—'}</td>
