@@ -65,6 +65,7 @@ call, garbage collected once that symbol's scan finishes.
 """
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import date
 
@@ -276,3 +277,76 @@ async def fundamentals_pass(pool, symbol: str, as_of: date) -> bool:
         return True
     latest, prior = rows[0], rows[1]
     return float(latest["revenue"]) >= float(prior["revenue"]) and float(latest["net_profit"]) >= float(prior["net_profit"])
+
+
+async def macd_ratchet_series(pool, symbol: str, upto: date) -> list[tuple[date, float | None]]:
+    """Weekly-MACD bearish-crossover ratchet level over a symbol's history
+    through `upto` — used by the daily engine's optional `macd_trail` exit
+    (see simulator.step_exit), a slower/less noise-sensitive alternative to
+    the EMA10/21/50 trails. Motivated by run #589 (see chat 2026-08-14):
+    the WEEKLY_BREAKOUT strategy's MACD-crossover trail let winners run to
+    +2.09R on average vs +1.15R for the daily strategy's EMA21 trail on the
+    same measure, because it only reacts to a full week's bearish close, not
+    daily noise.
+
+    Level starts at None (no crossover yet -> exit purely on structural
+    SL/other rules, this trail simply doesn't apply) and ratchets up (never
+    down) to that week's Low each time a fresh bearish crossover occurs —
+    exactly weekly_simulator.step_exit_weekly's ratchet rule, just without a
+    structural_sl anchor to start from (the daily engine's own structural SL
+    already exists independently; this trail only ever raises it further).
+
+    Returns one (week_end, level) pair per week (forward-filled), so a
+    caller can bisect straight to "the level as of any given day" without
+    re-walking the whole history — see macd_trail_level_at()."""
+    rows = await pool.fetch(
+        "SELECT week_end, open, high, low, close, volume FROM ohlcv_weekly "
+        "WHERE symbol = $1 AND week_end <= $2 ORDER BY week_end ASC",
+        symbol, upto,
+    )
+    if not rows:
+        return []
+    df = pd.DataFrame([dict(r) for r in rows])
+    df = df.rename(columns={"open": "Open", "high": "High", "low": "Low",
+                             "close": "Close", "volume": "Volume"})
+    df = df[["Open", "High", "Low", "Close", "Volume", "week_end"]].astype(
+        {"Open": float, "High": float, "Low": float, "Close": float, "Volume": float}
+    )
+    df = df.set_index("week_end")
+    df = compute_weekly_indicators(df)
+
+    out: list[tuple[date, float | None]] = []
+    level: float | None = None
+    prev_macd, prev_signal = None, None
+    for week_end, row in df.iterrows():
+        macd_line, macd_signal = row["macd_line"], row["macd_signal"]
+        if (pd.notna(macd_line) and pd.notna(macd_signal)
+                and prev_macd is not None and pd.notna(prev_macd) and pd.notna(prev_signal)):
+            was_bullish_or_flat = prev_macd >= prev_signal
+            now_bearish = macd_line < macd_signal
+            if was_bullish_or_flat and now_bearish:
+                new_level = round(float(row["Low"]), 2)
+                level = new_level if level is None else max(level, new_level)
+        d = week_end.date() if hasattr(week_end, "date") else week_end
+        out.append((d, level))
+        prev_macd, prev_signal = macd_line, macd_signal
+    return out
+
+
+def macd_trail_level_at(series: list[tuple[date, float | None]], day: date) -> float | None:
+    """Ratchet level CONFIRMED as of `day` — the level from the most recent
+    week whose week_end <= day, since that week's close (and therefore
+    whether it was a bearish crossover) is only known once the week is over.
+    `series` must be sorted ascending by week_end (macd_ratchet_series()
+    already returns it that way). O(log weeks) via bisect."""
+    if not series:
+        return None
+    week_ends = [d for d, _ in series]
+    i = bisect_left(week_ends, day)
+    # week_ends[i] is the first entry >= day. If it equals day exactly, that
+    # week's own close IS known by end of that trading day -- include it.
+    if i < len(week_ends) and week_ends[i] == day:
+        return series[i][1]
+    if i == 0:
+        return None
+    return series[i - 1][1]

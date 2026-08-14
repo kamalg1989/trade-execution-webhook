@@ -47,6 +47,15 @@ On top of that floor, independent toggles from exit_config:
   swing_trail          - SL ratchets up to the most recently confirmed swing
                          low (5-bar pivot, same definition as
                          ai_analysis/features/swings.py).
+  macd_trail           - SL ratchets up to the Low of the most recent week
+                         with a bearish weekly-MACD(12,26,9) crossover (see
+                         weekly_breakout.macd_ratchet_series) — reuses the
+                         WEEKLY_BREAKOUT strategy's own trail rule as an
+                         option here. Slower/coarser than the EMA trails
+                         (only reacts to a full week's close), which run
+                         #589's analysis found let winners run roughly 2x
+                         further on average (+2.09R vs +1.15R) than the
+                         daily EMA21 trail.
   failed_breakout_exit - close back below the entry trigger before the trade
                          has ever reached breakeven/half-booking invalidates
                          the setup outright — exit rather than wait for the
@@ -283,6 +292,16 @@ def step_exit(trade: SimTrade, day: object, bar: dict, exit_config: dict) -> Non
 
     if exit_config.get("swing_trail") and swing_low is not None:
         trade.current_sl = max(trade.current_sl, swing_low)
+
+    # Weekly-MACD-crossover trail (sql/028 era experiment, see
+    # weekly_breakout.macd_ratchet_series) -- a slower, less noise-sensitive
+    # alternative to the EMA10/21/50 trails above. `macd_trail_level` is
+    # None until the symbol's first bearish weekly crossover, so it never
+    # drags the stop down or interferes before it has anything to say.
+    if exit_config.get("macd_trail"):
+        macd_level = bar.get("macd_trail_level")
+        if macd_level is not None:
+            trade.current_sl = max(trade.current_sl, macd_level)
 
     if (exit_config.get("fixed_target") and not trade.half_booked
             and bar["high"] >= trade.target_price):

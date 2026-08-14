@@ -126,6 +126,33 @@ async def run_weekly_backtest(run: dict, pool) -> None:
     )
 
 
+async def raw_breakout_week_ends(pool, start_date: date, end_date: date) -> dict[str, list[date]]:
+    """Weekly consolidation-box breakout weeks per symbol — signal generation
+    ONLY (no fundamentals filter; a caller using this as a daily-engine entry
+    gate already has its own liquidity/quality gates on top, see
+    engine.py's require_weekly_box_breakout). Reuses this module's own Phase
+    A exactly (see run_weekly_backtest) so the definition of "breakout" can
+    never drift from the WEEKLY_BREAKOUT strategy it's borrowed from.
+    Returns {symbol: sorted [week_end, ...]} — symbols with zero signals are
+    simply absent, not an empty list."""
+    symbols = await _eligible_symbols(pool)
+    frames = await _load_all_weekly_frames(pool, symbols, end_date)
+    sem = asyncio.Semaphore(4)
+
+    async def _scan_one(sym: str):
+        async with sem:
+            return await asyncio.to_thread(_scan_symbol_signals, frames[sym], sym, start_date, end_date)
+
+    scanned = await asyncio.gather(*(_scan_one(s) for s in frames))
+    out: dict[str, list[date]] = {}
+    for sigs in scanned:
+        for sig in sigs:
+            out.setdefault(sig.symbol, []).append(sig.signal_week_end)
+    for sym in out:
+        out[sym].sort()
+    return out
+
+
 def _scan_symbol_signals(df: pd.DataFrame, symbol: str, start_date: date, end_date: date) -> list:
     """Only the weeks that pass wb._scan_prep()'s vectorized fast_pass gate
     are ever handed to wb.scan_breakout() — see the perf note in

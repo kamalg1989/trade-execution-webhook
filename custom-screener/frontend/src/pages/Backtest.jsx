@@ -31,6 +31,7 @@ const trackRowClass = (t) => {
 const EXIT_LABELS = [
   ['ema10_trail', 'EMA10 trail'], ['ema21_trail', 'EMA21 trail'], ['ema50_trail', 'EMA50 trail'],
   ['chandelier_trail', 'Chandelier trail'], ['swing_trail', 'Swing trail'],
+  ['macd_trail', 'MACD trail (weekly)'],
   ['failed_breakout_exit', 'Failed-breakout exit'], ['swing_break_exit', 'Swing-break exit'],
 ];
 const GATE_LABELS = [
@@ -128,6 +129,7 @@ function summarizeRunSettings(run) {
   if (run.entryBreadthMaxPct != null) tags.push(`breadth<${run.entryBreadthMaxPct}%`);
   if (run.entryBreadthRequireRising) tags.push('breadth↑');
   if (run.maxContractionRatio != null) tags.push(`VCP≤${run.maxContractionRatio}`);
+  if (run.requireWeeklyBoxBreakout) tags.push(`weekly-box≤${run.weeklyBoxLookbackDays ?? 10}d`);
   if (run.riskPerTradePct != null) tags.push(`risk${run.riskPerTradePct}%`);
   if (run.maxCapitalPerTradePct != null) tags.push(`cap${run.maxCapitalPerTradePct}%`);
   for (const [key, fmt] of GATE_LABELS) {
@@ -202,6 +204,9 @@ const DEFAULT_FORM = {
   ema21_trail: true,
   ema10_trail: false, ema50_trail: false, chandelier_trail: false, swing_trail: false,
   failed_breakout_exit: false, swing_break_exit: false,
+  // Untested experiments borrowed from WEEKLY_BREAKOUT — see run #589 note
+  // in the BREAKOUT-strategy panel below.
+  macd_trail: false, require_weekly_box_breakout: false, weekly_box_lookback_days: 10,
   // Production's sl_engine.py runs at 18:00 IST when Dhan rejects market
   // orders, so exits are forever orders that fill at the NEXT session's open,
   // not the trigger day's close. Defaulting this on is what production
@@ -459,6 +464,7 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
           trailing: f.trailing, fixed_target: f.fixed_target,
           ema10_trail: f.ema10_trail, ema21_trail: f.ema21_trail, ema50_trail: f.ema50_trail,
           chandelier_trail: f.chandelier_trail, swing_trail: f.swing_trail,
+          macd_trail: !!f.macd_trail,
           failed_breakout_exit: f.failed_breakout_exit, swing_break_exit: f.swing_break_exit,
           next_open_exit: !!f.next_open_exit,
         },
@@ -467,6 +473,8 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
         brokerage_per_order: Number(f.brokerage_per_order) || 0,
         chandelier_atr_mult: Number(f.chandelier_atr_mult) || 3.0,
         weekly_risk_pct: Number(f.weekly_risk_pct) || 1.0,
+        require_weekly_box_breakout: !!f.require_weekly_box_breakout,
+        weekly_box_lookback_days: Number(f.weekly_box_lookback_days) || 10,
         notes: f.notes || null,
       };
       const res = await createBacktestRun(payload);
@@ -977,6 +985,32 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
             hint="Beat the pure R-ladder on both windows — recommended on." />
           <Toggle label="Fixed target exit (2R)" checked={f.fixed_target} onChange={set('fixed_target')}
             hint="Caps winners; testing favoured leaving this off." />
+        </div>
+      </div>
+
+      {/* ---- New, not yet A/B tested — borrowed from WEEKLY_BREAKOUT (run #589 analysis) ---- */}
+      <div className="pt-3 border-t border-slate-800">
+        <div className="text-xs font-semibold text-amber-400 uppercase tracking-wide mb-2">
+          New — untested, from the weekly-strategy comparison
+        </div>
+        <p className="text-[11px] text-slate-500 mb-2 leading-snug">
+          Run #589 found the weekly strategy's MACD-crossover trail let winners
+          run to +2.09R on average vs +1.15R for the daily EMA21 trail, and its
+          box+volume-expansion breakout definition is coarser/less noisy than
+          the daily funnel's own gates. Both borrowed here as opt-in toggles —
+          not yet measured against the validated baseline above.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
+          <Toggle label="MACD trail (weekly)" checked={f.macd_trail} onChange={set('macd_trail')}
+            hint="SL ratchets to the low of the most recent weekly bearish-MACD-crossover — slower/coarser than EMA trails." />
+          <Toggle label="Require recent weekly box breakout" checked={f.require_weekly_box_breakout}
+            onChange={set('require_weekly_box_breakout')}
+            hint="Only enter if the symbol also had a WEEKLY_BREAKOUT-style box breakout recently." />
+          {f.require_weekly_box_breakout && (
+            <Field label="Lookback window (days)"
+              value={f.weekly_box_lookback_days} onChange={set('weekly_box_lookback_days')}
+              type="number" min="1" max="60" />
+          )}
         </div>
       </div>
 

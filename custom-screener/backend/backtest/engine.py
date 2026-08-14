@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import traceback
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from datetime import date
 
 import pandas as pd
@@ -20,6 +20,7 @@ from app.db import PgRepo
 from . import funnel
 from . import funnel_v2
 from . import funnel_stage2
+from . import weekly_breakout as wb
 from .ai_repo import BacktestAiRepo
 from .simulator import SimTrade, close_trade, step_exit, try_fill
 
@@ -287,6 +288,37 @@ async def _run(run: dict, pool) -> None:
     needs_ema_atr = any(exit_config.get(k) for k in
                          ("ema10_trail", "ema21_trail", "ema50_trail", "chandelier_trail"))
     needs_swing = any(exit_config.get(k) for k in ("swing_trail", "swing_break_exit"))
+    # sql/028-era experiment (run #589 analysis, 2026-08-14): reuse the
+    # WEEKLY_BREAKOUT strategy's own MACD-crossover trail rule as an option
+    # here. Cached per-symbol (not re-fetched every day) since a position can
+    # stay OPEN for months — see weekly_breakout.macd_ratchet_series.
+    needs_macd_trail = bool(exit_config.get("macd_trail"))
+    macd_series_cache: dict[str, list] = {}
+
+    # sql/028 — only allow a new entry if the symbol ALSO had a qualifying
+    # weekly consolidation-box breakout signal (same definition as the
+    # WEEKLY_BREAKOUT strategy) within the last N days. Precomputed once,
+    # up front, for the whole run/universe/window — identical in spirit to
+    # breadth_by_day/regime_by_day above, and reuses weekly_engine's own
+    # Phase A signal scan so the definition can never drift from the
+    # strategy it's borrowed from.
+    require_weekly_box = bool(run.get("require_weekly_box_breakout"))
+    weekly_box_lookback_days = int(run.get("weekly_box_lookback_days") or 10)
+    weekly_box_week_ends: dict[str, list] = {}
+    if require_weekly_box:
+        from . import weekly_engine
+        weekly_box_week_ends = await weekly_engine.raw_breakout_week_ends(pool, start_date, end_date)
+        logger.info("run %s: weekly-box entry gate precomputed for %d symbols",
+                    run_id, len(weekly_box_week_ends))
+
+    def _has_recent_weekly_breakout(sym: str, ref_day: date) -> bool:
+        weeks = weekly_box_week_ends.get(sym)
+        if not weeks:
+            return False
+        i = bisect_right(weeks, ref_day)  # count of weeks with week_end <= ref_day
+        if i == 0:
+            return False
+        return (ref_day - weeks[i - 1]).days <= weekly_box_lookback_days
 
     day_rows = await pool.fetch(
         "SELECT DISTINCT time::date AS d FROM ohlcv_data "
@@ -380,6 +412,18 @@ async def _run(run: dict, pool) -> None:
                         df = pd.DataFrame(hist)
                         bars_by_symbol[sym]["swing_low"] = last_swing_low(df)
 
+            if needs_macd_trail:
+                # Fetched/computed ONCE per symbol for the whole run (a
+                # position can stay OPEN for months — see run #589's HEXT
+                # trade, 1813 days), not re-derived every day it's active.
+                for sym in symbols_today:
+                    if sym not in bars_by_symbol:
+                        continue
+                    if sym not in macd_series_cache:
+                        macd_series_cache[sym] = await wb.macd_ratchet_series(pool, sym, end_date)
+                    bars_by_symbol[sym]["macd_trail_level"] = wb.macd_trail_level_at(
+                        macd_series_cache[sym], day)
+
         # 1. fills + exits for everything already active. State transitions
         #    (try_fill/step_exit) are synchronous/local, so do those first,
         #    then persist every trade CONCURRENTLY (asyncio.gather) instead
@@ -430,6 +474,14 @@ async def _run(run: dict, pool) -> None:
             )
         else:
             candidates = await funnel.build_candidates(pool, day, capital, sizing)
+        # sql/028 — require a recent weekly consolidation-box breakout too
+        # (see run #589's analysis, 2026-08-14: the weekly strategy's box +
+        # volume-expansion + 10-week-closing-high definition of "breakout" is
+        # coarser/less noisy than the daily funnel's own stage gates alone).
+        # Applied here, right after the funnel dispatch, so it's uniform
+        # across all three funnel paths and only ever REMOVES rows.
+        if require_weekly_box and candidates:
+            candidates = [c for c in candidates if _has_recent_weekly_breakout(c["symbol"], day)]
         # VCP contraction gate — drop candidates whose base isn't actually
         # tightening into the pivot. Applied after the funnel builds/ranks
         # candidates so it's uniform across all three funnel paths, and only
