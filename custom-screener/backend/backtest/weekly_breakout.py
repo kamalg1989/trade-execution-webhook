@@ -41,12 +41,34 @@ exact formulas — these are the concrete rules actually implemented):
     (the spec's "or a fresh bullish crossover near the zero line" is a
     softer alternative condition not encoded here — kept to the stricter,
     unambiguous reading).
+
+Performance (2026-08-14): the original scan was a pure-Python loop calling
+`df.iloc[idx]` and re-slicing/aggregating a 6-26-week box window PER WEEK PER
+SYMBOL — O(symbols x weeks x 21 box lengths) of live pandas scalar/slice ops,
+which is what made the full 2016-2026 run take ~10+ minutes just for the
+signal scan. `_scan_prep()` now does the equivalent work as vectorized numpy
+array ops, computed ONCE per symbol:
+  1. The five gate conditions (above/rising SMA, MACD, wick, closing-high)
+     become one boolean array via vectorized comparisons instead of a
+     per-week scalar row extraction + branch.
+  2. All 21 box-length top/bottom/volume-mean series become rolling-window
+     columns (`.rolling(n).max()/.min()/.mean()`, each O(weeks) in C, done
+     once) instead of 21 live slice+aggregate calls PER CANDIDATE WEEK.
+The per-week Python loop then only runs over weeks that already pass the
+fast gate array (usually a small fraction of total weeks), and does O(1)
+array lookups instead of O(21) live aggregations for the box search.
+These arrays are intentionally NOT stored back onto the shared indicator
+frame (the one held in weekly_engine.frames for the whole run) — that would
+add ~1GB of resident memory across ~2300 symbols on a box with under 2GB
+total RAM. They're plain numpy arrays local to one _scan_symbol_signals()
+call, garbage collected once that symbol's scan finishes.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
 
+import numpy as np
 import pandas as pd
 
 BOX_MIN_WEEKS = 6
@@ -107,55 +129,82 @@ def compute_weekly_indicators(weekly: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _find_box(df: pd.DataFrame, breakout_idx: int) -> tuple[int, int, float, float, float] | None:
+def _scan_prep(df: pd.DataFrame) -> tuple:
+    """Vectorized gate array + rolling box/volume/turnover lookups for one
+    symbol's full history — see the perf note in the module docstring.
+    Returns (fast_pass, rollups, turnover_4wk):
+      fast_pass    — bool ndarray, True where a week passes ALL of: above a
+                     rising 20W SMA, MACD bullish, wick ok, is the 10W
+                     closing high. NaN comparisons evaluate False, same as
+                     the original scalar pd.isna() checks they replace.
+      rollups      — {n: (box_top ndarray, box_bottom ndarray,
+                     avg_volume ndarray)} for n in BOX_MIN_WEEKS..BOX_MAX_WEEKS,
+                     each value at index i = the aggregate over the n weeks
+                     STRICTLY BEFORE i (via .shift(1)), matching the original
+                     df.iloc[breakout_idx-n:breakout_idx] window exactly.
+      turnover_4wk — ndarray, trailing-4-week avg(volume x close) ending the
+                     week before i (box-length independent, since the spec's
+                     turnover check is always `.tail(4)` of whatever box
+                     window was chosen).
+    """
+    sma20 = df["sma20"]
+    fast_pass = (
+        (df["Close"] > sma20)
+        & (sma20 > sma20.shift(SMA_RISING_LOOKBACK))
+        & (df["macd_line"] > df["macd_signal"])
+        & (df["upper_wick_pct"] < UPPER_WICK_MAX_PCT)
+        & (df["Close"] >= df["closing_high_10w"])
+    ).to_numpy()
+
+    rollups = {}
+    for n in range(BOX_MIN_WEEKS, BOX_MAX_WEEKS + 1):
+        rollups[n] = (
+            df["body_hi"].rolling(n).max().shift(1).to_numpy(),
+            df["body_lo"].rolling(n).min().shift(1).to_numpy(),
+            df["Volume"].rolling(n).mean().shift(1).to_numpy(),
+        )
+    turnover_4wk = ((df["Volume"] * df["Close"]).rolling(4).mean().shift(1)).to_numpy()
+    return fast_pass, rollups, turnover_4wk
+
+
+def _find_box(rollups: dict, breakout_idx: int) -> tuple[int, int, float, float, float] | None:
     """Among window lengths BOX_MIN_WEEKS..BOX_MAX_WEEKS ending the week
     immediately before `breakout_idx`, returns the LONGEST window whose
     body-based depth is <= BOX_MAX_DEPTH_PCT, as
     (box_start_idx, box_weeks, box_top, box_bottom, depth_pct), or None if
-    no length qualifies."""
+    no length qualifies. O(21) array lookups against the rollups precomputed
+    once per symbol by _scan_prep(), instead of 21 live slice+aggregate
+    calls per candidate week."""
     best = None
     for n in range(BOX_MIN_WEEKS, BOX_MAX_WEEKS + 1):
         start = breakout_idx - n
         if start < 0:
             break
-        window = df.iloc[start:breakout_idx]
-        box_top = window["body_hi"].max()
-        box_bottom = window["body_lo"].min()
-        if box_bottom <= 0:
+        box_top, box_bottom, _ = rollups[n]
+        top, bottom = box_top[breakout_idx], box_bottom[breakout_idx]
+        if np.isnan(top) or np.isnan(bottom) or bottom <= 0:
             continue
-        depth = (box_top - box_bottom) / box_bottom
+        depth = (top - bottom) / bottom
         if depth <= BOX_MAX_DEPTH_PCT:
-            best = (start, n, float(box_top), float(box_bottom), float(depth))
+            best = (start, n, float(top), float(bottom), float(depth))
     return best
 
 
-def scan_breakout(df: pd.DataFrame, breakout_idx: int, symbol: str) -> BoxBreakoutSignal | None:
+def scan_breakout(df: pd.DataFrame, breakout_idx: int, symbol: str,
+                   rollups: dict, turnover_4wk) -> BoxBreakoutSignal | None:
     """Evaluates whether week `breakout_idx` (0-based row in the enriched
-    weekly frame) is a valid breakout-candle signal. Returns None if any
-    gate fails. `df` must already have compute_weekly_indicators() columns."""
-    if breakout_idx < BOX_MIN_WEEKS + SMA_TREND_WEEKS:
-        return None
-    row = df.iloc[breakout_idx]
-    close, high, low = float(row["Close"]), float(row["High"]), float(row["Low"])
-    sma20 = row["sma20"]
-    if pd.isna(sma20) or close <= sma20:
-        return None
-    sma_prior = df["sma20"].iloc[breakout_idx - SMA_RISING_LOOKBACK]
-    if pd.isna(sma_prior) or sma20 <= sma_prior:
-        return None  # SMA must be rising
+    weekly frame) is a valid breakout-candle signal, given the rollups/
+    turnover_4wk precomputed by _scan_prep(). Callers should pre-filter to
+    weeks where _scan_prep()'s fast_pass[breakout_idx] is True — this
+    function does NOT re-check SMA/MACD/wick/closing-high itself (those are
+    fully vectorized already), only the box search, breakout-size, volume-
+    expansion, turnover and stop/entry math, none of which can be reduced to
+    a single array op since the box length is chosen per-candidate."""
+    close = float(df["Close"].iat[breakout_idx])
+    high = float(df["High"].iat[breakout_idx])
+    low = float(df["Low"].iat[breakout_idx])
 
-    macd_line, macd_signal = row["macd_line"], row["macd_signal"]
-    if pd.isna(macd_line) or pd.isna(macd_signal) or macd_line <= macd_signal:
-        return None
-
-    if row["upper_wick_pct"] >= UPPER_WICK_MAX_PCT:
-        return None
-
-    closing_high_10w = row["closing_high_10w"]
-    if pd.isna(closing_high_10w) or close < closing_high_10w:
-        return None  # must itself BE the 10-week closing high
-
-    box = _find_box(df, breakout_idx)
+    box = _find_box(rollups, breakout_idx)
     if box is None:
         return None
     box_start, box_weeks, box_top, box_bottom, depth = box
@@ -164,14 +213,14 @@ def scan_breakout(df: pd.DataFrame, breakout_idx: int, symbol: str) -> BoxBreako
     if not (BREAKOUT_MIN_PCT <= pct_above <= BREAKOUT_MAX_PCT):
         return None
 
-    box_window = df.iloc[box_start:breakout_idx]
-    avg_box_volume = box_window["Volume"].mean()
-    if avg_box_volume <= 0 or row["Volume"] < avg_box_volume * VOLUME_MIN_EXPANSION:
+    volume = float(df["Volume"].iat[breakout_idx])
+    avg_box_volume = rollups[box_weeks][2][breakout_idx]
+    if np.isnan(avg_box_volume) or avg_box_volume <= 0 or volume < avg_box_volume * VOLUME_MIN_EXPANSION:
         return None
 
     # Liquidity floor (substitute for market cap — see module docstring).
-    avg_turnover = (box_window["Volume"] * box_window["Close"]).tail(4).mean()
-    if pd.isna(avg_turnover) or avg_turnover < MIN_WEEKLY_TURNOVER_RS:
+    avg_turnover = turnover_4wk[breakout_idx]
+    if np.isnan(avg_turnover) or avg_turnover < MIN_WEEKLY_TURNOVER_RS:
         return None
 
     entry_trigger = round(close * 1.005, 2)  # small buffer above breakout week's close
@@ -182,8 +231,9 @@ def scan_breakout(df: pd.DataFrame, breakout_idx: int, symbol: str) -> BoxBreako
     if initial_stop >= entry_trigger:
         return None  # degenerate — stop above/at entry, skip
 
+    week_end = df.index[breakout_idx]
     return BoxBreakoutSignal(
-        symbol=symbol, signal_week_end=row.name.date() if hasattr(row.name, "date") else row.name,
+        symbol=symbol, signal_week_end=week_end.date() if hasattr(week_end, "date") else week_end,
         box_start_idx=box_start, box_weeks=box_weeks, box_top=box_top, box_bottom=box_bottom,
         box_depth_pct=depth, breakout_close=close, breakout_high=high, breakout_low=low,
         entry_trigger=entry_trigger, initial_stop=initial_stop,

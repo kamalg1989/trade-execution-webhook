@@ -127,14 +127,24 @@ async def run_weekly_backtest(run: dict, pool) -> None:
 
 
 def _scan_symbol_signals(df: pd.DataFrame, symbol: str, start_date: date, end_date: date) -> list:
+    """Only the weeks that pass wb._scan_prep()'s vectorized fast_pass gate
+    are ever handed to wb.scan_breakout() — see the perf note in
+    weekly_breakout.py's module docstring. `candidates` is np.nonzero() on a
+    numpy bool array, so it's already in ascending index order; the
+    end_date `break` below is therefore still a valid short-circuit."""
+    if len(df) <= MIN_HISTORY_WEEKS:
+        return []
+    fast_pass, rollups, turnover_4wk = wb._scan_prep(df)
+    candidates = fast_pass[MIN_HISTORY_WEEKS:].nonzero()[0] + MIN_HISTORY_WEEKS
+
     out = []
-    for idx in range(MIN_HISTORY_WEEKS, len(df)):
+    for idx in candidates:
         week_end = df.index[idx]
         if week_end < start_date:
             continue
         if week_end > end_date:
             break
-        sig = wb.scan_breakout(df, idx, symbol)
+        sig = wb.scan_breakout(df, idx, symbol, rollups, turnover_4wk)
         if sig is not None:
             out.append(sig)
     return out
