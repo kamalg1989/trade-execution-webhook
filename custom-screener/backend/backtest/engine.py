@@ -62,6 +62,14 @@ async def run_backtest(run_id: int, pool) -> None:
             from .positional_engine import run_positional
             await run_positional(r, pool)
             return
+        if (r.get("strategy") or "BREAKOUT") == "WEEKLY_BREAKOUT":
+            # Weekly Consolidation Breakout strategy — entirely separate
+            # timeframe/indicators/exit mechanism, see weekly_engine.py.
+            # Writes the same backtest_trades rows (quant_rank=1), so it
+            # shows up in the existing run/trade-log/equity-curve surfaces.
+            from .weekly_engine import run_weekly_backtest
+            await run_weekly_backtest(r, pool)
+            return
         await _run(r, pool)
     except Exception as e:
         logger.exception("Backtest run %s failed", run_id)

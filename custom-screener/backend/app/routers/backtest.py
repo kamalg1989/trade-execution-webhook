@@ -66,7 +66,10 @@ class RunCreate(BaseModel):
     end_date: date
     # sql/020 — which strategy this run executes. BREAKOUT is everything the
     # engine did before; POSITIONAL is the low-turnover momentum book.
-    strategy: str = Field("BREAKOUT", pattern="^(BREAKOUT|POSITIONAL|PORTFOLIO)$")
+    # WEEKLY_BREAKOUT (sql/026) is the weekly consolidation-box strategy —
+    # entirely separate engine (backtest/weekly_engine.py), only shares this
+    # column + backtest_trades.
+    strategy: str = Field("BREAKOUT", pattern="^(BREAKOUT|POSITIONAL|PORTFOLIO|WEEKLY_BREAKOUT)$")
     # Positional-only knobs (ignored for BREAKOUT runs).
     pos_momentum: str = Field("pct_chg_6m", pattern="^pct_chg_(3m|6m|1y)$")
     pos_rebalance_days: int = Field(21, ge=1, le=250)
@@ -183,6 +186,9 @@ class RunCreate(BaseModel):
     regime_ma_days: int | None = None
     regime_confirm_days: int | None = None
     regime_action: str | None = Field(None, pattern="^(block|half)$")
+    # sql/026 — WEEKLY_BREAKOUT-only. Account-risk % per trade for the
+    # weekly strategy's own position-sizing formula (ignored otherwise).
+    weekly_risk_pct: float = Field(1.0, ge=0.1, le=10)
 
 
 def _pool(request: Request):
@@ -231,11 +237,12 @@ async def create_run(body: RunCreate, request: Request):
            pos_min_turnover_cr, pos_sl_mode, pos_sl_pct,
            pf_vol_mode, pf_vol_floor, pf_max_per_stock_pct, pf_max_per_sector_pct,
            pf_max_stocks_per_sector, pf_require_sector, pf_dd_throttle_at,
-           signal_cadence, signal_scan_day, entry_v2_buy_points, base_stage_ladder)
+           signal_cadence, signal_scan_day, entry_v2_buy_points, base_stage_ladder,
+           weekly_risk_pct)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
                 $21,$22,$23,$24,$25,$26,$27,$28,
                 $29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,
-                $57,$58,$59,$60,$61,$62,$63,$64,$65,$66,$67,$68,$69)
+                $57,$58,$59,$60,$61,$62,$63,$64,$65,$66,$67,$68,$69,$70)
         RETURNING id
         """,
         body.start_date, body.end_date, body.track_mode, body.capital,
@@ -267,6 +274,7 @@ async def create_run(body: RunCreate, request: Request):
         body.pf_require_sector, body.pf_dd_throttle_at,
         body.signal_cadence, body.signal_scan_day,
         body.entry_v2_buy_points, body.base_stage_ladder,
+        body.weekly_risk_pct,
     )
     run_id = row["id"]
 
@@ -491,6 +499,7 @@ def _run_to_json(r) -> dict:
         "signalScanDay": d.get("signal_scan_day") or "last",
         "entryV2BuyPoints": bool(d.get("entry_v2_buy_points")),
         "baseStageLadder": d.get("base_stage_ladder") or "prod",
+        "weeklyRiskPct": _f(d.get("weekly_risk_pct")),
         # Path metrics — NULL on non-PORTFOLIO runs, which the UI reads as
         # "no path metrics" rather than as zeros.
         "pfCagrPct": _f(d.get("pf_cagr_pct")),

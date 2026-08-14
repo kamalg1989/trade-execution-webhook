@@ -103,6 +103,16 @@ function summarizeRunSettings(run) {
     if (run.pfRequireSector) t.push('⚠ sector-only universe');
     return t;
   }
+  if (run.strategy === 'WEEKLY_BREAKOUT') {
+    // Weekly consolidation-box breakout — an entirely different engine, so
+    // summarise on its own terms (risk %, max picks/day, resting window)
+    // rather than falling through to the daily-funnel gate tags below.
+    const t = ['WEEKLY_BREAKOUT', `risk${run.weeklyRiskPct ?? 1.0}%`];
+    if (run.maxPicksPerTrack != null && run.maxPicksPerTrack !== 3) t.push(`top${run.maxPicksPerTrack}/wk`);
+    if (run.restingWindowDays != null) t.push(`rest:${run.restingWindowDays}wk`);
+    if (run.stackingGuard) t.push(`stack:${run.stackingGuardMode}`);
+    return t;
+  }
   if (run.maxPicksPerTrack != null && run.maxPicksPerTrack !== 3) tags.push(`top${run.maxPicksPerTrack}/track`);
   if (run.strategy === 'POSITIONAL') {
     // Positional runs share almost none of the breakout knobs, so summarise
@@ -192,8 +202,20 @@ const DEFAULT_FORM = {
   ema21_trail: true,
   ema10_trail: false, ema50_trail: false, chandelier_trail: false, swing_trail: false,
   failed_breakout_exit: false, swing_break_exit: false,
+  // Production's sl_engine.py runs at 18:00 IST when Dhan rejects market
+  // orders, so exits are forever orders that fill at the NEXT session's open,
+  // not the trigger day's close. Defaulting this on is what production
+  // actually does — close-fill modelling understates it by ~Rs.90k/decade.
+  next_open_exit: true,
   safety_sl_pct: 10.0, slippage_pct: 0.10, brokerage_per_order: 0.0, chandelier_atr_mult: 3.0,
   max_capital_per_trade_pct: '', min_position_value: '',
+  // Signal cadence — how often the funnel scans for new candidates. Daily is
+  // production today; weekly is what the validated exit-ladder-fix preset uses.
+  signal_cadence: 'daily', signal_scan_day: 'last',
+  entry_v2_buy_points: false, base_stage_ladder: 'prod',
+  // WEEKLY_BREAKOUT-only — account-risk % per trade for that strategy's own
+  // position-sizing formula (see backtest/weekly_breakout.py size_position()).
+  weekly_risk_pct: 1.0,
   notes: '',
 };
 
@@ -201,6 +223,33 @@ const DEFAULT_FORM = {
 // ahead across BOTH validation windows (2025 + 2026) in the sweeps; "Production
 // today" is what screen_gpt.py actually runs right now, for A/B comparison.
 const PRESETS = {
+  validated: {
+    label: '⭐ Validated: exit-ladder fix', hint: 'Best return/drawdown found so far — '
+        + 'weekly scans, EMA21 trail, no half-booking or R-ladder',
+    values: {
+      // The B5 finding (BACKTEST_REPORT §9.19): removing half-booking and the
+      // R-ladder ratchet from production's exit ladder roughly TRIPLES return
+      // at unchanged drawdown. Won BOTH halves of a FIT(2016-20)/TEST(2021-26)
+      // split — the only candidate in this project's history to do that.
+      // Full-window result: Rs.315,597 total P&L, Rs.51,203 maxDD, ret/DD
+      // 6.16, win rate 34.1%, 1,287 trades over 2016-2026 at weekly cadence /
+      // 3 picks per scan.
+      strategy: 'BREAKOUT', track_mode: 'QUANT', capital: 400000,
+      max_picks_per_track: 3, stage2_base_stage_max_allowed: 2,
+      risk_per_trade_pct: 0.25, max_capital_per_trade_pct: 10.0,
+      safety_sl_pct: 10.0,
+      stacking_guard: true, stacking_guard_mode: 'OVERRIDE',
+      signal_cadence: 'weekly', signal_scan_day: 'last',
+      entry_v2_buy_points: false, base_stage_ladder: 'prod',
+      // The exit ladder itself — this is the whole finding.
+      breakeven: true, half_booking: false, trailing: false, fixed_target: false,
+      ema21_trail: true, ema10_trail: false, ema50_trail: false,
+      chandelier_trail: false, swing_trail: false,
+      failed_breakout_exit: false, swing_break_exit: false,
+      next_open_exit: true,
+      start_date: '2016-01-01', end_date: '2026-08-08',
+    },
+  },
   best: {
     label: 'Best known', hint: 'Winner across both validation windows',
     values: {
@@ -265,6 +314,18 @@ const PRESETS = {
       pos_top_n: 20, pos_buffer_n: 40, pos_min_turnover_cr: 5, capital: 400000,
       pos_sl_pct: 0, pf_vol_mode: 'none', pf_dd_throttle_at: 0,
       pf_max_stocks_per_sector: 99, pf_max_per_sector_pct: 100,
+      start_date: '2016-01-01', end_date: '2026-08-08',
+    },
+  },
+  weeklyBreakout: {
+    label: 'Weekly consolidation breakout',
+    hint: 'Weekly-timeframe box-breakout strategy — 20W SMA trend filter, '
+        + 'weekly MACD momentum + trailing exit, 6+ week consolidation box, '
+        + '5-20% breakout above resistance. See weekly_breakout.py for the full spec.',
+    values: {
+      strategy: 'WEEKLY_BREAKOUT', capital: 400000, weekly_risk_pct: 1.0,
+      max_picks_per_track: 3, resting_window_days: 2, restIndefinite: false,
+      stacking_guard: true, stacking_guard_mode: 'SKIP',
       start_date: '2016-01-01', end_date: '2026-08-08',
     },
   },
@@ -389,17 +450,23 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
         risk_per_trade_pct: numOrNull(f.risk_per_trade_pct),
         max_capital_per_trade_pct: numOrNull(f.max_capital_per_trade_pct),
         min_position_value: Number(f.min_position_value) || 0,
+        signal_cadence: f.signal_cadence || 'daily',
+        signal_scan_day: f.signal_scan_day || 'last',
+        entry_v2_buy_points: !!f.entry_v2_buy_points,
+        base_stage_ladder: f.base_stage_ladder || 'prod',
         exit_config: {
           breakeven: f.breakeven, half_booking: f.half_booking,
           trailing: f.trailing, fixed_target: f.fixed_target,
           ema10_trail: f.ema10_trail, ema21_trail: f.ema21_trail, ema50_trail: f.ema50_trail,
           chandelier_trail: f.chandelier_trail, swing_trail: f.swing_trail,
           failed_breakout_exit: f.failed_breakout_exit, swing_break_exit: f.swing_break_exit,
+          next_open_exit: !!f.next_open_exit,
         },
         safety_sl_pct: Number(f.safety_sl_pct) || 10.0,
         slippage_pct: Number(f.slippage_pct) || 0,
         brokerage_per_order: Number(f.brokerage_per_order) || 0,
         chandelier_atr_mult: Number(f.chandelier_atr_mult) || 3.0,
+        weekly_risk_pct: Number(f.weekly_risk_pct) || 1.0,
         notes: f.notes || null,
       };
       const res = await createBacktestRun(payload);
@@ -490,6 +557,44 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
         </div>
       )}
 
+      {/* ---- VALIDATED EXIT-LADDER-FIX QUICK START ------------------------
+          The B5 finding (BACKTEST_REPORT §9.19): dropping half-booking and the
+          R-ladder ratchet from production's exit ladder ~triples return at
+          unchanged drawdown, and is the first candidate to win BOTH halves of
+          a FIT/TEST split. Surfaced here as its own one-click config, same as
+          the frozen portfolio above, rather than buried in advanced toggles. */}
+      {!advanced && (
+        <div className="rounded-lg border border-sky-800/60 bg-sky-950/20 p-3">
+          <div className="flex items-start justify-between gap-3 mb-2">
+            <div>
+              <div className="text-sm font-semibold text-sky-300">
+                ⭐ Validated: exit-ladder fix
+              </div>
+              <div className="text-[11px] text-slate-400 leading-snug mt-0.5">
+                Breakout strategy, weekly scans (3 picks/scan), EMA21 trail,
+                <b> no</b> half-booking, <b>no</b> R-ladder ratchet — just breakeven
+                at +1R then trail. Best return/drawdown found so far and the only
+                config to win both the FIT(2016–20) and TEST(2021–26) halves.
+                Full window (2016–2026): ₹315,597 total P&amp;L on ₹4L capital,
+                ₹51,203 max drawdown, ret/DD 6.16, 34.1% win rate, 1,287 trades.
+              </div>
+            </div>
+            <button type="button"
+              onClick={() => { setF((s0) => ({ ...s0, ...PRESETS.validated.values })); setAdvanced(true); }}
+              className="shrink-0 text-xs px-3 py-1.5 rounded bg-sky-700 hover:bg-sky-600 text-white font-medium">
+              Load validated config
+            </button>
+          </div>
+          <div className="text-[11px] text-amber-300/80 leading-snug">
+            ⚠ Not yet live-traded and not yet re-tested on production's actual
+            daily×3 cadence (this was validated on weekly×3). Magnitude may be
+            smaller than 6.16 in practice — see BACKTEST_REPORT §9.19 &ldquo;What
+            this does NOT establish.&rdquo; Loading it opens the advanced panel
+            below so every field is visible and editable before you run it.
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between gap-2 pt-1">
         <button type="button" onClick={() => setAdvanced((v) => !v)}
           className="text-xs px-2.5 py-1 rounded border border-slate-600 bg-slate-800 hover:bg-slate-700 text-slate-200">
@@ -533,6 +638,7 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
             <option value="BREAKOUT">Breakout (swing) — not allocated</option>
             <option value="POSITIONAL">Positional momentum (annual-reset)</option>
             <option value="PORTFOLIO">Portfolio (continuous, compounding)</option>
+            <option value="WEEKLY_BREAKOUT">Weekly consolidation breakout</option>
           </select>
         </label>
         <label className="text-xs text-slate-400 flex flex-col gap-1">
@@ -654,6 +760,44 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
         </div>
       )}
 
+      {f.strategy === 'WEEKLY_BREAKOUT' && (
+        <div className="pt-3 border-t border-slate-800">
+          <div className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-1">
+            Weekly consolidation breakout
+          </div>
+          <p className="text-[11px] text-slate-500 mb-2 leading-snug">
+            Weekly candles only. Entry needs: price above a RISING 20-week SMA,
+            weekly MACD(12,26,9) line above signal, a 6-26 week consolidation
+            box (body-based, depth ≤35%) breaking out 5-20% above resistance on
+            expanded volume, upper wick &lt;50%, and a fresh 10-week closing
+            high. Exit trails via MACD bearish-crossover (stop ratchets to the
+            crossover week&apos;s low, closes on a later breach). Market-cap
+            filter is substituted with a liquidity floor — no ₹ market-cap data
+            exists for a 2016-2026 backtest without look-ahead bias (see
+            weekly_breakout.py docstring).
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
+            <Field label="Account risk % per trade"
+              hint="Position size = Equity × risk% / stop-distance%. Spec suggests 1-1.5%."
+              value={f.weekly_risk_pct} onChange={set('weekly_risk_pct')}
+              type="number" min="0.1" max="10" step="0.1" />
+            <Field label="Max new picks per week"
+              value={f.max_picks_per_track} onChange={set('max_picks_per_track')}
+              type="number" min="1" max="10" />
+            <Field label="Entry order resting window (weeks)"
+              hint="Buy-stop above breakout week's close expires unfilled after this many weeks."
+              value={f.resting_window_days} onChange={set('resting_window_days')}
+              type="number" min="1" max="12" />
+          </div>
+          <label className="flex items-start gap-2 mt-3 text-xs text-slate-400">
+            <input type="checkbox" checked={!!f.stacking_guard}
+              onChange={(e) => set('stacking_guard')(e.target.checked)}
+              className="mt-0.5" />
+            <span>Block a new signal in a symbol already held (stacking guard)</span>
+          </label>
+        </div>
+      )}
+
       {f.strategy === 'POSITIONAL' && (
         <div className="pt-3 border-t border-slate-800">
           <div className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-1">
@@ -763,12 +907,34 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
         <div className="space-y-2">
           <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Position &amp; entry</div>
           <label className="text-xs text-slate-400 flex items-center gap-2">
-            Picks per day
+            Scan cadence
+            <select value={f.signal_cadence} onChange={(e) => set('signal_cadence')(e.target.value)}
+              className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm">
+              <option value="daily">Daily (production)</option>
+              <option value="weekly">Weekly (validated exit-ladder-fix preset)</option>
+              <option value="monthly">Monthly</option>
+            </select>
+          </label>
+          {f.signal_cadence !== 'daily' && (
+            <label className="text-xs text-slate-400 flex items-center gap-2 ml-6">
+              Scan on
+              <select value={f.signal_scan_day} onChange={(e) => set('signal_scan_day')(e.target.value)}
+                className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm">
+                <option value="last">Last session of period</option>
+                <option value="first">First session of period</option>
+              </select>
+            </label>
+          )}
+          <label className="text-xs text-slate-400 flex items-center gap-2">
+            Picks per scan
             <input type="number" min="1" max="10" value={f.max_picks_per_track}
               onChange={(e) => set('max_picks_per_track')(e.target.value)}
               className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
-            <span className="text-slate-500">(2 tested best)</span>
+            <span className="text-slate-500">(2 daily / 3 weekly tested best)</span>
           </label>
+          <Toggle label="Fill at next session's open" checked={f.next_open_exit}
+            onChange={set('next_open_exit')}
+            hint="What production actually does — sl_engine.py runs at 18:00 IST after Dhan stops accepting market orders. Close-fill modelling understates production by ~₹90k/decade." />
           <label className="text-xs text-slate-400 flex items-center gap-2">
             Safety SL floor
             <input type="number" min="1" max="30" step="0.5" value={f.safety_sl_pct}
@@ -838,6 +1004,21 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
             <Toggle label="Failed-breakout exit" checked={f.failed_breakout_exit} onChange={set('failed_breakout_exit')}
               hint="Helps a bad regime, but gave up ~65% of the good regime's gains." />
             <Toggle label="Swing-low break exit" checked={f.swing_break_exit} onChange={set('swing_break_exit')} />
+          </div>
+          <div className="space-y-2">
+            <div className="text-[11px] text-slate-500">Entry gate — REJECTED, kept for A/B reference only</div>
+            <Toggle label="Buy-point gate (pullback/H&S/breakout/retest)" checked={f.entry_v2_buy_points}
+              onChange={set('entry_v2_buy_points')}
+              hint="Tested and rejected: daily ₹194k→₹102k, weekly ₹99k→₹37k, worse win rate and drawdown both times. The gate selects stocks already at breakout points, which fills MORE trades at worse prices." />
+            <label className="text-xs text-slate-400 flex items-center gap-2">
+              Base-stage sizing ladder
+              <select value={f.base_stage_ladder} onChange={(e) => set('base_stage_ladder')(e.target.value)}
+                className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm">
+                <option value="prod">Production (base-stage multiplier only)</option>
+                <option value="v2">v2 ladder (1.00/0.75/0.50/0.25×)</option>
+              </select>
+              <span className="text-[11px] text-slate-500 leading-snug ml-1">Cost 18% of return for 9% less drawdown — worse than proportional.</span>
+            </label>
           </div>
           <div className="space-y-2">
             <div className="text-[11px] text-slate-500">Sizing &amp; cost realism</div>
