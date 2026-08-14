@@ -1824,9 +1824,30 @@ function TradeChartModal({ runId, trade, onClose }) {
 
 // ---------------- Trade log ----------------
 
+// Numeric columns the trade log can be sorted by, plus how to read the
+// value off a trade row. Missing values sort as 0 rather than dropping to
+// the bottom regardless of direction (a PENDING trade's null realizedPnl
+// isn't "worse" than a Rs.1 loss, it's just not applicable yet).
+const TRADE_SORT_KEYS = {
+  realizedPnl: (t) => t.realizedPnl ?? 0,
+  unrealizedPnl: (t) => t.unrealizedPnl ?? 0,
+};
+
+function SortableTh({ label, sortKey, active, dir, onClick, className = '' }) {
+  return (
+    <th className={`py-1.5 px-2 cursor-pointer select-none whitespace-nowrap hover:text-slate-300 ${className}`}
+      onClick={() => onClick(sortKey)} title="Click to sort">
+      {label}{active ? (dir === 'desc' ? ' ▼' : ' ▲') : ''}
+    </th>
+  );
+}
+
 function TradeLog({ runId }) {
   const [track, setTrack] = useState('');
   const [status, setStatus] = useState('');
+  const [exitReason, setExitReason] = useState('');
+  const [sortKey, setSortKey] = useState(null);
+  const [sortDir, setSortDir] = useState('desc');
   const [trades, setTrades] = useState([]);
   const [error, setError] = useState('');
   const [chartTrade, setChartTrade] = useState(null);
@@ -1838,9 +1859,28 @@ function TradeLog({ runId }) {
     return () => { alive = false; };
   }, [runId, track, status]);
 
+  const exitReasons = useMemo(
+    () => Array.from(new Set(trades.map((t) => t.exitReason).filter(Boolean))).sort(),
+    [trades],
+  );
+
+  const rows = useMemo(() => {
+    let out = exitReason ? trades.filter((t) => t.exitReason === exitReason) : trades;
+    if (sortKey) {
+      const get = TRADE_SORT_KEYS[sortKey];
+      out = [...out].sort((a, b) => (sortDir === 'asc' ? get(a) - get(b) : get(b) - get(a)));
+    }
+    return out;
+  }, [trades, exitReason, sortKey, sortDir]);
+
+  const toggleSort = (key) => {
+    if (sortKey === key) setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'));
+    else { setSortKey(key); setSortDir('desc'); }
+  };
+
   return (
     <div className="space-y-3">
-      <div className="flex gap-3">
+      <div className="flex flex-wrap gap-3">
         <select value={track} onChange={(e) => setTrack(e.target.value)}
           className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
           <option value="">All tracks</option>
@@ -1855,57 +1895,68 @@ function TradeLog({ runId }) {
           <option value="CLOSED">Closed</option>
           <option value="SUPERSEDED">Superseded</option>
         </select>
+        <select value={exitReason} onChange={(e) => setExitReason(e.target.value)}
+          className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
+          <option value="">All exit reasons</option>
+          {exitReasons.map((r) => <option key={r} value={r}>{r}</option>)}
+        </select>
+        {sortKey && (
+          <button onClick={() => { setSortKey(null); setSortDir('desc'); }}
+            className="px-2 py-1.5 text-xs rounded bg-slate-800 border border-slate-600 text-slate-400 hover:text-white">
+            Clear sort
+          </button>
+        )}
       </div>
 
       {error && <div className="text-sm text-red-300">{error}</div>}
 
       <div className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto">
-        <table className="w-full min-w-[1220px]">
+        <table className="w-full min-w-[980px] text-[11px]">
           <thead>
-            <tr className="text-left text-[11px] text-slate-500 uppercase tracking-wide">
-              <th className="py-2 px-3">Symbol</th>
-              <th className="py-2 px-3">Rank</th>
-              <th className="py-2 px-3">Signal</th>
-              <th className="py-2 px-3">Entry</th>
-              <th className="py-2 px-3">Fill</th>
-              <th className="py-2 px-3">Exit</th>
-              <th className="py-2 px-3">Reason</th>
-              <th className="py-2 px-3">Trail SL</th>
-              <th className="py-2 px-3">Allocation</th>
-              <th className="py-2 px-3">Realized P&amp;L</th>
-              <th className="py-2 px-3">Unrealized P&amp;L</th>
-              <th className="py-2 px-3">R</th>
-              <th className="py-2 px-3">Status</th>
-              <th className="py-2 px-3"></th>
+            <tr className="text-left text-[10px] text-slate-500 uppercase tracking-wide">
+              <th className="py-1.5 px-2">Symbol</th>
+              <th className="py-1.5 px-2">Rank</th>
+              <th className="py-1.5 px-2">Signal</th>
+              <th className="py-1.5 px-2">Entry</th>
+              <th className="py-1.5 px-2">Fill</th>
+              <th className="py-1.5 px-2">Exit</th>
+              <th className="py-1.5 px-2">Reason</th>
+              <th className="py-1.5 px-2">Trail SL</th>
+              <th className="py-1.5 px-2">Alloc</th>
+              <SortableTh label="Realized" sortKey="realizedPnl" active={sortKey === 'realizedPnl'} dir={sortDir} onClick={toggleSort} />
+              <SortableTh label="Unrealized" sortKey="unrealizedPnl" active={sortKey === 'unrealizedPnl'} dir={sortDir} onClick={toggleSort} />
+              <th className="py-1.5 px-2">R</th>
+              <th className="py-1.5 px-2">Status</th>
+              <th className="py-1.5 px-2"></th>
             </tr>
           </thead>
           <tbody>
-            {trades.map((t) => (
+            {rows.map((t) => (
               <tr key={t.id} className={`border-t border-slate-800 ${trackRowClass(t)}`}>
-                <td className="py-1.5 px-3 text-sm text-slate-200">{t.symbol}</td>
-                <td className="py-1.5 px-3 text-xs text-slate-400">
+                <td className="py-1 px-2 text-slate-200 font-medium whitespace-nowrap">{t.symbol}</td>
+                <td className="py-1 px-2 text-slate-400 whitespace-nowrap">
                   {t.quantRank && <span className="text-sky-300 mr-1">Q{t.quantRank}</span>}
                   {t.aiRank && <span className="text-purple-300">AI{t.aiRank}</span>}
                 </td>
-                <td className="py-1.5 px-3 text-sm text-slate-300">{t.signalDate}</td>
-                <td className="py-1.5 px-3 text-sm text-slate-300">{fmtInr(t.entryTriggerPrice)}</td>
-                <td className="py-1.5 px-3 text-sm text-slate-300">{t.entryFillDate ? `${fmtInr(t.entryFillPrice)} (${t.entryFillDate})` : '—'}</td>
-                <td className="py-1.5 px-3 text-sm text-slate-300">{t.exitDate ? `${fmtInr(t.exitPrice)} (${t.exitDate})` : '—'}</td>
-                <td className="py-1.5 px-3 text-xs text-slate-400">{t.exitReason || '—'}</td>
-                <td className="py-1.5 px-3 text-sm text-amber-300">
+                <td className="py-1 px-2 text-slate-300 whitespace-nowrap">{t.signalDate}</td>
+                <td className="py-1 px-2 text-slate-300 whitespace-nowrap">{fmtInr(t.entryTriggerPrice)}</td>
+                <td className="py-1 px-2 text-slate-300 whitespace-nowrap">{t.entryFillDate ? `${fmtInr(t.entryFillPrice)} (${t.entryFillDate})` : '—'}</td>
+                <td className="py-1 px-2 text-slate-300 whitespace-nowrap">{t.exitDate ? `${fmtInr(t.exitPrice)} (${t.exitDate})` : '—'}</td>
+                <td className="py-1 px-2 text-slate-400 whitespace-nowrap">{t.exitReason || '—'}</td>
+                <td className="py-1 px-2 text-amber-300 whitespace-nowrap">
                   {t.trailSl != null ? fmtInr(t.trailSl) : '—'}
                   {t.trailSl != null && t.structuralSl != null && Math.abs(t.trailSl - t.structuralSl) > 0.01 && (
-                    <span className="text-[10px] text-slate-500 ml-1">(moved)</span>
+                    <span className="text-slate-500 ml-1">(moved)</span>
                   )}
                 </td>
-                <td className="py-1.5 px-3 text-sm text-slate-300">{fmtInr(t.allocation)}</td>
-                <td className={`py-1.5 px-3 text-sm font-semibold ${pnlColor(t.realizedPnl)}`}>{fmtInr(t.realizedPnl)}</td>
-                <td className={`py-1.5 px-3 text-sm font-semibold ${pnlColor(t.unrealizedPnl)}`}>{t.status === 'OPEN' ? fmtInr(t.unrealizedPnl) : '—'}</td>
-                <td className="py-1.5 px-3 text-sm text-slate-300">{fmtR(t.rMultiple)}</td>
-                <td className={`py-1.5 px-3 text-sm ${TRADE_STATUS_COLOR[t.status]}`}>{t.status}</td>
-                <td className="py-1.5 px-3 text-sm">
+                <td className="py-1 px-2 text-slate-300 whitespace-nowrap">{fmtInr(t.allocation)}</td>
+                <td className={`py-1 px-2 font-semibold whitespace-nowrap ${pnlColor(t.realizedPnl)}`}>{fmtInr(t.realizedPnl)}</td>
+                <td className={`py-1 px-2 font-semibold whitespace-nowrap ${pnlColor(t.unrealizedPnl)}`}>{t.status === 'OPEN' ? fmtInr(t.unrealizedPnl) : '—'}</td>
+                <td className="py-1 px-2 text-slate-300 whitespace-nowrap">{fmtR(t.rMultiple)}</td>
+                <td className={`py-1 px-2 whitespace-nowrap ${TRADE_STATUS_COLOR[t.status]}`}>{t.status}</td>
+                <td className="py-1 px-2">
                   <button onClick={() => setChartTrade(t)} title="View chart"
-                    className="px-2 py-1 text-xs rounded bg-slate-800 border border-slate-600 text-slate-300 hover:text-white hover:bg-slate-700">
+                    className="px-1.5 py-0.5 text-[10px] rounded bg-slate-800 border border-slate-600 text-slate-300 hover:text-white hover:bg-slate-700 whitespace-nowrap">
                     📈 Chart
                   </button>
                 </td>
@@ -1913,7 +1964,7 @@ function TradeLog({ runId }) {
             ))}
           </tbody>
         </table>
-        {!trades.length && <div className="text-sm text-slate-500 px-3 py-4">No trades match these filters.</div>}
+        {!rows.length && <div className="text-sm text-slate-500 px-3 py-4">No trades match these filters.</div>}
       </div>
 
       <TradeChartModal runId={runId} trade={chartTrade} onClose={() => setChartTrade(null)} />
