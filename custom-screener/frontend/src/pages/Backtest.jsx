@@ -1572,7 +1572,18 @@ function KpiCard({ title, stats, color, capital }) {
           <div className={`text-lg font-bold ${pnlColor(stats.unrealizedPnl)}`}>{fmtInr(stats.unrealizedPnl)}<span className="text-sm">{fmtPct(stats.unrealizedPnlPct)}</span></div>
           <div className="text-[10px] text-slate-400 uppercase">Unrealized ({stats.openPositionCount ?? 0} open)</div>
         </div>
-        <div><div className="text-lg font-bold text-amber-300">{fmtInr(stats.maxDrawdown)}</div><div className="text-[10px] text-slate-400 uppercase">Max drawdown</div></div>
+        <div>
+          <div className="text-lg font-bold text-amber-300">{fmtInr(stats.maxDrawdown)}</div>
+          <div className="text-[10px] text-slate-400 uppercase">
+            Max drawdown{stats.maxDrawdownPct != null ? ` (−${stats.maxDrawdownPct.toFixed(1)}%)` : ''}
+          </div>
+        </div>
+        <div>
+          <div className={`text-lg font-bold ${stats.cagrPct == null ? 'text-slate-500' : stats.cagrPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+            {stats.cagrPct == null ? '—' : `${stats.cagrPct.toFixed(1)}%`}
+          </div>
+          <div className="text-[10px] text-slate-400 uppercase">CAGR</div>
+        </div>
         <div className="col-span-2">
           <div className="text-lg font-bold text-slate-100">{fmtInr(stats.deployed)}</div>
           <div className="text-[10px] text-slate-400 uppercase">Capital deployed (open positions)</div>

@@ -590,6 +590,40 @@ def _track_stats(closed: list[dict], open_trades: list[dict], price_map: dict, r
     }
 
 
+def _equity_path_stats(equities: list[float], capital: float, start_date: date, end_date: date) -> dict:
+    """Max drawdown % and CAGR % off a (possibly sparse) mark-to-market equity
+    series — capital + cumulative realized P&L + that day's unrealized P&L,
+    one point per day that had a fill/exit/open position (see equity_curve in
+    get_summary). Sparse is fine for drawdown: the series only needs to be
+    correct at the marks it has, and a strategy with long flat stretches (no
+    position open) can't set a new peak or trough there anyway.
+
+    Applies to every non-PORTFOLIO strategy (BREAKOUT, POSITIONAL, and
+    WEEKLY_BREAKOUT) — previously only PORTFOLIO runs got CAGR/maxDD because
+    those are computed by the engine's own continuous-equity simulation; this
+    reconstructs the equivalent off the generic realized+unrealized series so
+    every strategy can be judged on the same path metrics, not just total P&L.
+    CAGR anchors on the run's actual start/end dates, not the sparse marks,
+    since a fixed-capital (non-compounding) strategy sitting flat at capital
+    for stretches is real information, not a gap to skip over.
+    """
+    peak = capital
+    max_dd_pct = 0.0
+    for eq in equities:
+        peak = max(peak, eq)
+        if peak > 0:
+            max_dd_pct = max(max_dd_pct, (peak - eq) / peak * 100)
+    final_equity = equities[-1] if equities else capital
+    days = (end_date - start_date).days
+    cagr_pct = None
+    if days > 0 and capital > 0 and final_equity > 0:
+        cagr_pct = (((final_equity / capital) ** (365.25 / days)) - 1) * 100
+    return {
+        "maxDrawdownPct": round(max_dd_pct, 2),
+        "cagrPct": round(cagr_pct, 2) if cagr_pct is not None else None,
+    }
+
+
 async def _daily_unrealized(pool, run_id: int, end_date: date,
                             all_quant: bool = False) -> dict:
     """Per-day mark-to-market snapshot (not cumulative — a level, not a
@@ -732,6 +766,17 @@ async def get_summary(run_id: int, request: Request):
             "shortWindow": (run["end_date"] - run["start_date"]).days < 730,
         }
 
+    quant_stats = _track_stats(closed, open_trades, price_map, "quant_rank", capital)
+    ai_stats = _track_stats(closed, open_trades, price_map, "ai_rank", capital)
+    # DD%/CAGR off the same equity_curve used for the chart — skipped for
+    # PORTFOLIO, which already gets these (and the engine's true compounding
+    # equity, not this fixed-capital reconstruction) via `portfolio` above.
+    if not is_pf:
+        quant_equity = [capital + e["quantRealizedCumPnl"] + e["quantUnrealizedPnl"] for e in equity_curve]
+        ai_equity = [capital + e["aiRealizedCumPnl"] + e["aiUnrealizedPnl"] for e in equity_curve]
+        quant_stats.update(_equity_path_stats(quant_equity, capital, run["start_date"], run["end_date"]))
+        ai_stats.update(_equity_path_stats(ai_equity, capital, run["start_date"], run["end_date"]))
+
     return {
         "runId": run_id,
         "capital": capital,
@@ -739,8 +784,8 @@ async def get_summary(run_id: int, request: Request):
         "portfolio": portfolio,
         "portfolioEquity": ([{"date": d, "equity": v} for d, v in pf_curve]
                             if pf_curve else None),
-        "quant": _track_stats(closed, open_trades, price_map, "quant_rank", capital),
-        "ai": _track_stats(closed, open_trades, price_map, "ai_rank", capital),
+        "quant": quant_stats,
+        "ai": ai_stats,
         "openCount": len(open_trades),
         "pendingCount": len([t for t in trades if t["status"] == "PENDING"]),
         "totalDeployed": total_deployed,
