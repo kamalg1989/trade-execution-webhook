@@ -196,6 +196,14 @@ async def run_positional(run: dict, pool) -> None:
     top_n = int(run.get("pos_top_n") or 10)
     buffer_n = max(int(run.get("pos_buffer_n") or 20), top_n)
     min_turnover = float(run.get("pos_min_turnover_cr") or 5.0)
+    # 2026-08-24 liquidity audit: adv_position_cap_pct is accepted by the API and
+    # honoured by position_sizing.py / engine.py / weekly_engine.py, but THIS engine
+    # never read it. Large-capital POSITIONAL runs (#1115 at Rs25L, #1116 at Rs1Cr)
+    # therefore sized single positions up to ~22% of a day's turnover and reported
+    # fills that could not be executed. None = inert, so every prior run reproduces
+    # byte-identically; set it (e.g. 2.0) for any run above ~Rs10L capital.
+    adv_cap_pct = (float(run["adv_position_cap_pct"])
+                   if run.get("adv_position_cap_pct") is not None else None)
     sl_mode = (run.get("pos_sl_mode") or "none").lower()
     if sl_mode not in VALID_SL_MODES:
         raise ValueError(f"unsupported pos_sl_mode {sl_mode!r}")
@@ -250,6 +258,10 @@ async def run_positional(run: dict, pool) -> None:
         "brokerage_per_order": float(run["brokerage_per_order"]),
     }
     slip = cfg["slippage_pct"]
+    # exit_slippage_pct: same story as adv_position_cap_pct — supported by the other
+    # engines, ignored here. Falls back to the symmetric slippage when unset.
+    exit_slip = (float(run["exit_slippage_pct"])
+                 if run.get("exit_slippage_pct") is not None else slip)
 
     days = [r["d"] for r in await pool.fetch(
         "SELECT DISTINCT time::date AS d FROM ohlcv_data "
@@ -510,7 +522,7 @@ async def run_positional(run: dict, pool) -> None:
     async def close_out(sym: str, h: dict, when, exit_px: float, reason: str) -> None:
         """Single exit path for both stops and rotations, so a stopped trade is
         costed, R-scored and recorded exactly like any other."""
-        net = round(exit_px * (1 - slip / 100), 2)
+        net = round(exit_px * (1 - exit_slip / 100), 2)
         pnl = (net - h["entry"]) * h["qty"] - _leg_cost(net * h["qty"], True, cfg)
         # gross_pnl is the FRICTIONLESS result — raw price to raw price, no
         # slippage and no charges — which is what the summary subtracts net from
@@ -931,6 +943,15 @@ async def run_positional(run: dict, pool) -> None:
                 fills = {r["symbol"]: r for r in await pool.fetch(
                     "SELECT symbol, open FROM ohlcv_data WHERE symbol = ANY($1) AND time::date=$2",
                     adds, nxt)}
+                # Average daily traded value at the SIGNAL date, used to cap each
+                # position at adv_cap_pct% of it (turnover_1m_avg_cr is in Rs crore).
+                adv_cr: dict = {}
+                if adv_cap_pct is not None:
+                    adv_cr = {r["symbol"]: float(r["t"]) for r in await pool.fetch(
+                        "SELECT symbol, turnover_1m_avg_cr AS t FROM stock_indicators "
+                        "WHERE symbol = ANY($1) AND indicator_date = $2 "
+                        "AND turnover_1m_avg_cr IS NOT NULL",
+                        adds, day)}
                 # Equal weight across the FULL book. compounding_enabled (opt-in,
                 # 2026-08-18) sizes off running equity = capital + realized P&L
                 # instead of the original FIXED capital. Without it a 15-year
@@ -967,6 +988,11 @@ async def run_positional(run: dict, pool) -> None:
                     if f is None or float(f["open"]) <= 0:
                         continue
                     alloc = (base_capital * inv_w[sym]) if sym in inv_w else alloc_equal
+                    if adv_cap_pct is not None:
+                        adv_value = adv_cr.get(sym)
+                        if adv_value is None or adv_value <= 0:
+                            continue      # no liquidity read -> cannot size safely
+                        alloc = min(alloc, adv_value * 1e7 * adv_cap_pct / 100.0)
                     gross = float(f["open"])
                     entry = round(gross * (1 + slip / 100), 2)
                     qty = int(alloc / entry)
