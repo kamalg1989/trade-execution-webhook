@@ -137,6 +137,7 @@ async def _aggregate_snapshot(con, d: date):
 
 
 async def run(frm: date, to: date, lookback_bars: int | None = None,
+              symbols_source: str | None = None,
               reaggregate_only: bool = False):
     import asyncpg
     pool = await asyncpg.create_pool(
@@ -160,6 +161,16 @@ async def run(frm: date, to: date, lookback_bars: int | None = None,
                 log.info("Re-aggregation done.")
                 return
             symbols = await _universe(con)
+            # 2026-08-24: optional subset filter. Added for the survivorship
+            # backfill -- recomputing 15 years for the whole universe to pick up
+            # 244 recovered delisted symbols would be hours of needless work.
+            only = symbols_source
+            if only == 'bhavcopy':
+                rows = await con.fetch("SELECT DISTINCT symbol FROM ohlcv_data "
+                                       "WHERE data_source='nse_bhavcopy' ORDER BY symbol")
+                keep = {r['symbol'] for r in rows}
+                symbols = [x for x in symbols if x in keep]
+                log.info("Restricted to %d bhavcopy-recovered symbols", len(symbols))
             mode = f"tail={lookback_bars} bars" if lookback_bars else "full series"
             log.info("Universe: %d symbols. Computing %s..%s (%s)",
                      len(symbols), frm, to, mode)
@@ -211,6 +222,8 @@ def _parse_args():
     p.add_argument("--backfill-years", type=int)
     p.add_argument("--lookback-bars", type=int,
                    help="load only the last N bars per symbol (fast single-date/narrow computes; needs >=260)")
+    p.add_argument("--symbols-source", choices=["bhavcopy"],
+                   help="restrict the universe to symbols with this data_source")
     p.add_argument("--reaggregate-only", action="store_true",
                    help="rebuild market_snapshot from existing stock_indicators (no OHLCV reload)")
     p.add_argument("--self-heal-days", type=int, default=SELF_HEAL_DAYS,
@@ -237,7 +250,9 @@ def main():
     if lookback is not None and lookback < 260:
         log.warning("lookback-bars %d too small for 252-day windows; bumping to 300", lookback)
         lookback = 300
-    asyncio.run(run(frm, to, lookback_bars=lookback, reaggregate_only=a.reaggregate_only))
+    asyncio.run(run(frm, to, lookback_bars=lookback,
+                    symbols_source=a.symbols_source,
+                    reaggregate_only=a.reaggregate_only))
 
 
 if __name__ == "__main__":
