@@ -42,6 +42,9 @@ TRADE_DSN = os.getenv("DATABASE_URL",
 
 TOP_N, BUFFER_N, REBALANCE_DAYS = 30, 60, 21
 MIN_CLOSE, MIN_TURNOVER_CR, MAX_ATR_PCT = 20.0, 8.0, 5.0
+# MIN_TURNOVER_CR stays the basis for breadth200() so the b200 smile is measured
+# on ONE consistent universe across all books; the candidate filter is per-book
+# via cfg['min_turnover_cr'] (2026-08-24 improvement campaign).
 START_CAPITAL = 400_000.0
 COST_PCT = 0.32              # per leg, matches the backtest friction model
 
@@ -62,6 +65,18 @@ BOOKS = {
                         rel_atr_mult=1.5, trim_pct=33.0,
                         smile_cut=0.5, cash_yield_pct=6.0,
                         etf=dict(symbol="GOLDBEES", pct=20.0, ma=200)),
+    # 2026-08-24 improvement campaign (173 runs). Combo + two changes:
+    #   min_turnover_cr 8 -> 6   and   id_score_w 0 -> 0.5 (frog-in-the-pan).
+    # Backtest #30420 vs #2889 at Rs20L/15.6y: 25.19/22.90/Calmar 1.100 vs
+    # 23.11/24.51/0.943; worst 12m -14.52% vs -17.58%; 493 vs 752 days underwater.
+    # This book exists to FORWARD-test that, because the turnover half selects
+    # less liquid names -- exactly where the 269 missing delisted stocks lived --
+    # so part of the backtested gain may be survivorship bias. Live data has no
+    # survivorship bias, which is the whole point of running it forward.
+    "combo_v2":    dict(min_ifp=0.38, w52=1.0, earn_gate_days=14,
+                        rel_atr_mult=1.5, trim_pct=33.0,
+                        smile_cut=0.5, cash_yield_pct=6.0,
+                        min_turnover_cr=6.0, id_score_w=0.5),
 }
 SMILE_LO, SMILE_HI = 45.0, 60.0
 
@@ -118,23 +133,33 @@ CREATE TABLE IF NOT EXISTS paper2_equity (
 
 
 def rank_sql(cfg) -> str:
+    turn = cfg.get("min_turnover_cr", MIN_TURNOVER_CR)
+    id_w = cfg.get("id_score_w", 0.0)
+    # LEFT JOIN so a missing ID can never drop a candidate; missing values are
+    # neutralised at the cross-sectional mean in score_composite (mirrors
+    # positional_engine.py).
+    id_sel = ", d.id_126 AS id_val" if id_w else ""
+    id_join = ("LEFT JOIN stock_information_discreteness d "
+               "  ON d.symbol = s.symbol AND d.indicator_date = s.indicator_date"
+               if id_w else "")
     return f"""
-        SELECT symbol, close, sma_200, atr_pct, base_range_20d_pct,
-               dist_52w_high_pct,
-               pct_chg_1m, pct_chg_3m, pct_chg_6m, pct_chg_1y
-        FROM stock_indicators
-        WHERE indicator_date = $1
-          AND turnover_1m_avg_cr >= {MIN_TURNOVER_CR}
-          AND close > sma_200
-          AND pct_chg_1y IS NOT NULL AND pct_chg_6m IS NOT NULL
-          AND pct_chg_3m IS NOT NULL
-          AND atr_pct IS NOT NULL AND atr_pct > 0 AND atr_pct <= {MAX_ATR_PCT}
-          AND ifp_score >= {cfg['min_ifp']}
-          AND close >= {MIN_CLOSE}
+        SELECT s.symbol, s.close, s.sma_200, s.atr_pct, s.base_range_20d_pct,
+               s.dist_52w_high_pct,
+               s.pct_chg_1m, s.pct_chg_3m, s.pct_chg_6m, s.pct_chg_1y{id_sel}
+        FROM stock_indicators s
+        {id_join}
+        WHERE s.indicator_date = $1
+          AND s.turnover_1m_avg_cr >= {turn}
+          AND s.close > s.sma_200
+          AND s.pct_chg_1y IS NOT NULL AND s.pct_chg_6m IS NOT NULL
+          AND s.pct_chg_3m IS NOT NULL
+          AND s.atr_pct IS NOT NULL AND s.atr_pct > 0 AND s.atr_pct <= {MAX_ATR_PCT}
+          AND s.ifp_score >= {cfg['min_ifp']}
+          AND s.close >= {MIN_CLOSE}
     """
 
 
-def score_composite(rows: list, w52: float) -> list:
+def score_composite(rows: list, w52: float, id_w: float = 0.0) -> list:
     """Mirror of positional_engine._score_composite: z(12-1)+z(6m)+z(3m)+
     z(6m/atr)+z(-base_range) [+ w52*z(dist_52w_high)]. Cross-sectional within
     this day only; clipped +/-3; missing optional values neutralised at mean."""
@@ -151,14 +176,21 @@ def score_composite(rows: list, w52: float) -> list:
             if w52:
                 dh = r["dist_52w_high_pct"]
                 f.append(float(dh) if dh is not None else None)
+            if id_w:
+                # NEGATED: a CONTINUOUS-information name (low/negative ID) must
+                # score positively. Same convention as positional_engine.py.
+                idv = r["id_val"]
+                f.append(-float(idv) if idv is not None else None)
             recs.append({"symbol": r["symbol"], "close": float(r["close"]),
                          "atr": atr, "f": f})
         except (TypeError, ValueError, ZeroDivisionError):
             continue
     if len(recs) < 5:
         return []
-    nf = 5 + (1 if w52 else 0)
-    weights = [1.0, 1.0, 1.0, 1.0, 1.0] + ([w52] if w52 else [])
+    nf = 5 + (1 if w52 else 0) + (1 if id_w else 0)
+    weights = ([1.0, 1.0, 1.0, 1.0, 1.0]
+               + ([w52] if w52 else [])
+               + ([id_w] if id_w else []))
     for i in range(4, nf):                     # neutralise optional factors
         vals = [x["f"][i] for x in recs if x["f"][i] is not None]
         mu_i = st.fmean(vals) if vals else 0.0
@@ -287,8 +319,19 @@ async def cmd_rebalance(mk, tr, book: str, force=False, as_of=None) -> None:
                      book, sess, last, REBALANCE_DAYS)
             return
 
+    if cfg.get("id_score_w"):
+        id_max = await mk.fetchval(
+            "SELECT max(indicator_date) FROM stock_information_discreteness")
+        if id_max is None or id_max < d:
+            log.error("[%s] ABORT: information-discreteness table is stale "
+                      "(current through %s, need %s). Run "
+                      "market_data_setup/scripts/compute_information_discreteness.py. "
+                      "Proceeding would silently neutralise the frog-in-the-pan "
+                      "factor and make this book identical to combo.", book, id_max, d)
+            return
+
     rows = await mk.fetch(rank_sql(cfg), d)
-    ranked = score_composite(rows, cfg["w52"])
+    ranked = score_composite(rows, cfg["w52"], cfg.get("id_score_w", 0.0))
     if not ranked:
         log.warning("[%s] no candidates on %s — aborting", book, d)
         return
