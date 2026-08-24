@@ -34,7 +34,8 @@ build_index_proxies() below:
                15-year history is required to validate alongside the breakout
                book. Equal-weight (not cap-weight) is also the honest benchmark
                here, since the breakout book has a documented small-cap tilt.
-  NIFTYBEES / JUNIORBEES / SETFNIF50 — real tradeable ETFs, 2019 onward.
+  NIFTYBEES / JUNIORBEES / SETFNIF50 / GOLDBEES / SETFGOLD / BANKBEES /
+  NV20BEES / MIDSELIETF / BSE500IETF / CPSEETF — real tradeable ETFs, 2019 onward.
                Used to CHECK the synthetic proxy over the overlapping window;
                a live implementation would trade these.
 
@@ -108,7 +109,8 @@ async def build_index_proxies(pool, force: bool = False) -> None:
         """
     )
     # Real ETFs, straight from their own close series (already tradeable levels).
-    for etf in ("NIFTYBEES", "JUNIORBEES", "SETFNIF50"):
+    for etf in ("NIFTYBEES", "JUNIORBEES", "SETFNIF50", "GOLDBEES", "SETFGOLD",
+                "BANKBEES", "NV20BEES", "MIDSELIETF", "BSE500IETF", "CPSEETF"):
         await pool.execute(
             """
             INSERT INTO index_proxy_daily (proxy, d, level, n_constituents)

@@ -1,0 +1,266 @@
+<title>Positional Momentum Playbook</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;600;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --bg: #FAFBF9; --card: #F0F4F1; --ink: #1A2420; --muted: #57685F;
+    --line: #D6DFD8; --accent: #0E7A5F; --accent-soft: #E2EFE9;
+    --amber: #B4560F; --amber-soft: #F6E9DC;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #101613; --card: #182019; --ink: #E4ECE6; --muted: #92A49A;
+      --line: #2A352E; --accent: #43BB94; --accent-soft: #16332A;
+      --amber: #E0904D; --amber-soft: #372414;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #101613; --card: #182019; --ink: #E4ECE6; --muted: #92A49A;
+    --line: #2A352E; --accent: #43BB94; --accent-soft: #16332A;
+    --amber: #E0904D; --amber-soft: #372414;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: "Source Sans 3", system-ui, sans-serif;
+    font-size: 17px; line-height: 1.6; margin: 0;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 48px 24px 80px; }
+  h1, h2, h3 { font-family: Spectral, Georgia, serif; text-wrap: balance; line-height: 1.2; }
+  h1 { font-size: 2.3rem; font-weight: 700; margin: 0 0 8px; }
+  h2 { font-size: 1.45rem; font-weight: 600; margin: 44px 0 12px; }
+  h3 { font-size: 1.1rem; font-weight: 600; margin: 24px 0 8px; }
+  p { margin: 0 0 14px; max-width: 68ch; }
+  .kicker { font-family: var(--mono); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+  .sub { color: var(--muted); font-size: 1.02rem; max-width: 62ch; }
+  .statrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 26px 0 8px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; }
+  .stat .name { font-family: var(--mono); font-size: 12.5px; font-weight: 600; letter-spacing: .06em; }
+  .stat.rec .name { color: var(--accent); }
+  .stat.agg .name { color: var(--amber); }
+  .stat .nums { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 1.45rem; font-weight: 600; margin: 6px 0 2px; }
+  .stat .cap { color: var(--muted); font-size: 13.5px; }
+  .seq { counter-reset: step; margin: 8px 0 0; padding: 0; list-style: none; }
+  .seq > li { counter-increment: step; position: relative; padding: 0 0 22px 52px; border-left: 1px solid var(--line); margin-left: 17px; }
+  .seq > li:last-child { border-left-color: transparent; padding-bottom: 0; }
+  .seq > li::before {
+    content: counter(step); position: absolute; left: -18px; top: 0;
+    width: 34px; height: 34px; border-radius: 50%;
+    background: var(--accent-soft); color: var(--accent);
+    font-family: var(--mono); font-weight: 600; font-size: 14px;
+    display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--line);
+  }
+  .seq h3 { margin: 4px 0 6px; }
+  .seq p { font-size: 16px; }
+  code, .m { font-family: var(--mono); font-size: .86em; background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
+  .divergence { background: var(--amber-soft); border: 1px solid var(--line); border-left: 3px solid var(--amber); border-radius: 4px; padding: 10px 14px; margin: 10px 0 0; font-size: 15.5px; }
+  .divergence b { color: var(--amber); }
+  table { border-collapse: collapse; width: 100%; font-size: 15px; margin: 12px 0 6px; }
+  th, td { text-align: left; padding: 7px 12px 7px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+  td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tablewrap { overflow-x: auto; }
+  figure { margin: 26px 0; }
+  figure svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 10px; max-width: 66ch; }
+  .foot { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+</style>
+
+<div class="wrap">
+  <div class="kicker">Trade-Execution-Webhook · Backtest Presets</div>
+  <h1>Positional Momentum Playbook</h1>
+  <p class="sub">How the two validated POSITIONAL configurations work, end to end — every filter, the ranking math, sizing, entries, exits, and the compounding loop — in the exact order the engine executes them. Both share one pipeline; they differ only at a single exit rule.</p>
+
+  <div class="statrow">
+    <div class="stat rec">
+      <div class="name">#909 · RECOMMENDED</div>
+      <div class="nums">16.93% / 25.4%</div>
+      <div class="cap">CAGR / MaxDD · Calmar 0.67 · 2,347 trades · 2011–2026</div>
+    </div>
+    <div class="stat agg">
+      <div class="name">#1062 · relATR AGGRESSIVE</div>
+      <div class="nums">19.92% / 25.5%</div>
+      <div class="cap">CAGR / MaxDD · Calmar 0.78 · + breadth-smile sizing</div>
+    </div>
+    <div class="stat agg">
+      <div class="name">#1079 · COMBO BALANCED</div>
+      <div class="nums">22.84% / 24.5%</div>
+      <div class="cap">CAGR / MaxDD · Calmar 0.93 · + 52wk-high, earnings gate, cash yield</div>
+    </div>
+  </div>
+
+  <h2>The cycle</h2>
+  <p>The book runs on a 21-session clock. Every 21st trading day is a <b>rebalance day</b>: the engine ranks the universe at that day's close and executes all resulting orders at the <b>next morning's open</b> (never the same close — that fill wouldn't be executable). Between rebalances, only one thing runs: a daily volatility guard. There is no discretionary input anywhere.</p>
+
+  <ol class="seq">
+    <li>
+      <h3>Universe &amp; hard gates</h3>
+      <p>Starting from ~2,000 NSE symbols with survivorship-aware history, a stock is a candidate on rebalance day only if it passes <b>all five</b> gates on that day's indicators: 1-month average turnover ≥ <code>₹8 Cr</code> (liquidity), close above its own <code>SMA200</code> (long-term uptrend), close ≥ <code>₹20</code> (no penny stocks), IFP quality score ≥ <code>0.38</code>, and daily ATR ≤ <code>5%</code> of price (volatility ceiling at entry). Typically 150–400 names survive.</p>
+    </li>
+    <li>
+      <h3>Composite ranking</h3>
+      <p>Survivors are scored <i>against each other on that day only</i> (cross-sectional z-scores — no look-ahead): <code>z(12-1m mom) + z(6m mom) + z(3m mom) + z(6m/ATR) + z(−20d base range)</code>, each weighted 1.0. The fourth term is momentum per unit of volatility; the fifth rewards tight recent consolidation. Highest score first: the <b>top 60</b> form the buffer, the <b>top 30</b> the target book.</p>
+    </li>
+    <li>
+      <h3>Sells — rank hysteresis</h3>
+      <p>A holding is kept as long as it stays anywhere in the top-60 buffer. It is sold at next open (<code>RANK_DROP</code>) only when it falls out of the top 60 or closes below its SMA200 (which removes it from the ranked set by construction). The 2× buffer is deliberate hysteresis — it stops the book churning names that hover around rank 30.</p>
+    </li>
+    <li>
+      <h3>Capital &amp; compounding</h3>
+      <p>Sizing capital = <code>clamp(₹4L + realized P&amp;L, floor ₹4L, cap ₹2 Cr)</code> — <b>profit-only</b> compounding: wins scale future positions, but sizing never drops below starting capital in a drawdown, and stops scaling at ₹2 Cr. Realized P&amp;L flows back in at the next rebalance, which is what turns a ~17% average year into geometric growth.</p>
+    </li>
+    <li>
+      <h3>Position sizing — inverse volatility</h3>
+      <p>Free slots = 30 − current holdings, filled from the top of the ranking. Each buy is weighted by <code>1/ATR%</code>, normalized so the full 30-slot book sums to 100% — a 2%-ATR largecap gets roughly triple the capital of a 6%-ATR midcap, equalizing <i>risk</i> per position instead of rupees. Partial fills are scaled down so the book is never levered.</p>
+    </li>
+    <li>
+      <h3>Entry execution</h3>
+      <p>All buys fill at next morning's open <code>+0.20%</code> slippage, with the full Dhan delivery cost model (STT 0.1%, stamp 0.015%, exchange 0.003%, DP ₹14.75 per sell, zero brokerage). The invalidation reference is the distance to SMA200 — there is <b>no hard stop-loss</b> in this book; exits come from rank, trend, or the volatility guard.</p>
+    </li>
+    <li>
+      <h3>Daily guard — the one divergence</h3>
+      <p><b>#909:</b> if a holding's ATR exceeds <code>5%</code> for <b>2 consecutive sessions</b>, the whole position exits at next open. One noisy day is ignored; a persistent volatility regime change is not.</p>
+      <div class="divergence"><b>The aggressive preset (#1062) changes this rule:</b> exit only when ATR expands above <code>1.5×</code> its own 20-session average <i>and</i> the close is below the EMA21 — so a stock getting volatile <i>while rallying</i> is left alone — and even then only <b>33%</b> is trimmed. It also adds <b>breadth-smile sizing</b>: when 45–60% of the liquid universe is above its 200-SMA (the historical "chop band", worst forward returns), new-entry exposure is halved; at washout (&lt;30%, historically the <i>best</i> forward-return state: +8.8%/quarter, 89% win) and in healthy trends (≥60%) the book runs full size.</div>
+    </li>
+    <li>
+      <h3>Combo additions (the balanced preset, #1079)</h3>
+      <p>Three further mechanisms, each split-validated 2026-08-21, stack on top of the aggressive config: a <b>52-week-high factor</b> (George &amp; Hwang 2004 — nearness to the 52-week high joins the composite at weight 1.0), an <b>earnings entry gate</b> (skip any buy whose company reports results within 14 days of the fill — the gap-risk a monthly book cannot exit fast enough to dodge), and <b>6% annual yield on idle cash</b> (liquid-fund parking, previously modeled at 0%). Net effect: +2.9pt CAGR and −1pt MaxDD over the aggressive preset, with the weak-regime window (2011–18) improving from 12.9%/20.5% to 16.0%/18.6%. Trade-off to know: in the strong 2019–26 regime it gives back ~2pt CAGR vs the pure aggressive config — it rebalances performance across regimes rather than dominating everywhere. Its earnings gate needs the filings harvest kept current (coverage thins after 2024).</p>
+    </li>
+    <li>
+      <h3>Loop</h3>
+      <p>Sale proceeds and realized P&amp;L return to the capital base; 21 sessions later the ranking runs again. Over 2011–2026 this cycles ~185 times and produces ~2,300 round trips.</p>
+    </li>
+  </ol>
+
+  <h2>Pipeline diagram</h2>
+  <figure>
+    <svg viewBox="0 0 760 950" role="img" aria-label="Pipeline of the positional momentum strategy: universe gates feed a composite ranking, which drives sells and inverse-volatility-sized buys each 21 sessions; a daily ATR guard runs between rebalances, where preset 909 exits fully on a static 5 percent ceiling and preset 1010 trims 33 percent on relative ATR expansion below trend; realized profit compounds back into sizing capital." fill="none" stroke-linecap="round" style="color: var(--ink); font-family: 'IBM Plex Mono', monospace;">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor" stroke="none"/>
+        </marker>
+      </defs>
+
+      <!-- Universe -->
+      <rect x="190" y="16" width="380" height="52" rx="5" stroke="currentColor" stroke-opacity=".55"/>
+      <text x="380" y="38" text-anchor="middle" font-size="13" fill="currentColor" font-weight="600">NSE universe · ~2,000 symbols</text>
+      <text x="380" y="56" text-anchor="middle" font-size="11.5" fill="currentColor" fill-opacity=".62">daily OHLCV + indicators, decisions at close T</text>
+
+      <line x1="380" y1="68" x2="380" y2="102" stroke="currentColor" marker-end="url(#arr)"/>
+      <text x="392" y="90" font-size="11" fill="currentColor" fill-opacity=".62">5 hard gates</text>
+
+      <!-- Gates -->
+      <rect x="140" y="104" width="480" height="74" rx="5" stroke="currentColor" stroke-opacity=".55"/>
+      <text x="380" y="126" text-anchor="middle" font-size="13" fill="currentColor" font-weight="600">GATES — all must pass</text>
+      <text x="380" y="146" text-anchor="middle" font-size="11.5" fill="currentColor" fill-opacity=".75">turnover ≥ ₹8 Cr · close &gt; SMA200 · close ≥ ₹20</text>
+      <text x="380" y="164" text-anchor="middle" font-size="11.5" fill="currentColor" fill-opacity=".75">IFP ≥ 0.38 · ATR ≤ 5% (entry)</text>
+
+      <line x1="380" y1="178" x2="380" y2="212" stroke="currentColor" marker-end="url(#arr)"/>
+      <text x="392" y="200" font-size="11" fill="currentColor" fill-opacity=".62">150–400 survivors</text>
+
+      <!-- Ranking -->
+      <rect x="140" y="214" width="480" height="74" rx="5" stroke="currentColor" stroke-opacity=".55"/>
+      <text x="380" y="236" text-anchor="middle" font-size="13" fill="currentColor" font-weight="600">COMPOSITE RANK — same-day z-scores</text>
+      <text x="380" y="256" text-anchor="middle" font-size="11.5" fill="currentColor" fill-opacity=".75">z(12-1m) + z(6m) + z(3m) + z(6m/ATR) + z(−base range)</text>
+      <text x="380" y="274" text-anchor="middle" font-size="11.5" fill="currentColor" fill-opacity=".75">top 60 = keep-buffer · top 30 = target book</text>
+
+      <line x1="380" y1="288" x2="380" y2="322" stroke="currentColor" marker-end="url(#arr)"/>
+
+      <!-- Rebalance actions: sell / buy -->
+      <rect x="96" y="324" width="264" height="96" rx="5" stroke="currentColor" stroke-opacity=".55"/>
+      <text x="228" y="346" text-anchor="middle" font-size="13" fill="currentColor" font-weight="600">SELL @ T+1 open</text>
+      <text x="228" y="366" text-anchor="middle" font-size="11.5" fill="currentColor" fill-opacity=".75">fell out of top-60 buffer</text>
+      <text x="228" y="384" text-anchor="middle" font-size="11.5" fill="currentColor" fill-opacity=".75">or closed below SMA200</text>
+      <text x="228" y="404" text-anchor="middle" font-size="11" fill="currentColor" fill-opacity=".55">0.20% slip + Dhan costs</text>
+
+      <rect x="400" y="324" width="264" height="96" rx="5" stroke="currentColor" stroke-opacity=".55"/>
+      <text x="532" y="346" text-anchor="middle" font-size="13" fill="currentColor" font-weight="600">BUY @ T+1 open</text>
+      <text x="532" y="366" text-anchor="middle" font-size="11.5" fill="currentColor" fill-opacity=".75">fill free slots from top of rank</text>
+      <text x="532" y="384" text-anchor="middle" font-size="11.5" fill="currentColor" fill-opacity=".75">size ∝ 1/ATR% (risk parity)</text>
+      <text x="532" y="404" text-anchor="middle" font-size="11" fill="currentColor" fill-opacity=".55">0.20% slip + Dhan costs</text>
+
+      <line x1="380" y1="322" x2="228" y2="322" stroke="currentColor" stroke-opacity="0"/>
+      <line x1="228" y1="310" x2="228" y2="322" stroke="currentColor" marker-end="url(#arr)" stroke-opacity=".55"/>
+      <line x1="532" y1="310" x2="532" y2="322" stroke="currentColor" marker-end="url(#arr)" stroke-opacity=".55"/>
+      <line x1="228" y1="298" x2="532" y2="298" stroke="currentColor" stroke-opacity=".55"/>
+      <line x1="228" y1="298" x2="228" y2="310" stroke="currentColor" stroke-opacity=".55"/>
+      <line x1="532" y1="298" x2="532" y2="310" stroke="currentColor" stroke-opacity=".55"/>
+
+      <line x1="380" y1="420" x2="380" y2="456" stroke="currentColor" marker-end="url(#arr)" stroke-opacity="0"/>
+      <line x1="228" y1="420" x2="228" y2="446" stroke="currentColor" stroke-opacity=".55"/>
+      <line x1="532" y1="420" x2="532" y2="446" stroke="currentColor" stroke-opacity=".55"/>
+      <line x1="228" y1="446" x2="532" y2="446" stroke="currentColor" stroke-opacity=".55"/>
+      <line x1="380" y1="446" x2="380" y2="474" stroke="currentColor" marker-end="url(#arr)"/>
+      <text x="392" y="468" font-size="11" fill="currentColor" fill-opacity=".62">holdings · every session between rebalances</text>
+
+      <!-- Daily guard band -->
+      <rect x="60" y="476" width="640" height="150" rx="5" stroke="currentColor" stroke-dasharray="5 4" stroke-opacity=".45"/>
+      <text x="380" y="498" text-anchor="middle" font-size="12.5" fill="currentColor" font-weight="600">DAILY VOLATILITY GUARD — the only #909 / #1010 divergence</text>
+
+      <rect x="80" y="512" width="290" height="96" rx="5" stroke="var(--accent)" stroke-width="1.6"/>
+      <text x="225" y="534" text-anchor="middle" font-size="12.5" fill="var(--accent)" font-weight="600">#909 static ceiling</text>
+      <text x="225" y="554" text-anchor="middle" font-size="11.5" fill="currentColor" fill-opacity=".8">ATR &gt; 5% for 2 consecutive days</text>
+      <text x="225" y="572" text-anchor="middle" font-size="11.5" fill="currentColor" fill-opacity=".8">→ exit 100% at next open</text>
+      <text x="225" y="594" text-anchor="middle" font-size="11" fill="currentColor" fill-opacity=".55">sells winners that get volatile</text>
+
+      <rect x="390" y="512" width="290" height="96" rx="5" stroke="var(--amber)" stroke-width="1.6"/>
+      <text x="535" y="534" text-anchor="middle" font-size="12.5" fill="var(--amber)" font-weight="600">#1062/#1079 relative ATR + smile</text>
+      <text x="535" y="554" text-anchor="middle" font-size="11.5" fill="currentColor" fill-opacity=".8">ATR &gt; 1.5× own 20d norm AND close &lt; EMA21</text>
+      <text x="535" y="572" text-anchor="middle" font-size="11.5" fill="currentColor" fill-opacity=".8">→ trim 33% at next open, keep the rest</text>
+      <text x="535" y="594" text-anchor="middle" font-size="11" fill="currentColor" fill-opacity=".55">volatile-while-rallying is left alone</text>
+
+      <line x1="380" y1="626" x2="380" y2="662" stroke="currentColor" marker-end="url(#arr)"/>
+      <text x="392" y="650" font-size="11" fill="currentColor" fill-opacity=".62">sale proceeds + realized P&amp;L</text>
+
+      <!-- Compounding -->
+      <rect x="150" y="664" width="460" height="88" rx="5" stroke="currentColor" stroke-opacity=".55"/>
+      <text x="380" y="688" text-anchor="middle" font-size="13" fill="currentColor" font-weight="600">COMPOUNDING — profit only</text>
+      <text x="380" y="708" text-anchor="middle" font-size="11.5" fill="currentColor" fill-opacity=".75">sizing capital = clamp(₹4L + realized P&amp;L, ₹4L, ₹2 Cr)</text>
+      <text x="380" y="726" text-anchor="middle" font-size="11.5" fill="currentColor" fill-opacity=".75">never shrinks below start · stops scaling at the cap</text>
+
+      <!-- loop back -->
+      <path d="M 150 708 L 36 708 L 36 251 L 138 251" stroke="currentColor" stroke-opacity=".55" marker-end="url(#arr)"/>
+      <text x="30" y="480" font-size="11" fill="currentColor" fill-opacity=".62" transform="rotate(-90 30 480)" text-anchor="middle">next rebalance · every 21 sessions</text>
+
+      <!-- results -->
+      <line x1="380" y1="752" x2="380" y2="788" stroke="currentColor" marker-end="url(#arr)"/>
+      <text x="392" y="776" font-size="11" fill="currentColor" fill-opacity=".62">2011–2026 · ~185 cycles · ~2,300 trades</text>
+      <rect x="80" y="790" width="290" height="76" rx="5" stroke="var(--accent)" stroke-width="1.6"/>
+      <text x="225" y="814" text-anchor="middle" font-size="12.5" fill="var(--accent)" font-weight="600">#909 · 16.93% CAGR</text>
+      <text x="225" y="834" text-anchor="middle" font-size="11.5" fill="currentColor" fill-opacity=".8">25.4% MaxDD · Calmar 0.67</text>
+      <text x="225" y="852" text-anchor="middle" font-size="11" fill="currentColor" fill-opacity=".55">steadier in weak regimes</text>
+      <rect x="390" y="790" width="290" height="76" rx="5" stroke="var(--amber)" stroke-width="1.6"/>
+      <text x="535" y="814" text-anchor="middle" font-size="12.5" fill="var(--amber)" font-weight="600">#1062 agg · #1079 combo</text>
+      <text x="535" y="834" text-anchor="middle" font-size="11.5" fill="currentColor" fill-opacity=".8">19.9%/25.5% (0.78) · 22.8%/24.5% (0.93)</text>
+      <text x="535" y="852" text-anchor="middle" font-size="11" fill="currentColor" fill-opacity=".55">combo adds 52wk-high + earn-gate + cash yield</text>
+
+      <text x="380" y="905" text-anchor="middle" font-size="11" fill="currentColor" fill-opacity=".5">solid boxes = shared pipeline · green/amber = where the presets differ</text>
+    </svg>
+    <figcaption>One pipeline, three presets in a lineage: #909 uses the static ATR guard; the aggressive config (#1010 → #1062) swaps in the relative-ATR trim and adds breadth-smile sizing; the combo (#1079) further adds the 52-week-high ranking factor, the pre-earnings entry gate, and yield on idle cash. Gates, ranking core, sizing, and compounding are shared by all three.</figcaption>
+  </figure>
+
+  <h2>Side-by-side parameters</h2>
+  <div class="tablewrap">
+  <table>
+    <tr><th>Stage</th><th>#909 Recommended</th><th>#1010 relATR Aggressive</th></tr>
+    <tr><td>Universe gates</td><td colspan="2">turnover ≥ ₹8 Cr · close &gt; SMA200 · close ≥ ₹20 · IFP ≥ 0.38 · ATR ≤ 5% at entry</td></tr>
+    <tr><td>Ranking</td><td colspan="2">composite_rs: z(12-1m)+z(6m)+z(3m)+z(6m/ATR)+z(−base range), weights 1.0</td></tr>
+    <tr><td>Book / buffer</td><td colspan="2">30 positions, keep-buffer top 60, rebalance every 21 sessions</td></tr>
+    <tr><td>Sizing</td><td colspan="2">inverse-volatility (∝ 1/ATR%), normalized to the 30-slot book</td></tr>
+    <tr><td>Entry / costs</td><td colspan="2">T+1 open · 0.20% slippage · full Dhan delivery cost model · no hard stop-loss</td></tr>
+    <tr><td>Daily ATR exit</td><td class="num">ATR &gt; 5% ×2 days → exit 100%</td><td class="num">ATR &gt; 1.5×20d norm &amp; &lt; EMA21 → trim 33%</td></tr>
+    <tr><td>Breadth-smile sizing</td><td class="num">off</td><td class="num">50% size in 45–60% breadth band (agg + combo)</td></tr>
+    <tr><td>52wk-high factor / earnings gate / cash yield</td><td class="num">off</td><td class="num">combo only: w=1.0 / 14d / 6%</td></tr>
+    <tr><td>Compounding</td><td colspan="2">profit-only · floor ₹4L · cap ₹2 Cr</td></tr>
+    <tr><td>Full period</td><td class="num">16.93% / 25.4% / 0.67</td><td class="num">agg 19.92% / 25.5% / 0.78 · combo 22.84% / 24.5% / 0.93</td></tr>
+    <tr><td>2011–2018</td><td class="num">14.56% / 25.4%</td><td class="num">agg 12.93% / 20.5% · combo 16.04% / 18.6%</td></tr>
+    <tr><td>2019–2026</td><td class="num">23.07% / 21.4%</td><td class="num">agg 29.89% / 23.4% · combo 27.72% / 25.1%</td></tr>
+  </table>
+  </div>
+  <p class="sub" style="margin-top:10px">Which to run: <b>#1079 Combo</b> for the best all-regime balance (highest Calmar, strongest weak-regime profile; costs ~2pt CAGR vs aggressive in strong regimes). <b>#1062 Aggressive</b> to maximize strong-regime upside. <b>#909 Recommended</b> as the longest-validated conservative baseline. Live planning: apply the survivorship haircut (~−2.4pt CAGR) and Monte Carlo drawdown tolerance (35–40% possible over a long horizon) from VALIDATION_REPORT.md.</p>
+
+  <div class="foot">
+    Validated across 82 runs (#1000–#1081), 2026-08-20/21 · engine: custom-screener POSITIONAL, survivorship-aware NSE data 2011–2026 · live preset buttons: “POSITIONAL Momentum (recommended)” (#909), “POSITIONAL relATR (aggressive)” (#1062), “POSITIONAL Combo (balanced)” (#1079) · full evidence in VALIDATION_REPORT.md and LITERATURE_STRATEGY_REPORT.md.
+  </div>
+</div>

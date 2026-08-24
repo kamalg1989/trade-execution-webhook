@@ -7,6 +7,7 @@ import ChartModal from '../components/ChartModal.jsx';
 import ExportCsvButton from '../components/ExportCsvButton.jsx';
 import AiAnalysisPanel from '../components/AiAnalysisPanel.jsx';
 import Backtest from './Backtest.jsx';
+import PaperTrading from './PaperTrading.jsx';
 
 const EMPTY = { sma200: 'any', sma50: 'any', ema50: 'any' };
 
@@ -135,6 +136,11 @@ export default function CustomScreener() {
                 ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300 hover:text-white'}`}>
               Backtest
             </button>
+            <button onClick={() => setTab('paper')}
+              className={`px-3 py-1.5 text-sm rounded ${tab === 'paper'
+                ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300 hover:text-white'}`}>
+              Paper ⭐
+            </button>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -159,7 +165,9 @@ export default function CustomScreener() {
         </div>
       </div>
 
-      {tab === 'backtest' ? (
+      {tab === 'paper' ? (
+        <PaperTrading />
+      ) : tab === 'backtest' ? (
         <Backtest />
       ) : (
         <>

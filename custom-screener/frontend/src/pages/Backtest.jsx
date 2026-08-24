@@ -3,7 +3,35 @@ import {
   createBacktestRun, listBacktestRuns, getBacktestRun, getBacktestSummary,
   getBacktestTrades, getBacktestDay, cancelBacktestRun, backtestTradeChartUrl,
 } from '../api/client.js';
+import CompactBacktestForm from '../components/CompactBacktestForm.jsx';
 import { HELP, Info, LabelWithInfo, Pill, Stat, useIsMobile } from '../components/ui.jsx';
+import {
+  getCagr, getMaxDD, getWorst12m, getMartin, getMaxUwDays,
+  fmtCagr, fmtMaxDD, fmtW12m, fmtRatio, fmtUwMonths, runBadges,
+} from '../utils/runMetrics.js';
+
+// Audit badges rendered next to the run id — driven by the run's own config
+// columns via runBadges(), never by notes text.
+const BADGE_TONE = {
+  emerald: 'bg-emerald-900/50 border-emerald-700 text-emerald-300',
+  sky: 'bg-sky-900/50 border-sky-700 text-sky-300',
+  amber: 'bg-amber-900/50 border-amber-700 text-amber-300',
+  purple: 'bg-purple-900/50 border-purple-700 text-purple-300',
+};
+function AuditBadges({ run }) {
+  const badges = runBadges(run);
+  if (!badges.length) return null;
+  return (
+    <span className="inline-flex gap-1 ml-1.5 align-middle">
+      {badges.map((b) => (
+        <span key={b.label} title={b.title}
+          className={`px-1 py-px rounded border text-[9px] font-semibold whitespace-nowrap ${BADGE_TONE[b.tone]}`}>
+          {b.label}
+        </span>
+      ))}
+    </span>
+  );
+}
 
 const fmtInr = (n) =>
   n == null ? '—' : `₹${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
@@ -111,6 +139,36 @@ function summarizeRunSettings(run) {
     const t = ['WEEKLY_BREAKOUT', `risk${run.weeklyRiskPct ?? 1.0}%`];
     if (run.maxPicksPerTrack != null && run.maxPicksPerTrack !== 3) t.push(`top${run.maxPicksPerTrack}/wk`);
     if (run.restingWindowDays != null) t.push(`rest:${run.restingWindowDays}wk`);
+    if (run.stackingGuard) t.push(`stack:${run.stackingGuardMode}`);
+    if (run.weeklyDailyExitCheck) t.push('daily exit-check');
+    if (run.maxCapitalPerTradePct != null) t.push(`cap${run.maxCapitalPerTradePct}%`);
+    if (run.weeklyCompoundingSizing) t.push('compounding');
+    if (run.gateMinTurnoverCr != null) t.push(`turnover≥${run.gateMinTurnoverCr}cr`);
+    if (run.gateMinIfpScore != null) t.push(`IFP≥${run.gateMinIfpScore}`);
+    if (run.gateMaxBaseRangePct != null) t.push(`base<${run.gateMaxBaseRangePct}%`);
+    if (run.gateMinVolMult != null) t.push(`vol>${run.gateMinVolMult}x`);
+    if (run.gateMinPriorUpmovePct != null) t.push(`upmove≥${run.gateMinPriorUpmovePct}%`);
+    if (run.gateMaxGivebackPct != null) t.push(`giveback≤${run.gateMaxGivebackPct}%`);
+    if (run.gateMaxVolDryupRatio != null) t.push(`dryup≤${run.gateMaxVolDryupRatio}`);
+    if (run.gateMaxDistFromHighPct != null) t.push(`distHigh≤${run.gateMaxDistFromHighPct}%`);
+    if (run.stage2BaseStageMaxAllowed != null) t.push(`baseStage≤${run.stage2BaseStageMaxAllowed}`);
+    if (run.maxContractionRatio != null) t.push(`VCP≤${run.maxContractionRatio}`);
+    return t;
+  }
+  if (run.strategy === 'SQUEEZE_BREAKOUT') {
+    // Strategy 2 (user spec, 2026-08-14) — new candidate SOURCE plugged into
+    // the daily engine, so summarise on its own spec-specific terms.
+    const t = ['SQUEEZE_BREAKOUT', `vol≥${run.squeezeVolumeMultiplier ?? 1.5}x`];
+    if (run.maxHoldingDays != null) t.push(`hold≤${run.maxHoldingDays}d`);
+    if (run.riskPerTradePct != null) t.push(`risk${run.riskPerTradePct}%`);
+    if (run.stackingGuard) t.push(`stack:${run.stackingGuardMode}`);
+    return t;
+  }
+  if (run.strategy === 'RSI_REVERSION') {
+    // Strategy 3 (user spec, 2026-08-14).
+    const t = ['RSI_REVERSION', `RSI<${run.rsiEntryThreshold ?? 35}`,
+               `stop${run.rsiStopPct ?? 4.5}%`, `tgt${run.rsiTargetPct ?? 5}%`];
+    if (run.maxHoldingDays != null) t.push(`hold≤${run.maxHoldingDays}d`);
     if (run.stackingGuard) t.push(`stack:${run.stackingGuardMode}`);
     return t;
   }
@@ -221,6 +279,20 @@ const DEFAULT_FORM = {
   // WEEKLY_BREAKOUT-only — account-risk % per trade for that strategy's own
   // position-sizing formula (see backtest/weekly_breakout.py size_position()).
   weekly_risk_pct: 1.0,
+  // sql/030 — WEEKLY_BREAKOUT-only. Check stop-breach daily instead of only
+  // at week-end (MACD ratchet level itself still updates weekly).
+  weekly_daily_exit_check: false,
+  weekly_compounding_sizing: false,
+  // sql/029 — SQUEEZE_BREAKOUT-only (Strategy 2) / RSI_REVERSION-only
+  // (Strategy 3), user spec 2026-08-14. Both reuse max_holding_days (below,
+  // now wired generically) + risk_per_trade_pct/max_capital_per_trade_pct
+  // (already generic, above) for sizing/time-stop.
+  squeeze_volume_multiplier: 1.5,
+  rsi_entry_threshold: 35, rsi_stop_pct: 4.5, rsi_target_pct: 5.0,
+  // Generic time-stop (sql/016 max_holding_days) — previously unwired in this
+  // form (every prior strategy either didn't need it or used its own knob).
+  // '' = no cap, matching every existing run's behaviour unchanged.
+  max_holding_days: '',
   notes: '',
 };
 
@@ -331,6 +403,67 @@ const PRESETS = {
       strategy: 'WEEKLY_BREAKOUT', capital: 400000, weekly_risk_pct: 1.0,
       max_picks_per_track: 3, resting_window_days: 2, restIndefinite: false,
       stacking_guard: true, stacking_guard_mode: 'SKIP',
+      max_capital_per_trade_pct: 10, weekly_compounding_sizing: false,
+      start_date: '2016-01-01', end_date: '2026-08-08',
+    },
+  },
+  weeklyBreakoutTuned: {
+    label: 'Weekly breakout — tuned (base≤2)',
+    hint: 'Best trade-level setup across all 250 runs (2026-08-16 hybrid sweep): '
+        + 'weekly box breakout + base-stage≤2 quality gate. 19.85% CAGR / 38.0% maxDD '
+        + '(run #607) vs 20.75%/47.6% ungated — best risk-adjusted. Every hybrid mix '
+        + '(base+VCP #617, base+daily-exit #619, base+picks2 #620) tested WORSE; '
+        + 'do not stack more gates on top.',
+    values: {
+      strategy: 'WEEKLY_BREAKOUT', capital: 400000, weekly_risk_pct: 1.0,
+      max_picks_per_track: 3, resting_window_days: 2, restIndefinite: false,
+      stacking_guard: true, stacking_guard_mode: 'SKIP',
+      stage2_base_stage_max_allowed: 2, weekly_daily_exit_check: false,
+      max_capital_per_trade_pct: 10, weekly_compounding_sizing: false,
+      // explicitly clear every other quality gate — stacking them tested worse
+      gate_min_turnover_cr: '', gate_max_base_range_pct: '', gate_min_vol_mult: '',
+      gate_min_prior_upmove_pct: '', gate_max_giveback_pct: '',
+      gate_max_vol_dryup_ratio: '', gate_max_dist_from_high_pct: '',
+      gate_min_ifp_score: '', max_contraction_ratio: '',
+      start_date: '2016-01-01', end_date: '2026-08-08',
+    },
+  },
+  squeezeBreakout: {
+    label: 'Squeeze breakout (Strategy 2)',
+    hint: 'Bollinger-squeeze compression + 20d-high volume breakout. Half-books '
+        + '50% at 2R, trails the remainder, hard time-stop if neither hits within '
+        + 'the holding cap. See funnel_squeeze.py for the full spec.',
+    values: {
+      strategy: 'SQUEEZE_BREAKOUT', capital: 400000,
+      squeeze_volume_multiplier: 1.5, max_holding_days: 20,
+      risk_per_trade_pct: 1.0, max_capital_per_trade_pct: 15,
+      max_picks_per_track: 3, resting_window_days: 3, restIndefinite: false,
+      stacking_guard: true, stacking_guard_mode: 'SKIP',
+      breakeven: false, half_booking: true, trailing: true, fixed_target: false,
+      ema10_trail: false, ema21_trail: false, ema50_trail: false,
+      chandelier_trail: false, swing_trail: false, macd_trail: false,
+      failed_breakout_exit: false, swing_break_exit: false,
+      safety_sl_pct: 20,
+      start_date: '2016-01-01', end_date: '2026-08-08',
+    },
+  },
+  rsiReversion: {
+    label: 'RSI mean reversion (Strategy 3)',
+    hint: 'RSI(14) oversold + bullish reversal candle on quality large-caps, '
+        + 'Nifty-proxy macro filter. Fixed % target, fixed % stop, hard time-stop. '
+        + 'See funnel_rsi.py for the full spec.',
+    values: {
+      strategy: 'RSI_REVERSION', capital: 400000,
+      rsi_entry_threshold: 35, rsi_stop_pct: 4.5, rsi_target_pct: 5.0,
+      max_holding_days: 15,
+      risk_per_trade_pct: 1.0, max_capital_per_trade_pct: 15,
+      max_picks_per_track: 3, resting_window_days: 2, restIndefinite: false,
+      stacking_guard: true, stacking_guard_mode: 'SKIP',
+      breakeven: false, half_booking: false, trailing: false, fixed_target: true,
+      ema10_trail: false, ema21_trail: false, ema50_trail: false,
+      chandelier_trail: false, swing_trail: false, macd_trail: false,
+      failed_breakout_exit: false, swing_break_exit: false,
+      safety_sl_pct: 20,
       start_date: '2016-01-01', end_date: '2026-08-08',
     },
   },
@@ -473,8 +606,15 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
         brokerage_per_order: Number(f.brokerage_per_order) || 0,
         chandelier_atr_mult: Number(f.chandelier_atr_mult) || 3.0,
         weekly_risk_pct: Number(f.weekly_risk_pct) || 1.0,
+        weekly_daily_exit_check: !!f.weekly_daily_exit_check,
+        weekly_compounding_sizing: !!f.weekly_compounding_sizing,
         require_weekly_box_breakout: !!f.require_weekly_box_breakout,
         weekly_box_lookback_days: Number(f.weekly_box_lookback_days) || 10,
+        squeeze_volume_multiplier: Number(f.squeeze_volume_multiplier) || 1.5,
+        rsi_entry_threshold: Number(f.rsi_entry_threshold) || 35,
+        rsi_stop_pct: Number(f.rsi_stop_pct) || 4.5,
+        rsi_target_pct: Number(f.rsi_target_pct) || 5.0,
+        max_holding_days: numOrNull(f.max_holding_days),
         notes: f.notes || null,
       };
       const res = await createBacktestRun(payload);
@@ -647,6 +787,8 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
             <option value="POSITIONAL">Positional momentum (annual-reset)</option>
             <option value="PORTFOLIO">Portfolio (continuous, compounding)</option>
             <option value="WEEKLY_BREAKOUT">Weekly consolidation breakout</option>
+            <option value="SQUEEZE_BREAKOUT">Squeeze breakout (Strategy 2)</option>
+            <option value="RSI_REVERSION">RSI mean reversion (Strategy 3)</option>
           </select>
         </label>
         <label className="text-xs text-slate-400 flex flex-col gap-1">
@@ -796,6 +938,182 @@ function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }
               hint="Buy-stop above breakout week's close expires unfilled after this many weeks."
               value={f.resting_window_days} onChange={set('resting_window_days')}
               type="number" min="1" max="12" />
+            <Field label="Max capital per trade %"
+              hint="Cap on a single position's value as % of (sizing) capital. Blank = engine default 25 (what all runs ≤ #620 used). Production discipline is 10."
+              value={f.max_capital_per_trade_pct} onChange={set('max_capital_per_trade_pct')}
+              type="number" min="1" max="100" step="1" />
+          </div>
+          <label className="flex items-start gap-2 mt-3 text-xs text-slate-400">
+            <input type="checkbox" checked={!!f.stacking_guard}
+              onChange={(e) => set('stacking_guard')(e.target.checked)}
+              className="mt-0.5" />
+            <span>Block a new signal in a symbol already held (stacking guard)</span>
+          </label>
+          <label className="flex items-start gap-2 mt-2 text-xs text-slate-400">
+            <input type="checkbox" checked={!!f.weekly_daily_exit_check}
+              onChange={(e) => set('weekly_daily_exit_check')(e.target.checked)}
+              className="mt-0.5" />
+            <span>
+              Check stop-breach daily instead of weekly
+              <span className="block text-[11px] text-slate-500 leading-snug mt-0.5">
+                Exits react to a daily Low breach of the current SL instead of waiting
+                for the week to close. The MACD ratchet level itself still only updates
+                weekly (MACD is a weekly indicator here) — this only speeds up how fast
+                a breach of an already-set level is caught. Expect faster/tighter exits
+                at the cost of more whipsaw on daily noise.
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 mt-2 text-xs text-slate-400">
+            <input type="checkbox" checked={!!f.weekly_compounding_sizing}
+              onChange={(e) => set('weekly_compounding_sizing')(e.target.checked)}
+              className="mt-0.5" />
+            <span>
+              Compounding position sizing (2026-08-16)
+              <span className="block text-[11px] text-slate-500 leading-snug mt-0.5">
+                Size each new trade off running equity (starting capital + cumulative
+                realized P&amp;L at entry time) instead of fixed starting capital.
+                Realized-only — open trades don&apos;t count until closed. Profits grow
+                position size, losses shrink it; both the risk% base and the
+                max-capital cap scale together. Off = fixed sizing (all runs ≤ #620).
+              </span>
+            </span>
+          </label>
+
+          <div className="mt-4 pt-3 border-t border-slate-800">
+            <div className="text-xs font-semibold text-amber-400 uppercase tracking-wide mb-1">
+              Daily-funnel quality filters (optional, 2026-08-15)
+            </div>
+            <p className="text-[11px] text-slate-500 mb-2 leading-snug">
+              Same thresholds the daily BREAKOUT strategy uses, applied to this
+              strategy&apos;s weekly signals using daily data as of the breakout
+              week&apos;s own Friday close — point-in-time, no look-ahead. Each field
+              is independently opt-in (blank = not applied) so you can test any
+              combination; leaving everything blank reproduces the strategy exactly
+              as before this existed.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
+              <Field label="Min turnover (₹ cr)" hint="Liquidity floor."
+                value={f.gate_min_turnover_cr} onChange={set('gate_min_turnover_cr')}
+                type="number" min="0" step="0.5" placeholder="off" />
+              <Field label="Min IFP score" hint="Accumulation-footprint quality score."
+                value={f.gate_min_ifp_score} onChange={set('gate_min_ifp_score')}
+                type="number" min="0" max="1" step="0.01" placeholder="off" />
+              <Field label="Max base range (20d, %)" hint="Tighter base = lower value."
+                value={f.gate_max_base_range_pct} onChange={set('gate_max_base_range_pct')}
+                type="number" min="0" step="0.5" placeholder="off" />
+              <Field label="Min volume multiplier" hint="Breakout-day volume vs average."
+                value={f.gate_min_vol_mult} onChange={set('gate_min_vol_mult')}
+                type="number" min="0" step="0.1" placeholder="off" />
+              <Field label="Min prior upmove (%)"
+                value={f.gate_min_prior_upmove_pct} onChange={set('gate_min_prior_upmove_pct')}
+                type="number" min="0" step="1" placeholder="off" />
+              <Field label="Max giveback (%)"
+                value={f.gate_max_giveback_pct} onChange={set('gate_max_giveback_pct')}
+                type="number" min="0" step="1" placeholder="off" />
+              <Field label="Max volume dry-up ratio"
+                value={f.gate_max_vol_dryup_ratio} onChange={set('gate_max_vol_dryup_ratio')}
+                type="number" min="0" step="0.1" placeholder="off" />
+              <Field label="Max distance from 20d high (%)"
+                value={f.gate_max_dist_from_high_pct} onChange={set('gate_max_dist_from_high_pct')}
+                type="number" min="0" step="0.5" placeholder="off" />
+              <Field label="Base-stage max allowed (base-count filter)"
+                hint="1 = earliest base only. Uses screen_gpt.classify_base_stage()."
+                value={f.stage2_base_stage_max_allowed} onChange={set('stage2_base_stage_max_allowed')}
+                type="number" min="1" max="6" step="1" placeholder="off" />
+              <Field label="Max VCP contraction ratio"
+                hint="Last-10-bar range / prior-15-bar range. &lt;1 = tightening base."
+                value={f.max_contraction_ratio} onChange={set('max_contraction_ratio')}
+                type="number" min="0" max="5" step="0.05" placeholder="off" />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {f.strategy === 'SQUEEZE_BREAKOUT' && (
+        <div className="pt-3 border-t border-slate-800">
+          <div className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-1">
+            Squeeze breakout (Strategy 2)
+          </div>
+          <p className="text-[11px] text-slate-500 mb-2 leading-snug">
+            Daily candles, reuses the same trade lifecycle as Breakout (half-book,
+            trailing, time-stop) with a different signal source. Entry: Close &gt;
+            EMA50, Bollinger Bandwidth(20,2) at/near a 126-session low within the
+            prior 10 sessions, then Close breaks the prior 20-day High on volume ≥
+            the multiplier below. Stop = prior 20-day swing low (clamped 2-15%).
+            Target = 2R, half-booked; remainder trails and is exempt from the
+            holding cap once booked (see funnel_squeeze.py docstring). Universe
+            substituted with a liquidity pre-filter — no Nifty-200 membership
+            history in this DB.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
+            <Field label="Volume multiplier" hint="Spec sweep: 1.2x / 1.5x / 2.0x."
+              value={f.squeeze_volume_multiplier} onChange={set('squeeze_volume_multiplier')}
+              type="number" min="1" max="5" step="0.1" />
+            <Field label="Max holding days (time-stop)"
+              hint="Spec sweep: 15 / 20 / 30. Exempted once half-booked — see docstring."
+              value={f.max_holding_days} onChange={set('max_holding_days')}
+              type="number" min="1" max="60" />
+            <Field label="Account risk % per trade"
+              value={f.risk_per_trade_pct} onChange={set('risk_per_trade_pct')}
+              type="number" min="0.1" max="10" step="0.1" />
+            <Field label="Max capital % per trade"
+              value={f.max_capital_per_trade_pct} onChange={set('max_capital_per_trade_pct')}
+              type="number" min="1" max="50" step="1" />
+            <Field label="Max new picks per day"
+              value={f.max_picks_per_track} onChange={set('max_picks_per_track')}
+              type="number" min="1" max="10" />
+            <Field label="Entry order resting window (days)"
+              value={f.resting_window_days} onChange={set('resting_window_days')}
+              type="number" min="1" max="20" />
+          </div>
+          <label className="flex items-start gap-2 mt-3 text-xs text-slate-400">
+            <input type="checkbox" checked={!!f.stacking_guard}
+              onChange={(e) => set('stacking_guard')(e.target.checked)}
+              className="mt-0.5" />
+            <span>Block a new signal in a symbol already held (stacking guard)</span>
+          </label>
+        </div>
+      )}
+
+      {f.strategy === 'RSI_REVERSION' && (
+        <div className="pt-3 border-t border-slate-800">
+          <div className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-1">
+            RSI mean reversion (Strategy 3)
+          </div>
+          <p className="text-[11px] text-slate-500 mb-2 leading-snug">
+            Daily candles, reuses the same trade lifecycle with a fixed-%-target
+            exit (the spec's own "Fixed % target" branch, vs. the alternative
+            RSI&gt;60/EMA20 indicator-target — not built, see funnel_rsi.py
+            docstring). Entry: Close &gt; EMA200, prior session&apos;s RSI(14) below
+            the threshold, today a bullish candle. Macro filter uses NIFTYBEES as
+            a Nifty 50 proxy (only has data from 2019 onward — earlier signals are
+            not macro-gated). Unlike Strategy 2, the time-stop here is
+            unconditional (no half-booking to exempt it).
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
+            <Field label="RSI entry threshold" hint="Spec sweep: 30 vs 35."
+              value={f.rsi_entry_threshold} onChange={set('rsi_entry_threshold')}
+              type="number" min="10" max="50" step="1" />
+            <Field label="Stop %" value={f.rsi_stop_pct} onChange={set('rsi_stop_pct')}
+              type="number" min="1" max="15" step="0.5" />
+            <Field label="Target %" value={f.rsi_target_pct} onChange={set('rsi_target_pct')}
+              type="number" min="1" max="20" step="0.5" />
+            <Field label="Max holding days (time-stop)"
+              value={f.max_holding_days} onChange={set('max_holding_days')}
+              type="number" min="1" max="60" />
+            <Field label="Account risk % per trade"
+              value={f.risk_per_trade_pct} onChange={set('risk_per_trade_pct')}
+              type="number" min="0.1" max="10" step="0.1" />
+            <Field label="Max capital % per trade"
+              value={f.max_capital_per_trade_pct} onChange={set('max_capital_per_trade_pct')}
+              type="number" min="1" max="50" step="1" />
+            <Field label="Max new picks per day"
+              value={f.max_picks_per_track} onChange={set('max_picks_per_track')}
+              type="number" min="1" max="10" />
+            <Field label="Entry order resting window (days)"
+              value={f.resting_window_days} onChange={set('resting_window_days')}
+              type="number" min="1" max="20" />
           </div>
           <label className="flex items-start gap-2 mt-3 text-xs text-slate-400">
             <input type="checkbox" checked={!!f.stacking_guard}
@@ -1141,18 +1459,35 @@ const fmtPnl = (v) => {
 
 function RunRow({ run, selected, onSelect, onCancel, cancelling, rowRef, onKeyDown }) {
   const pct = run.progressTotalDays ? Math.round((run.progressDay / run.progressTotalDays) * 100) : null;
+  const isRunning = run.status === 'RUNNING';
+  const progressText = isRunning
+    ? (pct != null
+        ? `${pct}% (day ${run.progressDay}/${run.progressTotalDays})`
+        : '🔄 Starting...')
+    : null;
+
+  const executedAt = run.startedAt ? new Date(run.startedAt).toLocaleString() : '—';
+  const execTime = run.execSeconds ? `${(run.execSeconds / 60).toFixed(1)}m` : '—';
+
   return (
     <tr ref={rowRef} tabIndex={0} onKeyDown={onKeyDown} onClick={() => onSelect(run.id)}
       className={`cursor-pointer border-t border-slate-800 hover:bg-slate-800/40 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-emerald-500 ${selected ? 'bg-slate-800/60' : ''}`}>
-      <td className="py-1.5 px-2 text-xs text-slate-200 whitespace-nowrap">#{run.id}</td>
+      <td className="py-1.5 px-2 text-xs text-slate-200 whitespace-nowrap">#{run.id}<AuditBadges run={run} /></td>
+      <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap" title={`Executed: ${executedAt}`}>
+        {executedAt}
+      </td>
+      <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap" title={`Time taken: ${execTime}`}>
+        {execTime}
+      </td>
       <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap" title={`${run.startDate} → ${run.endDate}`}>
         {fmtWindowShort(run.startDate, run.endDate)}
       </td>
       <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap">{run.trackMode}</td>
       <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap">{fmtInrCompact(run.capital)}</td>
-      <td className={`py-1.5 px-2 text-xs font-semibold whitespace-nowrap ${STATUS_COLOR[run.status] || 'text-slate-300'}`}>
+      <td className={`py-1.5 px-2 text-xs font-semibold whitespace-nowrap ${STATUS_COLOR[run.status] || 'text-slate-300'}`}
+        title={progressText || undefined}>
         {run.status}
-        {run.status === 'RUNNING' && pct != null && <span className="text-slate-400 font-normal"> · {pct}%</span>}
+        {isRunning && progressText && <span className={`font-normal ${pct != null ? 'text-emerald-400' : 'text-amber-400 animate-pulse'}`}> · {progressText}</span>}
       </td>
       <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap">{run.tradeCount ?? '—'}</td>
       {/* Realized / unrealized / total apply to EVERY strategy — a portfolio run
@@ -1171,28 +1506,27 @@ function RunRow({ run, selected, onSelect, onCancel, cancelling, rowRef, onKeyDo
         title={run.totalPnl != null ? `Total ₹${run.totalPnl.toLocaleString('en-IN')}` : undefined}>
         {fmtPnl(run.totalPnl)}
       </td>
-      {/* Path metrics — NULL on non-PORTFOLIO runs, shown as em-dash rather than
-          0 so an empty cell is never mistaken for a measured zero. */}
+      {/* Path metrics — extracted via runMetrics.js fallback chains (generic
+          MtM columns first, pf* second). An em-dash now means "genuinely not
+          computed" (and logs a console warning), not "wrong field name". */}
       <td className={`py-1.5 px-2 text-xs font-medium whitespace-nowrap tabular-nums ${
             isShortWindow(run) ? 'text-slate-500 italic' : 'text-emerald-300'}`}
         title={isShortWindow(run)
           ? 'Annualised from a window under 2 years — not comparable with a continuous run'
-          : 'Compound annual growth rate'}>
-        {run.pfCagrPct != null
-          ? `${run.pfCagrPct.toFixed(1)}%${isShortWindow(run) ? '*' : ''}`
-          : '—'}
+          : 'Compound annual growth rate (mark-to-market weekly)'}>
+        {fmtCagr(getCagr(run), isShortWindow(run))}
       </td>
       <td className="py-1.5 px-2 text-xs whitespace-nowrap tabular-nums text-rose-300"
-        title="Peak-to-trough drawdown on the daily equity curve">
-        {run.pfMaxDDPct != null ? `−${run.pfMaxDDPct.toFixed(1)}%` : '—'}
+        title="Peak-to-trough drawdown, open positions marked to market weekly">
+        {fmtMaxDD(getMaxDD(run))}
       </td>
       <td className="py-1.5 px-2 text-xs whitespace-nowrap tabular-nums text-amber-300/90"
-        title="Worst return over any rolling 252-session window">
-        {run.pfWorst12mPct != null ? `${run.pfWorst12mPct.toFixed(1)}%` : '—'}
+        title="Worst return over any rolling 12-month window (MtM)">
+        {fmtW12m(getWorst12m(run))}
       </td>
       <td className="py-1.5 px-2 text-xs font-semibold whitespace-nowrap tabular-nums text-slate-200"
         title="Martin ratio = CAGR / ulcer index. Return per unit of time-weighted pain.">
-        {run.pfMartin != null ? run.pfMartin.toFixed(2) : '—'}
+        {fmtRatio(getMartin(run))}
       </td>
       <SettingsCell run={run} />
       <td className="py-1.5 px-2 text-xs">
@@ -1216,22 +1550,39 @@ const SORTS = {
   tradesDesc:{ label: 'Trades ↓',       fn: (a, b) => (b.tradeCount ?? 0) - (a.tradeCount ?? 0) },
 };
 
+// Rows rendered before the infinite-scroll sentinel asks for more. 40 rows
+// paints instantly; the sentinel adds PAGE more each time it becomes visible,
+// so "smooth pagination" without a page-picker widget for a 250-row list.
+const PAGE = 40;
+
 function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
   const isMobile = useIsMobile();
   const rowRefs = useRef({});
+  const sentinelRef = useRef(null);
   const [sortKey, setSortKey] = useState('newest');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [trackFilter, setTrackFilter] = useState('ALL');
+  const [strategyFilter, setStrategyFilter] = useState('ALL');
+  const [idFilter, setIdFilter] = useState('');
+  const [dateFilter, setDateFilter] = useState('');   // executed on/after
   const [query, setQuery] = useState('');
   const [winnersOnly, setWinnersOnly] = useState(false);
+  const [limit, setLimit] = useState(PAGE);
+
+  const strategies = useMemo(
+    () => Array.from(new Set(runs.map((r) => r.strategy).filter(Boolean))).sort(), [runs]);
 
   // Filter first, then sort — so the arrow-key index below always refers to
   // the list actually rendered.
-  const visible = useMemo(() => {
+  const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const idQ = idFilter.trim().replace(/^#/, '');
     return runs
       .filter((r) => statusFilter === 'ALL' || r.status === statusFilter)
       .filter((r) => trackFilter === 'ALL' || r.trackMode === trackFilter)
+      .filter((r) => strategyFilter === 'ALL' || r.strategy === strategyFilter)
+      .filter((r) => !idQ || String(r.id).startsWith(idQ))
+      .filter((r) => !dateFilter || (r.startedAt && r.startedAt.slice(0, 10) >= dateFilter))
       .filter((r) => !winnersOnly || (r.totalPnl ?? 0) > 0)
       .filter((r) => {
         if (!q) return true;
@@ -1240,7 +1591,25 @@ function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
         return hay.includes(q);
       })
       .sort(SORTS[sortKey].fn);
-  }, [runs, sortKey, statusFilter, trackFilter, query, winnersOnly]);
+  }, [runs, sortKey, statusFilter, trackFilter, strategyFilter, idFilter, dateFilter, query, winnersOnly]);
+
+  // Reset the window when the filter set changes, so a new filter never
+  // starts scrolled into the middle of the previous result set.
+  useEffect(() => { setLimit(PAGE); },
+    [sortKey, statusFilter, trackFilter, strategyFilter, idFilter, dateFilter, query, winnersOnly]);
+
+  const visible = useMemo(() => filtered.slice(0, limit), [filtered, limit]);
+
+  // Infinite scroll: grow the window when the sentinel row scrolls into view.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || limit >= filtered.length) return;
+    const obs = new IntersectionObserver(
+      (entries) => entries[0].isIntersecting && setLimit((l) => l + PAGE),
+      { root: el.closest('[data-runlist-scroll]') || null, rootMargin: '120px' });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [limit, filtered.length]);
 
   const move = (idx, delta) => {
     const target = visible[idx + delta];
@@ -1259,8 +1628,17 @@ function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
         <input type="search" value={query} onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search notes / settings / #id…"
-          className="flex-1 min-w-[180px] bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-xs" />
+          placeholder="Search notes / settings…"
+          className="flex-1 min-w-[140px] bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-xs" />
+        <input type="search" value={idFilter} onChange={(e) => setIdFilter(e.target.value)}
+          placeholder="#id" title="Filter by run id"
+          className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-xs" />
+        <select value={strategyFilter} onChange={(e) => setStrategyFilter(e.target.value)} className={selCls} title="Strategy">
+          <option value="ALL">All strategies</option>
+          {strategies.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <input type="date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)}
+          title="Executed on/after" className={selCls} />
         <select value={sortKey} onChange={(e) => setSortKey(e.target.value)} className={selCls} title="Sort">
           {Object.entries(SORTS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
         </select>
@@ -1281,14 +1659,14 @@ function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
             className="accent-emerald-500" />
           Profitable only
         </label>
-        {visible.length !== runs.length && (
-          <span className="text-[11px] text-slate-500">{visible.length}/{runs.length}</span>
+        {filtered.length !== runs.length && (
+          <span className="text-[11px] text-slate-500">{filtered.length}/{runs.length}</span>
         )}
       </div>
 
       {!runs.length ? (
         <div className="text-sm text-slate-400 px-1">No backtest runs yet — configure one above.</div>
-      ) : !visible.length ? (
+      ) : !filtered.length ? (
         <div className="text-sm text-slate-400 px-1">No runs match these filters.</div>
       ) : isMobile ? (
         /* A 15-column table does not become usable on a phone by scrolling
@@ -1346,11 +1724,16 @@ function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
           })}
         </div>
       ) : (
-    <div className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto max-h-[480px] overflow-y-auto">
-      <table className="w-full table-auto">
+    <div data-runlist-scroll
+      className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto max-h-[480px] overflow-y-auto">
+      {/* min-w keeps 17 columns from clipping into each other on smaller
+          displays — the container scrolls horizontally instead. */}
+      <table className="w-full table-auto min-w-[1180px]">
         <thead className="sticky top-0 bg-slate-900 z-10">
           <tr className="text-left text-[10px] text-slate-500 uppercase tracking-wide">
             <th className="py-2 px-2">Run</th>
+            <th className="py-2 px-2">Executed</th>
+            <th className="py-2 px-2">Time</th>
             <th className="py-2 px-2"><LabelWithInfo help={HELP.window}>Window</LabelWithInfo></th>
             <th className="py-2 px-2">Track</th>
             <th className="py-2 px-2"><LabelWithInfo help={HELP.capital}>Capital</LabelWithInfo></th>
@@ -1374,6 +1757,13 @@ function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
               rowRef={(el) => { rowRefs.current[r.id] = el; }}
               onKeyDown={(e) => handleKeyDown(e, idx)} />
           ))}
+          {limit < filtered.length && (
+            <tr ref={sentinelRef}>
+              <td colSpan={17} className="py-2 px-2 text-center text-[11px] text-slate-500">
+                loading {Math.min(PAGE, filtered.length - limit)} more of {filtered.length - limit}…
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
     </div>
@@ -1392,7 +1782,7 @@ const fmtInrCompact = (n) => {
   if (abs >= 1000) return `${sign}₹${(abs / 1000).toFixed(1)}k`;
   return `${sign}₹${Math.round(abs)}`;
 };
-const fmtAxisDate = (d) => (d ? `${d.slice(8, 10)}-${d.slice(5, 7)}` : '');
+const fmtAxisDate = (d) => (d ? `${d.slice(2, 4)}-${d.slice(5, 7)}-${d.slice(8, 10)}` : ''); // YY-MM-DD
 
 // "Nice numbers for graph labels" (Heckbert) — picks a round step (1/2/5 x
 // 10^n) instead of naively interpolating min..max, so ticks read as e.g.
@@ -1501,11 +1891,157 @@ function PortfolioEquity({ points, capital }) {
   );
 }
 
+// View modes for the equity chart (2026-08-17 refactor). The audit showed
+// realized-only equity hides ~half the true drawdown, so the chart must be
+// able to show the LEVEL including open-position marks, not just flows.
+//   mtm      — capital + cumulative realized + unrealized (account level)
+//   realized — capital + cumulative realized only (cash view)
+//   flows    — the original 4-series flow chart (realized/unrealized as flows)
+// Drawdown overlay: % below running peak of the active level series.
+const EQ_MODES = [
+  { id: 'mtm', label: 'MtM total equity' },
+  { id: 'realized', label: 'Realized-only' },
+  { id: 'flows', label: 'Flows (legacy)' },
+];
+
+function LevelEquityChart({ points, capital, mode, showDD }) {
+  const [tip, setTip] = useState(null);
+  // The quant track IS the whole book for single-track strategies
+  // (WEEKLY_BREAKOUT/INDEX_TF write quant_rank=1 on every trade). Summing
+  // quant+AI would double-count symbols picked by both tracks on BREAKOUT
+  // runs, so the level view is defined on the quant series alone.
+  const vals = points.map((p) => capital + (p.quantRealizedCumPnl ?? 0)
+    + (mode === 'mtm' ? (p.quantUnrealizedPnl ?? 0) : 0));
+  const W = 760, H = 260;
+  const M = { top: 24, right: 46, bottom: 30, left: 74 };
+  const plotW = W - M.left - M.right, plotH = H - M.top - M.bottom;
+  const { ticks: yTicks, min: yMin, max: yMax } =
+    niceTicks(Math.min(capital, ...vals), Math.max(capital, ...vals), 5);
+  const yRange = yMax - yMin || 1;
+  const x = (i) => M.left + (i / Math.max(points.length - 1, 1)) * plotW;
+  const y = (v) => M.top + plotH - ((v - yMin) / yRange) * plotH;
+
+  let peak = -Infinity;
+  const peaks = vals.map((v) => (peak = Math.max(peak, v)));
+  const dds = vals.map((v, i) => (peaks[i] > 0 ? (peaks[i] - v) / peaks[i] * 100 : 0));
+  const maxDD = Math.max(...dds);
+  const yDD = (d) => M.top + (d / Math.max(maxDD, 1)) * plotH * 0.85; // 0 at top
+
+  const line = vals.map((v, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(v)}`).join(' ');
+  const ddLine = dds.map((d, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${yDD(d)}`).join(' ');
+  const nT = Math.min(6, points.length);
+  const tIdx = Array.from({ length: nT }, (_, i) => Math.round((i / Math.max(nT - 1, 1)) * (points.length - 1)));
+
+  const onMove = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const fx = ((e.clientX - rect.left) / rect.width) * W;
+    let i = Math.round(((fx - M.left) / plotW) * (points.length - 1));
+    i = Math.max(0, Math.min(points.length - 1, i));
+    setTip({ i,
+      leftPx: (x(i) / W) * rect.width,
+      flip: x(i) > W * 0.72,
+      wrapW: rect.width });
+  };
+
+  return (
+    <div className="relative">
+      <div className="flex flex-wrap gap-4 text-xs mb-2">
+        <span className="text-slate-400">End <b className="text-emerald-300">{fmtInrCompact(vals[vals.length - 1])}</b></span>
+        <span className="text-slate-400">Peak <b className="text-slate-200">{fmtInrCompact(Math.max(...vals))}</b></span>
+        <span className="text-slate-400">Max DD (daily curve est.) <b className="text-rose-300">−{maxDD.toFixed(1)}%</b>
+          {mode === 'realized' && <i className="text-slate-500"> (realized-only — understates true DD)</i>}
+          {mode === 'mtm' && <i className="text-slate-500"> — official figure is the weekly-MtM number in the KPI bar / run list</i>}
+        </span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="w-full h-64 cursor-crosshair"
+        onMouseMove={onMove} onMouseLeave={() => setTip(null)}>
+        {yTicks.map((v, i) => (
+          <g key={i}>
+            <line x1={M.left} y1={y(v)} x2={W - M.right} y2={y(v)} stroke="#334155" strokeWidth="1" strokeDasharray="3,3" />
+            <text x={M.left - 8} y={y(v) + 3} fontSize="10" fill="#94a3b8" textAnchor="end">{fmtInrCompact(v)}</text>
+          </g>
+        ))}
+        <line x1={M.left} y1={y(capital)} x2={W - M.right} y2={y(capital)} stroke="#64748b" strokeWidth="1.5" />
+        <text x={M.left + 4} y={y(capital) - 4} fontSize="9" fill="#94a3b8">start</text>
+        {showDD && <path d={ddLine} fill="none" stroke="#f43f5e" strokeWidth="1.4" opacity="0.75" />}
+        <path d={line} fill="none" stroke={mode === 'mtm' ? '#34d399' : '#38bdf8'} strokeWidth="1.8" />
+        {tip && (
+          <g>
+            <line x1={x(tip.i)} y1={M.top} x2={x(tip.i)} y2={H - M.bottom} stroke="#94a3b8" strokeWidth="1" strokeDasharray="3,2" />
+            <circle cx={x(tip.i)} cy={y(vals[tip.i])} r="3.5" fill={mode === 'mtm' ? '#34d399' : '#38bdf8'} stroke="#0f172a" strokeWidth="1.5" />
+          </g>
+        )}
+        {showDD && (
+          <text x={W - M.right + 4} y={M.top + 8} fontSize="9" fill="#f43f5e">DD%</text>
+        )}
+        {tIdx.map((idx, i) => (
+          <text key={i} x={x(idx)} y={H - 10} fontSize="9" fill="#94a3b8" textAnchor="middle">
+            {String(points[idx].date).slice(0, 7)}
+          </text>
+        ))}
+      </svg>
+      {tip && (() => {
+        const pnt = points[tip.i];
+        const eq = vals[tip.i];
+        return (
+          <div className="absolute z-10 pointer-events-none bg-slate-800 border border-slate-600 rounded px-2.5 py-1.5 text-[11px] leading-4 text-slate-200 shadow-lg whitespace-nowrap"
+            style={{ left: tip.flip ? tip.leftPx - 190 : tip.leftPx + 12, top: 42 }}>
+            <div className="font-semibold text-slate-100">{pnt.date}</div>
+            <div>equity: <span className="text-emerald-300">{fmtInrCompact(eq)}</span></div>
+            <div>realized cum: {fmtInrCompact((pnt.quantRealizedCumPnl ?? 0))}</div>
+            <div>unrealized: {fmtInrCompact((pnt.quantUnrealizedPnl ?? 0))}</div>
+            <div>drawdown: <span className="text-rose-300">−{dds[tip.i].toFixed(1)}%</span> <span className="text-slate-400">(peak {fmtInrCompact(peaks[tip.i])})</span></div>
+          </div>
+        );
+      })()}
+      <div className="text-[11px] text-slate-500 mt-1">
+        {mode === 'mtm'
+          ? 'Green = account level incl. open positions marked to market.'
+          : 'Blue = cash equity from closed trades only.'}
+        {showDD && ' Red = % below running peak (own scale, 0 at top).'}
+        {' Hover the chart for day-level detail.'}
+      </div>
+    </div>
+  );
+}
+
 function EquityCurve({ points, capital }) {
+  const [mode, setMode] = useState('mtm');
+  const [showDD, setShowDD] = useState(false);
   const [showRealized, setShowRealized] = useState(true);
   const [showUnrealized, setShowUnrealized] = useState(true);
+  const [tooltip, setTooltip] = useState(null);
 
   if (!points.length) return <div className="text-sm text-slate-500 py-8 text-center">No trade activity yet.</div>;
+
+  const modeBar = (
+    <div className="flex flex-wrap items-center gap-2 mb-2">
+      {EQ_MODES.map((m) => (
+        <button key={m.id} type="button" onClick={() => setMode(m.id)}
+          className={`px-2 py-1 text-[11px] rounded border ${mode === m.id
+            ? 'bg-emerald-700/60 border-emerald-500 text-white'
+            : 'bg-slate-800 border-slate-600 text-slate-300 hover:text-white'}`}>
+          {m.label}
+        </button>
+      ))}
+      {mode !== 'flows' && (
+        <label className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer select-none ml-2">
+          <input type="checkbox" checked={showDD} onChange={(e) => setShowDD(e.target.checked)}
+            className="accent-rose-500" />
+          Drawdown % overlay
+        </label>
+      )}
+    </div>
+  );
+
+  if (mode !== 'flows') {
+    return (
+      <div>
+        {modeBar}
+        <LevelEquityChart points={points} capital={capital} mode={mode} showDD={showDD} />
+      </div>
+    );
+  }
 
   const visible = SERIES.filter((s) =>
     (s.group === 'realized' && showRealized) || (s.group === 'unrealized' && showUnrealized));
@@ -1527,8 +2063,21 @@ function EquityCurve({ points, capital }) {
   const xTickIdx = Array.from({ length: xTickCount }, (_, i) =>
     Math.round((i / Math.max(xTickCount - 1, 1)) * (points.length - 1)));
 
+  const handleMouseMove = (e) => {
+    const svg = e.currentTarget;
+    const rect = svg.getBoundingClientRect();
+    const px = (e.clientX - rect.left) / rect.width * W;
+    const idx = Math.round((px - M.left) / plotW * (points.length - 1));
+    if (idx >= 0 && idx < points.length) {
+      const p = points[idx];
+      const values = visible.map((s) => ({ label: s.label, value: p[s.key] })).filter((v) => v.value != null);
+      setTooltip({ idx, x: px, y: e.clientY - rect.top, ...p, values });
+    }
+  };
+
   return (
     <div>
+      {modeBar}
       <div className="flex flex-wrap items-center gap-4 mb-2">
         <label className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer select-none">
           <input type="checkbox" checked={showRealized} onChange={(e) => setShowRealized(e.target.checked)}
@@ -1545,38 +2094,52 @@ function EquityCurve({ points, capital }) {
       {!visible.length ? (
         <div className="text-sm text-slate-500 py-8 text-center">Toggle Realized or Unrealized to see the curve.</div>
       ) : (
-        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="w-full h-64">
-          {/* Y gridlines + ₹ / % labels — values are "nice" round steps, not raw min/max fractions */}
-          {yTicks.map((v, i) => (
-            <g key={i}>
-              <line x1={M.left} y1={y(v)} x2={W - M.right} y2={y(v)}
-                stroke="#334155" strokeWidth="1" strokeDasharray={Math.abs(v) < 1e-6 ? '0' : '3,3'} />
-              <text x={M.left - 8} y={y(v) + 3} fontSize="10" fill="#94a3b8" textAnchor="end">
-                {fmtInrCompact(v)}
-              </text>
-              {capital ? (
-                <text x={W - M.right + 4} y={y(v) + 3} fontSize="9" fill="#64748b" textAnchor="start">
-                  {((v / capital) * 100).toFixed(1)}%
+        <div className="relative">
+          <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="w-full h-64 cursor-crosshair"
+            onMouseMove={handleMouseMove} onMouseLeave={() => setTooltip(null)}>
+            {/* Y gridlines + ₹ / % labels — values are "nice" round steps, not raw min/max fractions */}
+            {yTicks.map((v, i) => (
+              <g key={i}>
+                <line x1={M.left} y1={y(v)} x2={W - M.right} y2={y(v)}
+                  stroke="#334155" strokeWidth="1" strokeDasharray={Math.abs(v) < 1e-6 ? '0' : '3,3'} />
+                <text x={M.left - 8} y={y(v) + 3} fontSize="10" fill="#94a3b8" textAnchor="end">
+                  {fmtInrCompact(v)}
                 </text>
-              ) : null}
-            </g>
-          ))}
-          {/* X date labels */}
-          {xTickIdx.map((idx) => (
-            <text key={idx} x={x(idx)} y={H - M.bottom + 16} fontSize="10" fill="#94a3b8" textAnchor="middle">
-              {fmtAxisDate(points[idx].date)}
-            </text>
-          ))}
-          {visible.map((s) => (
-            <path key={s.key} d={path(s.key)} fill="none" stroke={s.color} strokeWidth="2"
-              strokeDasharray={s.dash} />
-          ))}
-          {visible.map((s, i) => (
-            <text key={s.key} x={M.left + i * 110} y={16} fontSize="10" fill={s.color}>
-              {s.dash === '0' ? '●' : '- -'} {s.label}
-            </text>
-          ))}
-        </svg>
+                {capital ? (
+                  <text x={W - M.right + 4} y={y(v) + 3} fontSize="9" fill="#64748b" textAnchor="start">
+                    {((v / capital) * 100).toFixed(1)}%
+                  </text>
+                ) : null}
+              </g>
+            ))}
+            {/* X date labels */}
+            {xTickIdx.map((idx) => (
+              <text key={idx} x={x(idx)} y={H - M.bottom + 16} fontSize="10" fill="#94a3b8" textAnchor="middle">
+                {fmtAxisDate(points[idx].date)}
+              </text>
+            ))}
+            {visible.map((s) => (
+              <path key={s.key} d={path(s.key)} fill="none" stroke={s.color} strokeWidth="2"
+                strokeDasharray={s.dash} />
+            ))}
+            {visible.map((s, i) => (
+              <text key={s.key} x={M.left + i * 110} y={16} fontSize="10" fill={s.color}>
+                {s.dash === '0' ? '●' : '- -'} {s.label}
+              </text>
+            ))}
+          </svg>
+          {tooltip && (
+            <div className="absolute bg-slate-950 border border-slate-600 rounded px-3 py-2 text-xs text-slate-200 pointer-events-none z-10"
+              style={{ left: `${Math.min(tooltip.x + 10, W - 150)}px`, top: `${tooltip.y - 40}px` }}>
+              <div className="font-semibold text-slate-100">{tooltip.date}</div>
+              {tooltip.values.map((v, i) => (
+                <div key={i} className="text-slate-300">
+                  {v.label}: <span className={v.value > 0 ? 'text-emerald-400' : 'text-red-400'}>{fmtInr(v.value)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -1609,7 +2172,7 @@ function KpiCard({ title, stats, color, capital }) {
         <div>
           <div className="text-lg font-bold text-amber-300">{fmtInr(stats.maxDrawdown)}</div>
           <div className="text-[10px] text-slate-400 uppercase">
-            Max drawdown{stats.maxDrawdownPct != null ? ` (−${stats.maxDrawdownPct.toFixed(1)}%)` : ''}
+            Realized-only DD{stats.maxDrawdownPct != null ? ` (−${stats.maxDrawdownPct.toFixed(1)}%)` : ''} — excl. open-position marks
           </div>
         </div>
         <div>
@@ -1631,7 +2194,31 @@ function KpiCard({ title, stats, color, capital }) {
   );
 }
 
-function RunSummary({ runId, status }) {
+// Horizontal primary-KPI bar — the five numbers that decide whether a run is
+// worth opening, in one row. Values come from the run row (MtM path stats via
+// runMetrics fallbacks) + the summary (win rate).
+function KpiBar({ run, summary }) {
+  const winRate = summary?.quant?.count ? summary.quant.winRate : null;
+  const items = [
+    { label: 'CAGR', value: fmtCagr(getCagr(run)), tone: (getCagr(run) ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-400' },
+    { label: 'True MtM MaxDD', value: fmtMaxDD(getMaxDD(run)), tone: 'text-rose-300' },
+    { label: 'Max underwater', value: fmtUwMonths(getMaxUwDays(run)), tone: 'text-amber-300' },
+    { label: 'Calmar', value: (getCagr(run) != null && getMaxDD(run)) ? (getCagr(run) / Math.abs(getMaxDD(run))).toFixed(2) : '—', tone: 'text-slate-100' },
+    { label: 'Win rate', value: winRate != null ? `${winRate}%` : '—', tone: 'text-sky-300' },
+  ];
+  return (
+    <div className="flex flex-wrap items-stretch divide-x divide-slate-700 bg-slate-900/70 border border-slate-700 rounded-lg overflow-hidden">
+      {items.map((it) => (
+        <div key={it.label} className="flex-1 min-w-[110px] px-3 py-2 text-center">
+          <div className={`text-base font-bold tabular-nums ${it.tone}`}>{it.value}</div>
+          <div className="text-[9px] text-slate-400 uppercase tracking-wide">{it.label}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RunSummary({ run, runId, status }) {
   const [summary, setSummary] = useState(null);
   const [error, setError] = useState('');
 
@@ -1653,6 +2240,7 @@ function RunSummary({ runId, status }) {
 
   return (
     <div className="space-y-4">
+      {run && <KpiBar run={run} summary={summary} />}
       {pf ? (
         /* A continuous book is judged on the PATH, so lead with CAGR and
            drawdown. The quant/AI split below does not apply to it — it is one
@@ -1689,12 +2277,21 @@ function RunSummary({ runId, status }) {
             </div>
           )}
         </>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <KpiCard title="📐 Quant track" stats={summary.quant} color="text-sky-300" capital={summary.capital} />
-          <KpiCard title="🤖 AI track" stats={summary.ai} color="text-purple-300" capital={summary.capital} />
-        </div>
-      )}
+      ) : (() => {
+        /* AI track auto-hide: WEEKLY_BREAKOUT / INDEX_TF runs never populate
+           the AI track, so its card was a permanently-empty box eating half
+           the row. Hidden when it has zero closed trades AND zero open
+           positions; the quant card then takes the full width. */
+        const aiEmpty = !(summary.ai?.count || summary.ai?.openPositionCount);
+        return (
+          <div className={`grid grid-cols-1 gap-4 ${aiEmpty ? '' : 'sm:grid-cols-2'}`}>
+            <KpiCard title="📐 Quant track" stats={summary.quant} color="text-sky-300" capital={summary.capital} />
+            {!aiEmpty && (
+              <KpiCard title="🤖 AI track" stats={summary.ai} color="text-purple-300" capital={summary.capital} />
+            )}
+          </div>
+        );
+      })()}
       <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-3 sm:p-4">
         <div className="text-sm font-semibold text-slate-200 mb-2">
           <LabelWithInfo help={summary.portfolioEquity ? HELP.equityChart : undefined}>
@@ -1705,10 +2302,15 @@ function RunSummary({ runId, status }) {
           ? <PortfolioEquity points={summary.portfolioEquity} capital={summary.capital} />
           : <EquityCurve points={summary.equityCurve} capital={summary.capital} />}
       </div>
-      <div className="flex flex-wrap gap-4 text-sm text-slate-300">
-        <span>Open positions: <b className="text-blue-300">{summary.openCount}</b></span>
-        <span>Pending orders: <b className="text-slate-400">{summary.pendingCount}</b></span>
-        <span>Capital deployed: <b className="text-slate-100">{fmtInr(summary.totalDeployed)}</b> of {fmtInr(summary.capital)}</span>
+      {/* Sticky status bar — open-position / deployment numbers stay visible
+          however far the detail panel scrolls, instead of living only at the
+          bottom of a long page. */}
+      <div className="sticky bottom-0 z-20 -mx-1 px-1">
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-300 bg-slate-950/95 backdrop-blur border border-slate-700 rounded-lg px-3 py-2 shadow-lg">
+          <span>Open positions: <b className="text-blue-300">{summary.openCount}</b></span>
+          <span>Pending orders: <b className="text-slate-400">{summary.pendingCount}</b></span>
+          <span>Capital deployed: <b className="text-slate-100">{fmtInr(summary.totalDeployed)}</b> of {fmtInr(summary.capital)}</span>
+        </div>
       </div>
     </div>
   );
@@ -1876,6 +2478,166 @@ function SortableTh({ label, sortKey, active, dir, onClick, className = '' }) {
   );
 }
 
+
+// ---- Trade-log CSV export + scatter (2026-08-20) -------------------------
+const TRADE_CSV_FIELDS = ['symbol','quantRank','aiRank','signalDate','entryFillDate',
+  'entryFillPrice','exitDate','exitPrice','exitReason','quantity','allocation',
+  'realizedPnl','grossPnl','unrealizedPnl','rMultiple','holdingDays','status'];
+
+function exportTradesCsv(rows, runId) {
+  if (!rows?.length) return;
+  const header = [...TRADE_CSV_FIELDS, 'returnPct'].join(',');
+  const lines = rows.map((t) => [
+    ...TRADE_CSV_FIELDS.map((f) => {
+      const v = t[f];
+      if (v == null) return '';
+      const str = String(v);
+      return str.includes(',') ? `"${str}"` : str;
+    }),
+    (t.allocation > 0 && t.realizedPnl != null)
+      ? ((100 * t.realizedPnl) / t.allocation).toFixed(2) : '',
+  ].join(','));
+  const blob = new Blob([[header, ...lines].join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `backtest_run_${runId}_trades.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Each dot = one CLOSED trade. Axis pairs selectable; hover any dot for the
+// full trade detail. All values are net of costs.
+const fmtScatterInr = (v) => {
+  const a = Math.abs(v);
+  if (a >= 1e7) return `\u20b9${(v / 1e7).toFixed(1)}Cr`;
+  if (a >= 1e5) return `\u20b9${(v / 1e5).toFixed(1)}L`;
+  if (a >= 1e3) return `\u20b9${(v / 1e3).toFixed(0)}k`;
+  return `\u20b9${Math.round(v)}`;
+};
+const fmtMonth = (ts) => new Date(ts).toISOString().slice(0, 7);
+
+const SCATTER_PLOTS = {
+  hold_ret:  { label: 'Holding days vs Return %',
+    x: { k: 'holdingDays', label: 'holding period (days)', fmt: (v) => `${Math.round(v)}d` },
+    y: { k: 'returnPct', label: 'return %', fmt: (v) => `${v.toFixed(1)}%`, zero: true } },
+  date_ret:  { label: 'Entry date vs Return %',
+    x: { k: 'entryTs', label: 'entry date', fmt: fmtMonth, date: true },
+    y: { k: 'returnPct', label: 'return %', fmt: (v) => `${v.toFixed(1)}%`, zero: true } },
+  date_pnl:  { label: 'Entry date vs Realized P&L',
+    x: { k: 'entryTs', label: 'entry date', fmt: fmtMonth, date: true },
+    y: { k: 'realizedPnl', label: 'realized P&L', fmt: fmtScatterInr, zero: true } },
+  rank_ret:  { label: 'Entry rank vs Return %',
+    x: { k: 'rank', label: 'quant rank at entry', fmt: (v) => `#${Math.round(v)}` },
+    y: { k: 'returnPct', label: 'return %', fmt: (v) => `${v.toFixed(1)}%`, zero: true } },
+  alloc_ret: { label: 'Position size vs Return %',
+    x: { k: 'allocation', label: 'capital committed', fmt: fmtScatterInr },
+    y: { k: 'returnPct', label: 'return %', fmt: (v) => `${v.toFixed(1)}%`, zero: true } },
+  hold_pnl:  { label: 'Holding days vs Realized P&L',
+    x: { k: 'holdingDays', label: 'holding period (days)', fmt: (v) => `${Math.round(v)}d` },
+    y: { k: 'realizedPnl', label: 'realized P&L', fmt: fmtScatterInr, zero: true } },
+};
+
+function TradeScatter({ trades }) {
+  const [plotKey, setPlotKey] = useState('hold_ret');
+  const [tip, setTip] = useState(null);
+  const boxRef = useRef(null);
+  const plot = SCATTER_PLOTS[plotKey];
+
+  const base = useMemo(() => trades
+    .filter((t) => t.status === 'CLOSED' && t.allocation > 0 && t.realizedPnl != null)
+    .map((t) => ({
+      sym: t.symbol, exit: t.exitReason || '\u2014', rank: t.quantRank,
+      entryDate: t.entryFillDate, exitDate: t.exitDate,
+      holdingDays: t.holdingDays, allocation: t.allocation,
+      realizedPnl: t.realizedPnl,
+      returnPct: (100 * t.realizedPnl) / t.allocation,
+      entryTs: t.entryFillDate ? new Date(t.entryFillDate).getTime() : null,
+    })), [trades]);
+
+  const pts = useMemo(() => base.filter(
+    (d) => d[plot.x.k] != null && d[plot.y.k] != null,
+  ), [base, plot]);
+
+  if (base.length < 3) return null;
+
+  const W = 860, H = 300, L = 56, R = 14, T = 14, B = 36;
+  const xs = pts.map((d) => d[plot.x.k]), ys = pts.map((d) => d[plot.y.k]);
+  let x0 = Math.min(...xs), x1 = Math.max(...xs);
+  let y0 = Math.min(...ys), y1 = Math.max(...ys);
+  if (plot.y.zero) { y0 = Math.min(y0, 0); y1 = Math.max(y1, 0); }
+  if (x1 === x0) x1 = x0 + 1;
+  if (y1 === y0) y1 = y0 + 1;
+  const xp = (x1 - x0) * 0.04, yp = (y1 - y0) * 0.06;
+  x0 -= xp; x1 += xp; y0 -= yp; y1 += yp;
+  const sx = (v) => L + ((W - L - R) * (v - x0)) / (x1 - x0);
+  const sy = (v) => T + (H - T - B) * (1 - (v - y0) / (y1 - y0));
+  const xTicks = [0.08, 0.32, 0.56, 0.8].map((f) => x0 + (x1 - x0) * f);
+  const yTicks = [0.15, 0.4, 0.65, 0.9].map((f) => y0 + (y1 - y0) * f);
+  const winKey = plot.y.zero ? plot.y.k : 'returnPct';
+  const wins = pts.filter((d) => d[winKey] > 0).length;
+
+  const showTip = (e, d) => {
+    const rect = boxRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    let left = e.clientX - rect.left + 14;
+    if (left > rect.width - 200) left -= 224;
+    setTip({ left, top: e.clientY - rect.top - 12, d });
+  };
+
+  return (
+    <div ref={boxRef} className="relative bg-slate-900/60 border border-slate-700 rounded-lg p-3 overflow-x-auto">
+      <div className="flex flex-wrap items-center gap-3 mb-1 px-1">
+        <select value={plotKey} onChange={(e) => { setPlotKey(e.target.value); setTip(null); }}
+          className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-xs">
+          {Object.entries(SCATTER_PLOTS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+        </select>
+        <span className="text-[11px] text-slate-500">{pts.length} closed trades · {((100 * wins) / (pts.length || 1)).toFixed(1)}% winners · hover a dot for details</span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[700px]" role="img"
+        aria-label={`Scatter of closed trades: ${plot.label}`}
+        onMouseLeave={() => setTip(null)}>
+        {yTicks.map((y, i) => (
+          <g key={`y${i}`}>
+            <line x1={L} y1={sy(y)} x2={W - R} y2={sy(y)} stroke="#334155" strokeWidth="0.6" />
+            <text x={L - 6} y={sy(y) + 3} textAnchor="end" fontSize="10" fill="#64748b">{plot.y.fmt(y)}</text>
+          </g>
+        ))}
+        {plot.y.zero && y0 < 0 && (
+          <g>
+            <line x1={L} y1={sy(0)} x2={W - R} y2={sy(0)} stroke="#94a3b8" strokeWidth="1" strokeDasharray="4 3" />
+            <text x={L - 6} y={sy(0) + 3} textAnchor="end" fontSize="10" fill="#94a3b8">0</text>
+          </g>
+        )}
+        {xTicks.map((x, i) => (
+          <g key={`x${i}`}>
+            <line x1={sx(x)} y1={T} x2={sx(x)} y2={H - B} stroke="#334155" strokeWidth="0.6" />
+            <text x={sx(x)} y={H - B + 14} textAnchor="middle" fontSize="10" fill="#64748b">{plot.x.fmt(x)}</text>
+          </g>
+        ))}
+        <text x={(L + W - R) / 2} y={H - 4} textAnchor="middle" fontSize="10" fill="#64748b">{plot.x.label}</text>
+        {pts.map((d, i) => (
+          <circle key={i} cx={sx(d[plot.x.k])} cy={sy(d[plot.y.k])} r="3.2"
+            fill={d.returnPct > 0 ? '#34d399' : '#fb7185'} fillOpacity="0.65"
+            stroke="transparent" strokeWidth="6"
+            onMouseEnter={(e) => showTip(e, d)} onMouseMove={(e) => showTip(e, d)} />
+        ))}
+      </svg>
+      {tip && (
+        <div className="absolute z-10 pointer-events-none bg-slate-800 border border-slate-600 rounded px-2.5 py-1.5 text-[11px] leading-4 text-slate-200 shadow-lg whitespace-nowrap"
+          style={{ left: tip.left, top: tip.top }}>
+          <div className="font-semibold text-slate-100">{tip.d.sym} {tip.d.rank ? `\u00b7 Q${tip.d.rank}` : ''}</div>
+          <div>{plot.x.label}: <span className="text-slate-100">{plot.x.fmt(tip.d[plot.x.k])}</span></div>
+          <div>{plot.y.label}: <span className={tip.d[plot.y.k] > 0 ? 'text-emerald-300' : 'text-rose-300'}>{plot.y.fmt(tip.d[plot.y.k])}</span></div>
+          <div>return: <span className={tip.d.returnPct > 0 ? 'text-emerald-300' : 'text-rose-300'}>{tip.d.returnPct.toFixed(1)}%</span> · P&L: {fmtScatterInr(tip.d.realizedPnl)}</div>
+          <div>held {tip.d.holdingDays}d · alloc {fmtScatterInr(tip.d.allocation)}</div>
+          <div className="text-slate-400">{tip.d.entryDate} → {tip.d.exitDate || '—'} · {tip.d.exit}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TradeLog({ runId }) {
   const [track, setTrack] = useState('');
   const [status, setStatus] = useState('');
@@ -1883,15 +2645,20 @@ function TradeLog({ runId }) {
   const [sortKey, setSortKey] = useState(null);
   const [sortDir, setSortDir] = useState('desc');
   const [trades, setTrades] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [chartTrade, setChartTrade] = useState(null);
 
+  // Fetch the run's trades ONCE; track/status/exit-reason all filter
+  // client-side, so changing a filter never refetches ~2,000 rows.
   useEffect(() => {
     let alive = true;
-    getBacktestTrades(runId, track || undefined, status || undefined)
-      .then((t) => alive && setTrades(t)).catch((e) => alive && setError(e.message));
+    setLoading(true);
+    getBacktestTrades(runId)
+      .then((t) => { if (alive) { setTrades(t); setLoading(false); } })
+      .catch((e) => { if (alive) { setError(e.message); setLoading(false); } });
     return () => { alive = false; };
-  }, [runId, track, status]);
+  }, [runId]);
 
   const exitReasons = useMemo(
     () => Array.from(new Set(trades.map((t) => t.exitReason).filter(Boolean))).sort(),
@@ -1899,7 +2666,11 @@ function TradeLog({ runId }) {
   );
 
   const rows = useMemo(() => {
-    let out = exitReason ? trades.filter((t) => t.exitReason === exitReason) : trades;
+    let out = trades;
+    if (track === 'quant') out = out.filter((t) => t.quantRank != null);
+    else if (track === 'ai') out = out.filter((t) => t.aiRank != null);
+    if (status) out = out.filter((t) => t.status === status);
+    if (exitReason) out = out.filter((t) => t.exitReason === exitReason);
     if (sortKey) {
       const get = TRADE_SORT_KEYS[sortKey];
       out = [...out].sort((a, b) => (sortDir === 'asc' ? get(a) - get(b) : get(b) - get(a)));
@@ -1934,6 +2705,10 @@ function TradeLog({ runId }) {
           <option value="">All exit reasons</option>
           {exitReasons.map((r) => <option key={r} value={r}>{r}</option>)}
         </select>
+        <button onClick={() => exportTradesCsv(rows, runId)} disabled={!rows.length}
+          className="px-3 py-1.5 text-sm rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-slate-200">
+          ⬇ Export CSV
+        </button>
         {sortKey && (
           <button onClick={() => { setSortKey(null); setSortDir('desc'); }}
             className="px-2 py-1.5 text-xs rounded bg-slate-800 border border-slate-600 text-slate-400 hover:text-white">
@@ -1943,6 +2718,8 @@ function TradeLog({ runId }) {
       </div>
 
       {error && <div className="text-sm text-red-300">{error}</div>}
+
+      {!loading && <TradeScatter trades={rows} />}
 
       <div className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto">
         <table className="w-full min-w-[980px] text-[11px]">
@@ -1998,7 +2775,8 @@ function TradeLog({ runId }) {
             ))}
           </tbody>
         </table>
-        {!rows.length && <div className="text-sm text-slate-500 px-3 py-4">No trades match these filters.</div>}
+        {loading && <div className="text-sm text-slate-400 px-3 py-4 animate-pulse">Loading trades…</div>}
+        {!loading && !rows.length && <div className="text-sm text-slate-500 px-3 py-4">No trades match these filters.</div>}
       </div>
 
       <TradeChartModal runId={runId} trade={chartTrade} onClose={() => setChartTrade(null)} />
@@ -2022,6 +2800,8 @@ export default function Backtest() {
   const [cancellingId, setCancellingId] = useState(null);
   const [formOpen, setFormOpen] = useState(false);
   const [selectionNonce, setSelectionNonce] = useState(0);
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
   const pollRef = useRef(null);
 
   const refresh = async () => {
@@ -2040,7 +2820,7 @@ export default function Backtest() {
 
   useEffect(() => {
     refresh();
-    pollRef.current = setInterval(refresh, 5000);
+    pollRef.current = setInterval(() => { if (!document.hidden) refresh(); }, 15000);
     return () => clearInterval(pollRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -2073,25 +2853,42 @@ export default function Backtest() {
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[760px_1fr] gap-4 items-start">
+    <div className={`grid gap-4 items-start ${leftCollapsed ? 'grid-cols-1' : rightCollapsed ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-[760px_1fr]'}`}>
+      {/* Collapse button row */}
+      <div className="flex justify-between gap-2 lg:col-span-full">
+        <button onClick={() => setLeftCollapsed(!leftCollapsed)}
+          title={leftCollapsed ? 'Show left panel' : 'Hide left panel'}
+          className="px-3 py-1.5 text-xs rounded bg-slate-800 border border-slate-600 text-slate-300 hover:text-white">
+          {leftCollapsed ? '▶ Show left' : '◀ Hide left'}
+        </button>
+        <button onClick={() => setRightCollapsed(!rightCollapsed)}
+          title={rightCollapsed ? 'Show right panel' : 'Hide right panel'}
+          className="px-3 py-1.5 text-xs rounded bg-slate-800 border border-slate-600 text-slate-300 hover:text-white">
+          {rightCollapsed ? '◀ Show right' : 'Hide right ▶'}
+        </button>
+      </div>
+
       {/* Left: new-run form + run list — pinned so it stays visible while
           the right-hand detail panel is what scrolls. */}
+      {!leftCollapsed && (
       <div className="space-y-3 lg:sticky lg:top-4">
-        <RunConfigForm
+        <CompactBacktestForm
           open={formOpen}
           onToggleOpen={setFormOpen}
           onCreated={(id) => { selectRun(id); refresh(); }}
           blocked={!!running}
-          blockedReason={running ? `Run #${running.id} is currently in progress — only one run at a time. Stuck? Use the Stop button on it below.` : ''}
+          blockedReason={running ? `Run #${running.id} in progress` : ''}
         />
 
         {error && <div className="bg-red-900/40 border border-red-700 text-red-200 text-sm rounded px-3 py-2">{error}</div>}
 
         <RunList runs={runs} selectedId={selectedId} onSelect={selectRun} onCancel={cancel} cancellingId={cancellingId} />
       </div>
+      )}
 
       {/* Right: selected run's details, side by side with the list instead
           of stacked below it. */}
+      {!rightCollapsed && (
       <div className="space-y-3 min-w-0">
         {!selected ? (
           <div className="text-sm text-slate-400 px-1 py-8 text-center border border-dashed border-slate-700 rounded-lg">
@@ -2128,12 +2925,13 @@ export default function Backtest() {
               <div className="text-sm text-amber-300">Run in progress — results below will update once trades are simulated. If progress hasn't moved in a while, use Stop to unblock the next run.</div>
             )}
 
-            {detailTab === 'summary' && <RunSummary key={`${selected.id}-${selectionNonce}`} runId={selected.id} status={selected.status} />}
+            {detailTab === 'summary' && <RunSummary key={`${selected.id}-${selectionNonce}`} run={selected} runId={selected.id} status={selected.status} />}
             {detailTab === 'day' && <DayDrilldown runId={selected.id} minDate={selected.startDate} maxDate={selected.endDate} />}
             {detailTab === 'trades' && <TradeLog runId={selected.id} />}
           </>
         )}
       </div>
+      )}
     </div>
   );
 }

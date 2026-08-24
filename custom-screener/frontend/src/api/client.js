@@ -4,7 +4,12 @@ const BASE = '/custom-screener/api';
 async function req(path, opts) {
   const res = await fetch(`${BASE}${path}`, opts);
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(body.detail || `HTTP ${res.status}`);
+    error.response = body;
+    error.status = res.status;
+    throw error;
+  }
   return body;
 }
 
@@ -80,7 +85,7 @@ export const createBacktestRun = (payload) =>
     body: JSON.stringify(payload),
   });
 
-export const listBacktestRuns = () => req('/backtest/runs');
+export const listBacktestRuns = (limit = 100) => req(`/backtest/runs?limit=${limit}`);
 export const getBacktestRun = (id) => req(`/backtest/runs/${id}`);
 export const cancelBacktestRun = (id) => req(`/backtest/runs/${id}/cancel`, { method: 'POST' });
 export const getBacktestSummary = (id) => req(`/backtest/runs/${id}/summary`);
@@ -93,3 +98,22 @@ export const getBacktestTrades = (id, track, status) => {
 };
 export const getBacktestDay = (id, d) => req(`/backtest/runs/${id}/day/${d}`);
 export const backtestTradeChartUrl = (runId, tradeId) => `${BASE}/backtest/runs/${runId}/trades/${tradeId}/chart`;
+
+// --- Backtest Presets ---
+export const listPresets = () => req('/presets');
+export const createPreset = (name, strategy, config) =>
+  req('/presets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, strategy, config }),
+  });
+export const getPreset = (id) => req(`/presets/${id}`);
+export const getPresetByName = (name) => req(`/presets/name/${encodeURIComponent(name)}`);
+export const updatePreset = (id, config) =>
+  req(`/presets/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config }),
+  });
+export const deletePreset = (id) =>
+  req(`/presets/${id}`, { method: 'DELETE' });
