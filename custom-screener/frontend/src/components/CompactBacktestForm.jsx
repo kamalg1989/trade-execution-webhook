@@ -77,7 +77,7 @@ const QUICK_PRESETS = {
     },
   },
   'COMBO 80/20 + ETF Blend': {
-    hint: 'Live allocation \u00b7 blend of runs #1117 \u00d7 #1106 (GOLDBEES): 28.9% CAGR / 19.9% MaxDD / Calmar 1.45 (2019-26) \u00b7 launches the Combo equity sleeve; hold 20% in GOLDBEES (200-DMA long/flat) alongside',
+    hint: 'Live allocation \u00b7 blend of runs #1117 \u00d7 #1440 (GOLDBEES): 21.0% CAGR / 19.9% MaxDD / Calmar 1.06 over the FULL 15.6yr \u00b7 launches the Combo equity sleeve; hold 20% in GOLDBEES (200-DMA long/flat) alongside',
     data: {
       strategy: 'POSITIONAL', capital: 320000,
       startDate: '2011-01-01', endDate: '2026-08-16',
@@ -91,7 +91,7 @@ const QUICK_PRESETS = {
       compoundingEnabled: true, compoundingMode: 'profit_only',
       compoundingMinCapital: 320000, compoundingMaxCapital: 16000000,
       slippagePct: 0.20, exitSlippagePct: '', advPositionCapPct: '',
-      notes: 'UI quick preset: 80% Combo equity sleeve of the 80/20 ETF blend (pair with 20% GOLDBEES 200-DMA; sleeve bake-off runs #1105-#1112, blend via /backtest/blend run_a=1106 run_b=1117 w=0.2, paper book etf_blend)',
+      notes: 'UI quick preset: 80% Combo equity sleeve of the 80/20 ETF blend (pair with 20% GOLDBEES 200-DMA; 15.6yr sleeve bake-off runs #1440/#1601/#1762/#1923/#2084 after the 2011 ETF history backfill; blend via /backtest/blend run_a=1440 run_b=1117 w=0.2; the earlier 28.9% figure was a 7.6yr window and is superseded; paper book etf_blend)',
     },
   },
   'Preset #14 Static': {
