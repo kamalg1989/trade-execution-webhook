@@ -25,6 +25,12 @@ GEMINI_MODEL = os.getenv("AI_GEMINI_MODEL", "gemini-3.1-flash-lite")  # entire
 # ($0.25/$1.50 per M in/out). Verified live against this project's key.
 AI_MODEL = os.getenv("AI_MODEL", HAIKU_MODEL)            # legacy fallback
 MAX_CONCURRENT_AI = int(os.getenv("MAX_CONCURRENT_AI", "5"))
+# Chart rendering (matplotlib/mplfinance) is the RAM-heavy step, not the
+# Gemini network call — a render call briefly holds a full Figure + Agg
+# canvas in memory. MAX_CONCURRENT_AI can safely be raised on a small VPS as
+# long as this stays low, since it independently caps how many renders run
+# at once regardless of how many symbols are in flight waiting on Gemini.
+MAX_CONCURRENT_RENDER = int(os.getenv("MAX_CONCURRENT_RENDER", "2"))
 AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "900"))   # output is 5x input price; schema fits in ~600
 PROMPT_VERSION = os.getenv("AI_PROMPT_VERSION", "v2")    # v2: compact features + brevity rules
 AI_DAILY_CALL_CAP = int(os.getenv("AI_DAILY_CALL_CAP", "500"))

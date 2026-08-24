@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { CheckCircle, AlertCircle, Zap, Shield, ShieldOff, Loader, TrendingUp, LogOut,
-  Trash2, RefreshCw, AlertTriangle, Check } from 'lucide-react';
+  Trash2, RefreshCw, AlertTriangle, Check, LayoutGrid, Table2, ChevronUp, ChevronDown } from 'lucide-react';
 
 const api = async (path, body) => {
   const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -23,6 +23,131 @@ const rBadge = (r) => {
   return <span className={`text-[11px] font-bold ${cls}`}>{r >= 0 ? '+' : ''}{r}R</span>;
 };
 
+const TABLE_COLUMNS = [
+  { key: 'symbol', label: 'Symbol', align: 'left', sticky: true },
+  { key: 'quantity', label: 'Qty', align: 'right' },
+  { key: 'buyPrice', label: 'Entry', align: 'right' },
+  { key: 'current_price', label: 'LTP', align: 'right' },
+  { key: 'structuralSL', label: 'Struct SL', align: 'right' },
+  { key: 'safetySL', label: 'Safety SL', align: 'right' },
+  { key: 'stop_loss', label: 'Current SL', align: 'right' },
+  { key: 'rMultiple', label: 'R', align: 'right' },
+  { key: 'pnl', label: 'PnL', align: 'right' },
+  { key: 'pnlPct', label: 'PnL %', align: 'right' },
+  { key: 'status', label: 'Status', align: 'left' },
+];
+
+const statusOf = (p) => (p.pendingExit ? 'EXIT_PENDING' : p.danger ? 'DANGER' : p.riskZone);
+const statusClass = (s) => ({
+  DANGER: 'text-red-300', CRITICAL: 'text-red-400', WARNING: 'text-yellow-300',
+  SAFE: 'text-green-300', NO_SL: 'text-orange-400', EXIT_PENDING: 'text-blue-300',
+}[s] || 'text-slate-300');
+
+const fmtNum = (v, decimals = 2) => (v == null ? '—' : Number(v).toFixed(decimals));
+const fmtSigned = (v, decimals = 1, suffix = '') =>
+  v == null ? '—' : `${v >= 0 ? '+' : ''}${Number(v).toFixed(decimals)}${suffix}`;
+
+function tableCell(p, key) {
+  switch (key) {
+    case 'symbol': return p.symbol;
+    case 'quantity': return p.quantity ?? '—';
+    case 'buyPrice': return fmtNum(p.buyPrice);
+    case 'current_price': return fmtNum(p.current_price);
+    case 'structuralSL': return fmtNum(p.structuralSL);
+    case 'safetySL': return fmtNum(p.safetySL);
+    case 'stop_loss': return p.stop_loss ? fmtNum(p.stop_loss) : '—';
+    case 'rMultiple': return fmtSigned(p.rMultiple, 1, 'R');
+    case 'pnl': return p.pnl == null ? '—' : `${p.pnl >= 0 ? '+' : ''}₹${Math.abs(p.pnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+    case 'pnlPct': return fmtSigned(p.pnlPct, 1, '%');
+    case 'status': return statusOf(p);
+    default: return '—';
+  }
+}
+
+function tableCellClass(p, key) {
+  if (key === 'safetySL') return 'text-red-300';
+  if (key === 'rMultiple') return p.rMultiple == null ? 'text-slate-400' : p.rMultiple >= 0 ? 'text-green-400' : 'text-red-400';
+  if (key === 'pnl' || key === 'pnlPct') {
+    const v = key === 'pnl' ? p.pnl : p.pnlPct;
+    return v == null ? 'text-slate-400' : v >= 0 ? 'text-green-400' : 'text-red-400';
+  }
+  if (key === 'status') return statusClass(statusOf(p));
+  if (key === 'current_price') return 'text-blue-400 font-semibold';
+  return 'text-slate-100';
+}
+
+function PositionsTable({ positions, onRefresh, refreshing }) {
+  const [sortKey, setSortKey] = useState('rMultiple');
+  const [sortDir, setSortDir] = useState(-1);
+
+  const rows = useMemo(() => positions.map(p => ({
+    ...p,
+    pnlPct: p.buyPrice ? Math.round(((p.current_price - p.buyPrice) / p.buyPrice) * 1000) / 10 : null,
+  })), [positions]);
+
+  const sorted = useMemo(() => {
+    const list = [...rows];
+    list.sort((a, b) => {
+      let av = sortKey === 'status' ? statusOf(a) : a[sortKey];
+      let bv = sortKey === 'status' ? statusOf(b) : b[sortKey];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === 'string') return av.localeCompare(bv) * sortDir;
+      return (av - bv) * sortDir;
+    });
+    return list;
+  }, [rows, sortKey, sortDir]);
+
+  const onHeaderClick = (key) => {
+    if (sortKey === key) setSortDir(d => -d);
+    else { setSortKey(key); setSortDir(1); }
+  };
+
+  return (
+    <div className="rounded-lg border border-slate-700 overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 bg-slate-800/60 border-b border-slate-700">
+        <span className="text-[11px] text-slate-400">Tap a column to sort</span>
+        <button onClick={onRefresh} disabled={refreshing} className="p-1.5 rounded bg-slate-700 text-slate-200 disabled:opacity-50">
+          <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="border-collapse text-[11px] whitespace-nowrap w-full">
+          <thead>
+            <tr className="bg-slate-800 border-b border-slate-600">
+              {TABLE_COLUMNS.map(c => (
+                <th key={c.key} onClick={() => onHeaderClick(c.key)}
+                  className={`px-2.5 py-2 font-medium text-slate-400 cursor-pointer select-none ${c.align === 'right' ? 'text-right' : 'text-left'} ${c.sticky ? 'sticky left-0 bg-slate-800 z-10' : ''}`}>
+                  <span className="inline-flex items-center gap-0.5">
+                    {c.label}
+                    {sortKey === c.key && (sortDir === 1 ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}
+                  </span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map(p => (
+              <tr key={p.id} className={`border-b border-slate-700/60 ${p.danger ? 'bg-red-950/30' : ''}`}>
+                {TABLE_COLUMNS.map(c => (
+                  <td key={c.key}
+                    className={`px-2.5 py-2 ${c.align === 'right' ? 'text-right' : 'text-left'} ${c.sticky ? 'sticky left-0 bg-slate-900 font-semibold text-white' : tableCellClass(p, c.key)}`}>
+                    {tableCell(p, c.key)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+            {sorted.length === 0 && (
+              <tr><td colSpan={TABLE_COLUMNS.length} className="px-3 py-4 text-center text-slate-400">No positions</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function StopLossTrackerMobile() {
   const [positions, setPositions] = useState([]);
   const [alerts, setAlerts] = useState([]);
@@ -33,6 +158,7 @@ export default function StopLossTrackerMobile() {
   const [structIn, setStructIn] = useState({});
   const [busy, setBusy] = useState({});
   const [message, setMessage] = useState(null);
+  const [viewMode, setViewMode] = useState('cards');
 
   const fetchData = useCallback(async () => {
     try {
@@ -125,8 +251,18 @@ export default function StopLossTrackerMobile() {
       <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
         <span className="text-xs text-slate-400">{protectedPos.length} protected · {unprotected.length} unprotected</span>
         <div className="flex items-center gap-2">
+          <div className="flex bg-slate-900 border border-slate-600 rounded-lg p-0.5">
+            <button onClick={() => setViewMode('cards')} title="Card view"
+              className={`p-1.5 rounded-md ${viewMode === 'cards' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}>
+              <LayoutGrid className="w-4 h-4" />
+            </button>
+            <button onClick={() => setViewMode('table')} title="Table view"
+              className={`p-1.5 rounded-md ${viewMode === 'table' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}>
+              <Table2 className="w-4 h-4" />
+            </button>
+          </div>
           <button onClick={() => { setRefreshing(true); fetchData().finally(() => setRefreshing(false)); }} disabled={refreshing}
-            className="p-2 rounded-lg bg-slate-700 text-slate-200 disabled:opacity-50">
+            title="Refresh" className="p-2 rounded-lg bg-slate-700 text-slate-200 disabled:opacity-50">
             <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
           </button>
           <button onClick={() => setAutoRefresh(!autoRefresh)}
@@ -143,8 +279,17 @@ export default function StopLossTrackerMobile() {
         </div>
       )}
 
+      {/* TABLE VIEW */}
+      {viewMode === 'table' && (
+        <div className="px-4 py-4">
+          <PositionsTable positions={positions}
+            onRefresh={() => { setRefreshing(true); fetchData().finally(() => setRefreshing(false)); }}
+            refreshing={refreshing} />
+        </div>
+      )}
+
       {/* UNPROTECTED */}
-      {unprotected.length > 0 && (
+      {viewMode === 'cards' && unprotected.length > 0 && (
         <div className="px-4 py-4">
           <h3 className="text-sm font-bold mb-2 flex items-center gap-2 text-orange-400">
             <ShieldOff className="w-4 h-4" /> Needs Stop Loss ({unprotected.length})
@@ -187,6 +332,7 @@ export default function StopLossTrackerMobile() {
       )}
 
       {/* PROTECTED */}
+      {viewMode === 'cards' && (
       <div className="px-4 py-4 border-t border-slate-700">
         <h3 className="text-sm font-bold mb-2 flex items-center gap-2 text-green-400">
           <Shield className="w-4 h-4" /> Protected ({protectedPos.length})
@@ -256,6 +402,7 @@ export default function StopLossTrackerMobile() {
           </div>
         )}
       </div>
+      )}
 
       {/* Alerts */}
       {alerts.length > 0 && (

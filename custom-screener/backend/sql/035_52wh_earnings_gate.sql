@@ -1,0 +1,2 @@
+ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS pos_w_52wh NUMERIC(4,2);
+ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS pos_earn_gate_days INTEGER;

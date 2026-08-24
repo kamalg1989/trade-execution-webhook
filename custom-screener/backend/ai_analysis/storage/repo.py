@@ -31,6 +31,30 @@ class AiRepo:
         )
         if not row:
             return None
+        return self._row_to_dict(row)
+
+    async def get_results_batch(self, symbols: list[str], analysis_date: date,
+                                 prompt_version: str | None = None,
+                                 model: str | None = None) -> dict[str, dict]:
+        """Batched get_result() — one query for every symbol instead of N
+        sequential round trips. See BacktestAiRepo.get_results_batch, the
+        original motivating case (backtest's per-day store-first check)."""
+        if not symbols:
+            return {}
+        rows = await self.pool.fetch(
+            """
+            SELECT * FROM ai_analysis_results
+            WHERE symbol = ANY($1) AND analysis_date = $2
+              AND prompt_version = $3 AND model = $4
+            """,
+            symbols, analysis_date,
+            prompt_version or config.PROMPT_VERSION,
+            model or config.AI_MODEL,
+        )
+        return {r["symbol"]: self._row_to_dict(r) for r in rows}
+
+    @staticmethod
+    def _row_to_dict(row) -> dict:
         d = dict(row)
         for k in ("features", "analysis", "verification"):
             if isinstance(d.get(k), str):

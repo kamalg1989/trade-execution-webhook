@@ -60,6 +60,7 @@ async def analyze_symbols(
     ai_mode: str | None = None,
     chart_scope: str | None = None,
     prompt_version: str | None = None,
+    persist_charts: bool = True,
 ) -> dict:
     if indicator_date is None:
         indicator_date = await screener_repo.latest_complete_date()
@@ -69,9 +70,19 @@ async def analyze_symbols(
     scope = (chart_scope or "both").lower()
     pv, scope = _resolve_pv(prompt_version, scope)
 
-    # 0. Store-first: reuse existing rows (same date + prompt_version + model)
+    # 0. Store-first: reuse existing rows (same date + prompt_version + model).
+    # Single-model modes (gemini/sonnet/haiku) resolve to exactly one lookup
+    # per symbol, so batch it into one query instead of N sequential round
+    # trips per candidate — this ran as a plain for-loop over every candidate
+    # every day for the life of a backtest run before this. hybrid mode needs
+    # the two-tier sonnet-then-haiku fallback in _lookup_stored() per symbol,
+    # so it keeps the per-symbol path.
     stored: dict[str, dict] = {}
-    if not force:
+    if not force and mode != "hybrid" and hasattr(ai_repo, "get_results_batch"):
+        model_for_lookup = {"sonnet": config.SONNET_MODEL, "haiku": config.HAIKU_MODEL}.get(
+            mode, config.GEMINI_MODEL)
+        stored = await ai_repo.get_results_batch(symbols, indicator_date, pv, model_for_lookup)
+    elif not force:
         for sym in symbols:
             row = await _lookup_stored(ai_repo, sym, indicator_date, mode, pv)
             if row:
@@ -102,15 +113,23 @@ async def analyze_symbols(
             f"Daily AI call cap ({config.AI_DAILY_CALL_CAP}) would be exceeded "
             f"({len(passed)} calls requested)")
 
-    # 4. Analyze in parallel
+    # 4. Analyze in parallel. Two separate semaphores on purpose: `sem` caps
+    # how many symbols are in flight overall (mostly waiting on the Gemini
+    # network call — cheap to parallelize), while `render_sem` independently
+    # caps concurrent matplotlib chart rendering (RAM-heavy — must stay low
+    # on a small VPS). This lets MAX_CONCURRENT_AI go up for throughput
+    # without raising the actual OOM risk, since renders still queue behind
+    # MAX_CONCURRENT_RENDER regardless of how many symbols are "in flight".
     sem = asyncio.Semaphore(config.MAX_CONCURRENT_AI)
+    render_sem = asyncio.Semaphore(config.MAX_CONCURRENT_RENDER)
 
     async def _one(sym: str) -> dict:
         async with sem:
             try:
                 return await _analyze_one(
                     sym, indicator_date, frames[sym], daily_feats_by_sym[sym],
-                    ai_repo, gate_mode or config.AI_GATE_MODE, mode, scope, pv)
+                    ai_repo, gate_mode or config.AI_GATE_MODE, mode, scope, pv, render_sem,
+                    persist_charts)
             except Exception as e:
                 logger.exception("AI analysis failed for %s", sym)
                 return {"symbol": sym, "error": str(e)}
@@ -156,13 +175,21 @@ async def _lookup_stored(ai_repo: AiRepo, sym: str, d: date, mode: str, pv: str)
     return None
 
 
+async def _render(render_sem: asyncio.Semaphore, *args, **kwargs):
+    """Chart render, gated by render_sem — see analyze_symbols for why this
+    is a separate semaphore from the overall per-symbol one."""
+    async with render_sem:
+        return await asyncio.to_thread(render_chart, *args, **kwargs)
+
+
 async def _analyze_one(sym: str, indicator_date: date, frames: dict, daily_feats: dict,
-                       ai_repo: AiRepo, gate_mode: str, mode: str, scope: str, pv: str) -> dict:
+                       ai_repo: AiRepo, gate_mode: str, mode: str, scope: str, pv: str,
+                       render_sem: asyncio.Semaphore, persist_charts: bool = True) -> dict:
     ddf, wdf = frames["daily"], frames["weekly"]
     weekly_feats = compute_features(wdf, "weekly") if wdf is not None else None
 
-    daily_png = await asyncio.to_thread(render_chart, ddf, sym, "daily")
-    weekly_png = (await asyncio.to_thread(render_chart, wdf, sym, "weekly")
+    daily_png = await _render(render_sem, ddf, sym, "daily")
+    weekly_png = (await _render(render_sem, wdf, sym, "weekly")
                   if wdf is not None else None)
 
     if mode == "gemini":
@@ -176,7 +203,8 @@ async def _analyze_one(sym: str, indicator_date: date, frames: dict, daily_feats
                                           daily_feats, weekly_feats,
                                           model=first_model, prompt_version=pv)
     result = await _finalize(sym, indicator_date, ddf, wdf, daily_png, weekly_png,
-                             daily_feats, weekly_feats, out, ai_repo, gate_mode, pv)
+                             daily_feats, weekly_feats, out, ai_repo, gate_mode, pv, render_sem,
+                             persist_charts)
     result["stage"] = ("gemini" if mode == "gemini"
                        else "haiku" if out["model"] == config.HAIKU_MODEL else "sonnet")
 
@@ -189,7 +217,8 @@ async def _analyze_one(sym: str, indicator_date: date, frames: dict, daily_feats
                                                prompt_version=pv)
             haiku_rec = out["analysis"].get("recommendation")
             result = await _finalize(sym, indicator_date, ddf, wdf, daily_png, weekly_png,
-                                     daily_feats, weekly_feats, out2, ai_repo, gate_mode, pv)
+                                     daily_feats, weekly_feats, out2, ai_repo, gate_mode, pv, render_sem,
+                                     persist_charts)
             result["stage"] = "sonnet_confirmed"
             result["haikuRec"] = haiku_rec
         else:
@@ -198,8 +227,19 @@ async def _analyze_one(sym: str, indicator_date: date, frames: dict, daily_feats
 
 
 async def _finalize(sym, indicator_date, ddf, wdf, daily_png, weekly_png,
-                    daily_feats, weekly_feats, out, ai_repo, gate_mode, pv) -> dict:
-    """Verify, annotate, persist, and shape one model-pass result."""
+                    daily_feats, weekly_feats, out, ai_repo, gate_mode, pv,
+                    render_sem: asyncio.Semaphore, persist_charts: bool = True) -> dict:
+    """Verify, annotate, persist, and shape one model-pass result.
+
+    persist_charts=False skips the second (level-annotated) matplotlib
+    render entirely AND skips writing any chart (raw or annotated) to
+    CHART_DIR. Callers that never display these ai_analysis chart files
+    (e.g. the backtest engine — nothing in the Backtest UI reads
+    backtest_ai_signals.chart_daily_path/chart_weekly_path, it shows its own
+    separate per-trade chart, see backtest/chart.py) get the exact same
+    analysis/recommendation output for roughly half the render work per
+    symbol, with zero unused files written to the VPS's small disk.
+    """
     analysis = out["analysis"]
     verification = verify_levels(analysis, daily_feats)
 
@@ -209,27 +249,27 @@ async def _finalize(sym, indicator_date, ddf, wdf, daily_png, weekly_png,
         "stop": bp.get("stop_level"),
         "support": daily_feats.get("support"),
     }
-    daily_annot = await asyncio.to_thread(render_chart, ddf, sym, "daily", levels)
-    weekly_annot = (await asyncio.to_thread(render_chart, wdf, sym, "weekly", levels)
-                    if wdf is not None else None)
+    daily_annot = await _render(render_sem, ddf, sym, "daily", levels) if persist_charts else None
+    weekly_annot = (await _render(render_sem, wdf, sym, "weekly", levels)
+                    if persist_charts and wdf is not None else None)
 
-    if out["model"] == config.HAIKU_MODEL:
-        tag = "clean"
-    elif out["model"] == config.SONNET_MODEL:
-        tag = "cleanS"
-    else:
-        tag = "cleanG"  # gemini
-    names = {
-        "daily": AiRepo.chart_filename(sym, indicator_date, "daily", tag),
-        "daily_annotated": AiRepo.chart_filename(sym, indicator_date, "daily", tag + "A"),
-    }
-    AiRepo.write_chart(names["daily"], daily_png)
-    AiRepo.write_chart(names["daily_annotated"], daily_annot)
-    if weekly_png is not None:
-        names["weekly"] = AiRepo.chart_filename(sym, indicator_date, "weekly", tag)
-        names["weekly_annotated"] = AiRepo.chart_filename(sym, indicator_date, "weekly", tag + "A")
-        AiRepo.write_chart(names["weekly"], weekly_png)
-        AiRepo.write_chart(names["weekly_annotated"], weekly_annot)
+    names: dict[str, str] = {}
+    if persist_charts:
+        if out["model"] == config.HAIKU_MODEL:
+            tag = "clean"
+        elif out["model"] == config.SONNET_MODEL:
+            tag = "cleanS"
+        else:
+            tag = "cleanG"  # gemini
+        names["daily"] = AiRepo.chart_filename(sym, indicator_date, "daily", tag)
+        AiRepo.write_chart(names["daily"], daily_png)
+        names["daily_annotated"] = AiRepo.chart_filename(sym, indicator_date, "daily", tag + "A")
+        AiRepo.write_chart(names["daily_annotated"], daily_annot)
+        if weekly_png is not None:
+            names["weekly"] = AiRepo.chart_filename(sym, indicator_date, "weekly", tag)
+            AiRepo.write_chart(names["weekly"], weekly_png)
+            names["weekly_annotated"] = AiRepo.chart_filename(sym, indicator_date, "weekly", tag + "A")
+            AiRepo.write_chart(names["weekly_annotated"], weekly_annot)
 
     features = {"daily": daily_feats, "weekly": weekly_feats}
     await ai_repo.save_result(

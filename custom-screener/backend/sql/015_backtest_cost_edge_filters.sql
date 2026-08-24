@@ -1,0 +1,43 @@
+-- Two loss-cutting mechanisms, both aimed at the same diagnosis.
+--
+-- THE DIAGNOSIS (measured over the 11-year campaign, config B-basemax2,
+-- 2,230 closed trades):
+--     avg gross move per trade  +0.704%  of position value
+--     avg cost per trade        -0.522%  (0.2% STT + 0.2% slippage + stamp/exch + DP)
+--     => avg NET edge            +0.18%  per trade
+-- i.e. costs eat ~74% of the gross edge. Across the decade that is ~Rs 257k of
+-- costs against ~Rs 327k of gross profit. Trade selection matters far less
+-- than the fact that this system trades ~200 times a year for an edge barely
+-- larger than its own frictions.
+--
+-- Splitting those trades by win/loss:
+--     wins   805 trades, +8.62% gross move, held 24.0 days, avgR +1.70
+--     losses 1425 trades, -3.77% gross move, held  8.1 days, avgR -0.92
+-- The asymmetry is fine; the problem is frequency x cost, plus a long tail of
+-- trades that never go anywhere.
+--
+-- 1) min_risk_pct_of_price
+--    Bucketing by stop distance as a % of entry price shows trades with a very
+--    tight stop cannot clear their own costs:
+--        R <3% of price : 445 trades, gross +0.433%, cost 0.476% -> NET -0.043%, -Rs 13,663
+--        R 3-5%         : 770 trades, gross +0.845%, cost 0.503% -> NET +0.342%, +Rs 61,245
+--        R 5-7%         : 547 trades, gross +0.649%, cost 0.534% -> NET +0.115%, +Rs 12,223
+--        R >7%          : 468 trades, gross +0.796%, cost 0.583% -> NET +0.213%, +Rs 10,230
+--    The <3% band is structurally unprofitable: a 2R target on a 2.5% stop is a
+--    5% move, and ~0.5% of it is handed straight to costs. This gate skips any
+--    candidate whose risk_per_share is below the given % of entry price.
+--    NULL = off.
+--
+-- 2) max_holding_days
+--    A time stop. Losers in this system die slowly: they sit for ~8 days before
+--    the stop catches them, tying up capital that could be working. Published
+--    work on swing systems finds time-based exits in the 8-10 day range improve
+--    both profit and drawdown, and that simple time/variable exits are often
+--    more robust across regimes than elaborate stop logic. Winners here hold
+--    24 days on average, so a time stop must be set well above that 8-day
+--    loser cluster or it will amputate the winners that carry the system.
+--    Applied only to trades that have NOT yet reached breakeven/half-book, so a
+--    working trade is never cut short by the clock. NULL = off.
+ALTER TABLE backtest_runs
+  ADD COLUMN IF NOT EXISTS min_risk_pct_of_price NUMERIC(5,2),
+  ADD COLUMN IF NOT EXISTS max_holding_days SMALLINT;

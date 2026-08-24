@@ -1,1 +1,8 @@
 nohup: python: No such file or directory
+[2026-08-19 17:10:40,526] INFO: ✅ Loaded environment from /root/trade-execution-webhook/.env
+[2026-08-19 17:11:03,988] INFO: ✅ Loaded environment from /root/trade-execution-webhook/.env
+[2026-08-19 17:11:03,993] INFO: 📡 Generating new Dhan access token...
+[2026-08-19 17:11:04,160] INFO: ✅ Dhan access token obtained (cached for 55 min)
+[2026-08-19 19:18:09,567] INFO: ✅ Loaded environment from /root/trade-execution-webhook/.env
+[2026-08-19 19:18:09,574] INFO: 📡 Generating new Dhan access token...
+[2026-08-19 19:18:19,706] ERROR: ❌ No token in response: {'message': 'Invalid TOTP', 'status': 'error'}

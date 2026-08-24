@@ -112,4 +112,15 @@ def render_chart(
     buf = io.BytesIO()
     fig.savefig(buf, dpi=100, pad_inches=0.3)
     buf.seek(0)
-    return buf.getvalue()
+    png = buf.getvalue()
+
+    # mplfinance never closes the Figure it creates — without this, every
+    # call leaves its Figure registered in matplotlib's global pyplot state,
+    # and memory grows unbounded across many sequential/concurrent renders
+    # (this is what OOM-killed the backtest engine, which calls this in a
+    # tight loop; live usage never called it often enough in one process
+    # lifetime to notice).
+    import matplotlib.pyplot as plt
+    plt.close(fig)
+
+    return png

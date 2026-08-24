@@ -22,6 +22,7 @@ import time
 from datetime import datetime
 
 import requests
+import push_notify
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RECS_FILE = os.path.join(BASE_DIR, "latest_recommendations.json")
@@ -64,10 +65,29 @@ def write_out(payload):
         json.dump(payload, f, indent=2)
 
 
-def fail(msg):
+def _notify_top_picks(picks_list, engine_label):
+    """Push a top-3 summary. Never raises - a notification failure must not
+    affect the screener/AI-ranking pipeline it's attached to."""
+    if not picks_list:
+        return
+    try:
+        lines = []
+        for p in picks_list[:3]:
+            sym = str(p.get("symbol", "")).replace(".NS", "")
+            entry, sl = p.get("entry"), p.get("stopLoss")
+            lines.append(f"{sym} @ ₹{entry} (SL ₹{sl})" if entry and sl else sym)
+        title = f"🤖 New Signals — {len(picks_list)} candidates ({engine_label})"
+        push_notify.notify_all(title, "\n".join(lines), url="/")
+    except Exception as e:
+        log(f"⚠️ push notify failed: {e}")
+
+
+def fail(msg, fallback_picks=None, fallback_label="quant only — AI unavailable"):
     log(f"❌ {msg}")
     write_out({"generatedAt": datetime.now().isoformat(), "status": "error",
                "message": msg, "picks": [], "top": []})
+    if fallback_picks:
+        _notify_top_picks(fallback_picks, fallback_label)
     sys.exit(0)  # never a hard failure — quant flow is unaffected
 
 
@@ -115,7 +135,8 @@ def main():
             log(f"❌ batch {batch_num} gave up after {BATCH_RETRIES} attempts — {len(chunk)} symbols dropped")
 
     if not results:
-        fail("AI analysis returned no results (is the custom-screener API on :8005 up, GEMINI_API_KEY set?)")
+        fail("AI analysis returned no results (is the custom-screener API on :8005 up, GEMINI_API_KEY set?)",
+             fallback_picks=recs.get("stocks"))
 
     picks = []
     for res in results:
@@ -165,6 +186,7 @@ def main():
     })
     log(f"✅ AI picks saved: top {TOP_N} = {[p['symbol'] for p in picks[:TOP_N]]} "
         f"({len(picks)}/{len(candidates)} analyzed)")
+    _notify_top_picks(picks, "AI ranked")
 
 
 if __name__ == "__main__":

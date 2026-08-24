@@ -28,24 +28,30 @@ def _dates(from_date: str | None, to_date: str | None):
     return from_d, to_d
 
 
-async def _proxy_chart(kind: str, symbol: str, from_date, to_date, indicators, theme):
+async def _proxy_chart(kind: str, symbol: str, from_date, to_date, indicators, theme, width=None, height=None, split=None):
     sym = _clean_symbol(symbol)
     from_d, to_d = _dates(from_date, to_date)
+    params = {"symbol": sym, "from_date": from_d, "to_date": to_d,
+              "indicators": indicators, "theme": theme}
+    if width:
+        params["width"] = width
+    if height:
+        params["height"] = height
+    if split:
+        params["split"] = "true"
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            r = await client.get(
-                f"{MARKET_DATA_API}/charts/{kind}",
-                params={"symbol": sym, "from_date": from_d, "to_date": to_d,
-                        "indicators": indicators, "theme": theme},
-            )
+            r = await client.get(f"{MARKET_DATA_API}/charts/{kind}", params=params)
         if r.status_code != 200:
             logger.warning(f"{kind} chart for {sym}: upstream {r.status_code} {r.text[:120]}")
             raise HTTPException(status_code=r.status_code,
                                 detail=f"No chart data for {sym}")
-        # Return the SVG with caching disabled so refreshes get fresh charts
+        # Return with caching disabled so refreshes get fresh charts. Content
+        # type is forwarded as-is: plain SVG normally, JSON when split=true
+        # (the upstream returns {yaxis, plot, yaxisWidth} in that mode).
         return Response(
             content=r.content,
-            media_type="image/svg+xml",
+            media_type=r.headers.get("content-type", "image/svg+xml"),
             headers={"Cache-Control": "no-cache"},
         )
     except httpx.TimeoutException:
@@ -59,14 +65,16 @@ async def _proxy_chart(kind: str, symbol: str, from_date, to_date, indicators, t
 
 @router.get("/charts/daily")
 async def get_daily_chart(symbol: str, from_date: str = None, to_date: str = None,
-                          indicators: str = "ema", theme: str = "dark"):
-    return await _proxy_chart("daily", symbol, from_date, to_date, indicators, theme)
+                          indicators: str = "ema", theme: str = "dark",
+                          width: int = None, height: int = None, split: bool = None):
+    return await _proxy_chart("daily", symbol, from_date, to_date, indicators, theme, width, height, split)
 
 
 @router.get("/charts/weekly")
 async def get_weekly_chart(symbol: str, from_date: str = None, to_date: str = None,
-                           indicators: str = "ema", theme: str = "dark"):
-    return await _proxy_chart("weekly", symbol, from_date, to_date, indicators, theme)
+                           indicators: str = "ema", theme: str = "dark",
+                           width: int = None, height: int = None, split: bool = None):
+    return await _proxy_chart("weekly", symbol, from_date, to_date, indicators, theme, width, height, split)
 
 
 @router.get("/charts/combined")

@@ -206,7 +206,7 @@ async def refresh_recommendations():
     with open(SCAN_LOG, 'a') as logf:
         logf.write(f"\n===== Scan triggered from web API at {datetime.now().isoformat()} =====\n")
         subprocess.Popen(
-            ['python3', SCREENER],
+            [sys.executable, SCREENER],
             cwd=BASE_DIR,
             stdout=logf,
             stderr=subprocess.STDOUT,

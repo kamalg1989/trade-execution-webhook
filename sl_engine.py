@@ -374,6 +374,63 @@ def get_forever_orders():
         return []
 
 
+def get_trade_book():
+    """Today's executed trade book — [{securityId, transactionType, tradedPrice,
+    orderId, ...}]. Unlike GET /orders/{id}, this reflects fills regardless of
+    whether the originating order was a plain order or a triggered forever
+    (GTT) order — Dhan's forever orders live in their own /forever/orders
+    namespace with their own order IDs, so polling /orders/{forever_order_id}
+    for a fill (as confirm_fill() does) never resolves for them. The trade
+    book is the reliable way to confirm a forever order actually filled."""
+    token = get_token()
+    if not token:
+        return []
+    try:
+        r = session.get("https://api.dhan.co/v2/trades",
+                        headers={"access-token": token, "client-id": DHAN_CLIENT_ID}, timeout=10)
+        data = r.json()
+        logger.info(f"📊 Found {len(data) if isinstance(data, list) else 0} trade-book entries")
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        logger.error(f"❌ Get trade book failed: {e}")
+        return []
+
+
+def get_trade_history(from_date, to_date):
+    """Executed trade fills across a date range (YYYY-MM-DD, inclusive) —
+    unlike get_trade_book() which is TODAY-only, this covers any prior day.
+
+    Needed because reconcile_open_trades() detects a closed position from
+    "no longer in holdings", which can lag the actual fill by more than a
+    day (weekend, a missed/late reconcile run, etc.) — when that happens,
+    get_trade_book() has already rolled past the day the sell actually
+    happened and returns nothing for it, and confirm_fill() can't help
+    either (forever-order IDs never resolve via GET /v2/orders/{id} — see
+    get_trade_book()'s docstring). This is the same paginated
+    GET /v2/trades/{from}/{to}/{page} endpoint used for the one-off
+    historical backfill (reconcile_historical_trades.py), exposed here so
+    the nightly reconciliation can self-heal instead of getting stuck."""
+    token = get_token()
+    if not token:
+        return []
+    all_trades = []
+    for page in range(0, 20):
+        try:
+            r = session.get(f"https://api.dhan.co/v2/trades/{from_date}/{to_date}/{page}",
+                            headers={"access-token": token, "client-id": DHAN_CLIENT_ID}, timeout=20)
+            if r.status_code != 200:
+                break
+            data = r.json()
+            if not data:
+                break
+            all_trades.extend(data)
+        except Exception as e:
+            logger.error(f"❌ Get trade history page {page} failed: {e}")
+            break
+    logger.info(f"📊 Found {len(all_trades)} historical trade fills ({from_date} → {to_date})")
+    return all_trades
+
+
 # ==========================
 # DAILY CLOSE  (Dhan → yfinance → None)
 # ==========================

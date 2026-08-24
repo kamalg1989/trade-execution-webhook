@@ -1913,7 +1913,7 @@ Tick: `₹{trade['tick_size']:.4f}`
         ai_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_rank_candidates.py")
         if os.path.exists(ai_script):
             subprocess.Popen([sys.executable, ai_script],
-                             stdout=open("/tmp/ai_rank.log", "w"), stderr=subprocess.STDOUT)
+                             stdout=open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_rank.log"), "a"), stderr=subprocess.STDOUT)
             print("🤖 AI ranking pass launched in background (ai_rank_candidates.py)")
     except Exception as e:
         print(f"⚠️ Could not launch AI ranking pass: {e}")

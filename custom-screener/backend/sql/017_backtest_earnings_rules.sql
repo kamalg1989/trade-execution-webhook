@@ -1,0 +1,31 @@
+-- Two earnings-event rules, backed by the harvested filing calendar (sql/016).
+--
+-- Motivation from the campaign diagnosis: the nastiest losses in the book are
+-- the SAFETY_FLOOR exits — trades that gapped straight through both the
+-- structural stop and the -10% intraday floor in one move (5 such trades in the
+-- 2025 window alone, avgR -2.2 versus -0.92 for an ordinary stop-out). A
+-- results announcement is the most common scheduled cause of exactly that kind
+-- of overnight gap, and it is the one risk in this system that is knowable in
+-- advance rather than random.
+--
+-- avoid_entry_days_before_earnings
+--     Skip a candidate whose next results broadcast falls within N calendar
+--     days of the signal date — i.e. don't open a fresh breakout position
+--     straight into a binary event.
+--
+-- exit_days_before_earnings
+--     Close an already-open position N days ahead of its results date, banking
+--     whatever it has rather than carrying event risk overnight.
+--
+-- LOOK-AHEAD DISCIPLINE (read before trusting any result from these):
+-- earnings_filings records when results were ACTUALLY broadcast. Using that to
+-- act beforehand is only legitimate insofar as a trader would really have known
+-- the date ahead of time. SEBI LODR requires only a few working days' prior
+-- intimation of the board meeting, so a lead of ~2-3 days is defensible and a
+-- lead of 10+ days is not — at long leads these columns quietly become a
+-- look-ahead oracle rather than a tradable rule. Both are therefore meant to be
+-- swept across short lead times, and a configuration that only pays off at a
+-- long lead should be rejected on principle, however good the backtest looks.
+ALTER TABLE backtest_runs
+  ADD COLUMN IF NOT EXISTS avoid_entry_days_before_earnings SMALLINT,
+  ADD COLUMN IF NOT EXISTS exit_days_before_earnings SMALLINT;

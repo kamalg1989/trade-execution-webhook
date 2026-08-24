@@ -529,8 +529,25 @@ async def get_sl_alerts():
         pending_half_exit = "HALF_EXIT" in pending_types
 
         if pending_exit:
-            reco = {"action": "EXIT_PENDING", "label": "Exit pending — fills at open",
-                    "reason": "Exit order already placed — resting at the broker", "trigger": None, "urgency": 0}
+            if below_close:
+                reco = {"action": "EXIT_PENDING", "label": "Exit pending — fills at open",
+                        "reason": "Exit order already placed — resting at the broker", "trigger": None, "urgency": 0}
+            else:
+                # The exit was placed while the position was below structural
+                # SL, but hasn't triggered — because a forever SELL only
+                # fires if price actually FALLS to its trigger, and the
+                # trigger sits below the close that justified the exit.
+                # If the price has since recovered back above structural,
+                # that resting order is now just a stale, unusually loose
+                # stop (confirmed 2026-08-13: GAIL's exit order from
+                # 2026-08-11 was still resting 2 days later after the stock
+                # recovered — silently masquerading as "Exit pending" while
+                # offering none of the tighter protection a live SL would).
+                reco = {"action": "EXIT_STALE", "label": "Exit order stale — price recovered",
+                        "reason": (f"Exit order still resting @ ₹{sl_price} from when this closed below "
+                                   f"structural SL — price has since recovered above ₹{structural_sl}. "
+                                   f"Cancel it and set a proper SL, or leave it as a wide safety net."),
+                        "trigger": None, "urgency": 1}
         elif pending_half_exit:
             reco = {"action": "HALF_EXIT_PENDING", "label": "Half-exit pending — fills at open",
                     "reason": "Half-exit order already placed — resting at the broker", "trigger": None, "urgency": 0}
