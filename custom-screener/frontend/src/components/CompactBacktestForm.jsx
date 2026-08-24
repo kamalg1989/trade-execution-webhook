@@ -94,6 +94,25 @@ const QUICK_PRESETS = {
       notes: 'UI quick preset: 80% Combo equity sleeve of the 80/20 ETF blend (pair with 20% GOLDBEES 200-DMA; 15.6yr sleeve bake-off runs #1440/#1601/#1762/#1923/#2084 after the 2011 ETF history backfill; blend via /backtest/blend run_a=1440 run_b=1117 w=0.2; the earlier 28.9% figure was a 7.6yr window and is superseded; paper book etf_blend)',
     },
   },
+  'COMBO v2 (liquidity + FIP)': {
+    hint: 'Runs #30420 vs #2889 at \u20b920L over 15.6yr: 25.19% CAGR / 22.90% MaxDD / Calmar 1.100 vs Combo\u2019s 23.11 / 24.51 / 0.943 \u00b7 worst 12m \u221214.5% vs \u221217.6% \u00b7 493 vs 752 days underwater. Two changes only: turnover floor \u20b98cr\u2192\u20b96cr and frog-in-the-pan weight 0.5',
+    data: {
+      strategy: 'POSITIONAL', capital: 2000000,
+      startDate: '2011-01-01', endDate: '2026-08-16',
+      posMomentum: 'composite_rs', posRebalanceDays: 21,
+      posTopN: 30, posBufferN: 60,
+      posMinTurnoverCr: 6.0, posAtrMaxPct: 5.0, posAtrPersistDays: 2,
+      posAtrRelMult: 1.5, posAtrTrimPct: 33, posB200MidCut: 0.5,
+      posW52wh: 1.0, posEarnGateDays: 14, posCashAnnualPct: 6.0,
+      posIdScoreW: 0.5,
+      posMinIfpScore: 0.38, posMinClose: 20.0, posBaseRangeScoreW: 1.0,
+      posSizeMode: 'inverse_vol', posSlMode: 'none', posSlPct: 0,
+      compoundingEnabled: true, compoundingMode: 'profit_only',
+      compoundingMinCapital: 2000000, compoundingMaxCapital: 100000000,
+      slippagePct: 0.20, exitSlippagePct: '', advPositionCapPct: 2.0,
+      notes: 'UI quick preset: Combo v2 = Combo + turnover floor 6cr + frog-in-pan (information discreteness) w0.5. Screened on BOTH disjoint windows (H1 2011-18 / H2 2019-26) then validated at \u20b920L with the ADV cap on: run #30420. Decomposition #30098 (FIP alone, Calmar 1.003 - pure risk reducer) and #30259 (turnover alone, 1.050 - supplies the return). Survives 0.50% slippage (#29615, Calmar 0.983 > baseline 0.943). CAVEAT: the turnover half selects less liquid names, where the 269 missing delisted stocks lived - part of that gain may be survivorship bias. Forward-test on a paper book before moving real capital.',
+    },
+  },
   'Preset #14 Static': {
     hint: 'Audited run #700 · CAGR 9.5% (haircut) · conservative',
     data: {
@@ -181,6 +200,11 @@ const DEFAULTS = {
   posBaseRangeScoreW: '', posSizeMode: '', posAtrPersistDays: '',
   posAtrRelMult: '', posAtrTrimPct: '', posB200MidCut: '',
   posW52wh: '', posEarnGateDays: '', posCashAnnualPct: '',
+  // 2026-08-24: frog-in-the-pan (information discreteness). Engine supported it
+  // via pos_id_score_w but the form never tracked or sent it, so a preset
+  // setting it was silently ignored -- same class of defect as the 2026-08-19
+  // note above, and as adv_position_cap_pct in positional_engine.py.
+  posIdScoreW: '',
   // index tf
   itfProxy: 'JUNIORBEES', itfMaDays: 200,
   // risk guards (audit defaults ON for new runs)
@@ -276,6 +300,7 @@ export default function CompactBacktestForm({ onCreated, blocked, blockedReason,
         pos_atr_rel_mult: 'posAtrRelMult', pos_atr_trim_pct: 'posAtrTrimPct',
         pos_b200_mid_cut: 'posB200MidCut',
         pos_w_52wh: 'posW52wh', pos_earn_gate_days: 'posEarnGateDays',
+        pos_id_score_w: 'posIdScoreW',
         pos_cash_annual_pct: 'posCashAnnualPct',
       };
       Object.entries(M).forEach(([snake, camel]) => {
@@ -374,6 +399,7 @@ export default function CompactBacktestForm({ onCreated, blocked, blockedReason,
           pos_atr_trim_pct: num(formData.posAtrTrimPct),
           pos_b200_mid_cut: num(formData.posB200MidCut),
           pos_w_52wh: num(formData.posW52wh),
+          pos_id_score_w: num(formData.posIdScoreW),
           pos_earn_gate_days: num(formData.posEarnGateDays),
           pos_cash_annual_pct: num(formData.posCashAnnualPct),
         }),
