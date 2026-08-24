@@ -113,10 +113,15 @@ async def build_candidates(
     gate_overrides: dict | None = None,
     use_v2_ranking: bool = False,
     sizing: dict | None = None,
+    sizer=None,
+    committed_capital: float = 0.0,
 ) -> list[dict]:
     """Same entry/sizing/caching plumbing as funnel.py's build_candidates()
     (reused directly, not duplicated) -- only the survivor gate thresholds
-    and (optionally) the final ranking differ."""
+    and (optionally) the final ranking differ.
+
+    If `sizer` (PositionSizer) is provided, uses it for position sizing to support
+    compounding. `committed_capital` — see funnel.build_candidates() docstring."""
     survivors = await funnel_survivors_v2(pool, d, gate_overrides)
     if not survivors:
         return []
@@ -162,7 +167,7 @@ async def build_candidates(
         entry, sl = float(sig["entry"]), float(sig["sl"])
         risk_per_share = float(sig["risk_per_share"])
         base_stage = sig["base_stage"]
-        qty = v1._size_qty(capital, base_stage, entry, risk_per_share, sizing)
+        qty = v1._size_qty(capital, base_stage, entry, risk_per_share, sizing, sizer, committed_capital)
         if qty <= 0:
             continue
         candidates.append({

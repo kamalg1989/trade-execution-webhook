@@ -220,15 +220,43 @@ async def contraction_ratios(pool, symbols: list[str], d: date) -> dict[str, flo
 
 
 def _size_qty(capital: float, base_stage: int, entry: float, risk_per_share: float,
-              sizing: dict | None = None) -> int:
+              sizing: dict | None = None, sizer=None, committed_capital: float = 0.0,
+              adv_value: float | None = None) -> int:
     """Mirrors screen_gpt.create_trade()'s sizing formula — kept here instead
     of calling create_trade() so quantity can be computed per-run from a
     cached, capital-independent signal. Must stay in sync if those literals
     ever change in screen_gpt.py.
 
+    If `sizer` (PositionSizer) is provided, uses it for position sizing to support
+    compounding. Otherwise falls back to capital-based sizing.
+
+    `committed_capital` (only meaningful with `sizer` set) — ₹ already tied up
+    in other currently-open positions, for the portfolio-level exposure cap.
+    See PositionSizer.size_position() docstring.
+
     `sizing` (optional, backtest-only — see sql/013) may override either
     literal: {"risk_per_trade_pct": 0.5, "max_capital_per_trade_pct": 15}.
     Omitted/None keys fall back to production's values."""
+
+    # If PositionSizer is provided, use it for compounding support
+    if sizer is not None:
+        # adv_value (audit V5): stock's rupee ADV as of the signal date, for
+        # the sizer's liquidity cap. None -> cap not applied (missing data
+        # never blocks, same convention as the gates).
+        qty = sizer.size_position(entry_price=entry, stop_price=entry - risk_per_share,
+                                   committed_capital=committed_capital,
+                                   adv_value=adv_value)
+        # Apply base-stage multiplier to the sizer-sized qty for backward compatibility
+        ladder = (sizing or {}).get("stage_multipliers")
+        if ladder:
+            stage_mult = ladder.get(base_stage, ladder.get("default", 0.25))
+        else:
+            stage_mult = screen_gpt.BASE_STAGE_SIZE_MULTIPLIER.get(
+                base_stage, screen_gpt.BASE_STAGE_DEFAULT_MULTIPLIER)
+        # Stage multiplier reduces position size, not increases
+        return int(qty * stage_mult)
+
+    # Fallback: original capital-based sizing (no compounding)
     s = sizing or {}
     risk_pct = s.get("risk_per_trade_pct") or PROD_RISK_PER_TRADE_PCT
     cap_pct = s.get("max_capital_per_trade_pct") or PROD_MAX_CAPITAL_PER_TRADE_PCT
@@ -247,14 +275,29 @@ def _size_qty(capital: float, base_stage: int, entry: float, risk_per_share: flo
     return min(qty_risk, qty_cap)
 
 
-async def build_candidates(pool, d: date, capital: float, sizing: dict | None = None) -> list[dict]:
+async def build_candidates(pool, d: date, capital: float, sizing: dict | None = None, sizer=None,
+                            committed_capital: float = 0.0) -> list[dict]:
     """Full per-day candidate build: funnel survivors -> base-stage classify
     -> entry-technique/trigger resolve (cached) -> position size (not
     cached, capital-dependent). Returns only the stocks that pass every
     remaining gate, ranked (best first) same as screen_gpt.rank_candidates():
     -ifp_score, then base_range_pct (the base_quality_score tie-break is
     skipped — every SQL survivor already has a perfect 1.0 base_quality_score
-    by construction, same as production)."""
+    by construction, same as production).
+
+    If `sizer` (PositionSizer) is provided, uses it for position sizing to support
+    compounding. Otherwise uses fixed capital.
+
+    `committed_capital` (only meaningful with `sizer` set) — ₹ value already
+    tied up in OTHER currently-open positions (from prior days), for the
+    portfolio-level exposure cap (see PositionSizer.size_position()). Applied
+    identically to every candidate in this batch — it does NOT account for
+    other candidates picked from this SAME day's batch (that's decided by
+    the caller after ranking/slicing to max_picks_per_track), so same-day
+    multi-picks can still collectively exceed 100% by a bounded amount
+    (at most max_picks_per_track x max_capital_per_trade_pct). Cross-day
+    accumulation — the actual multi-week overcommission this was added to
+    fix — is fully capped."""
     survivors = await funnel_survivors(pool, d)
     if not survivors:
         return []
@@ -300,7 +343,11 @@ async def build_candidates(pool, d: date, capital: float, sizing: dict | None = 
         entry, sl = float(sig["entry"]), float(sig["sl"])
         risk_per_share = float(sig["risk_per_share"])
         base_stage = sig["base_stage"]
-        qty = _size_qty(capital, base_stage, entry, risk_per_share, sizing)
+        ind = indicators_by_symbol.get(sym)
+        adv_value = (float(ind["turnover_1m_avg_cr"]) * 1e7
+                     if ind is not None and ind.get("turnover_1m_avg_cr") is not None else None)
+        qty = _size_qty(capital, base_stage, entry, risk_per_share, sizing, sizer,
+                        committed_capital, adv_value)
         if qty <= 0:
             continue
         candidates.append({

@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import config
-from .routers import backtest, screener
+from .routers import backtest, screener, presets, paper
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("custom-screener")
@@ -25,6 +25,7 @@ async def lifespan(app: FastAPI):
     pool = None
     try:
         pool = await create_pool()
+        app.state.pool = pool  # Make pool available to all routers
         app.state.repo = PgRepo(pool)
         log.info("✅ DB pool ready (%s:%s/%s)", config.DB_HOST, config.DB_PORT, config.DB_NAME)
     except Exception as e:  # keep the service up so /health reports the problem
@@ -42,6 +43,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+from fastapi.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
@@ -49,6 +53,8 @@ app.add_middleware(
 
 app.include_router(screener.router, prefix="/api")
 app.include_router(backtest.router, prefix="/api")
+app.include_router(paper.router, prefix="/api")
+app.include_router(presets.router, prefix="/api")
 
 # AI visual analysis (optional module — requires ANTHROPIC_API_KEY for POST)
 try:

@@ -1,0 +1,3 @@
+ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS pos_b200_mid_cut NUMERIC(4,2);
+ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS pos_b200_band_lo NUMERIC(6,2);
+ALTER TABLE backtest_runs ADD COLUMN IF NOT EXISTS pos_b200_band_hi NUMERIC(6,2);

@@ -154,6 +154,140 @@ def _compute_insights(closed_json):
     }
 
 
+def _quality_grade(t):
+    """A+/A/B/C from AI confidence when the trade was AI-reviewed; quant-only
+    trades (no AI confidence) get their own 'Quant' bucket rather than a
+    fabricated grade."""
+    if not t.get("aiReviewed") or t.get("aiConfidence") is None:
+        return "Quant"
+    c = t["aiConfidence"]
+    if c >= 0.85:
+        return "A+"
+    if c >= 0.7:
+        return "A"
+    if c >= 0.5:
+        return "B"
+    return "C"
+
+
+def _compute_journal_stats(closed_json):
+    """Journal/equity-curve analytics computed purely from closed trades,
+    ordered chronologically by exit date. Trades with no exit date (shouldn't
+    happen for CLOSED status, but be defensive) are excluded from the
+    time-based series."""
+    dated = [t for t in closed_json if t.get("exitDate")]
+    dated.sort(key=lambda t: t["exitDate"])
+
+    if not dated:
+        return {
+            "equityCurve": [], "totalPnl": 0.0, "peakEquity": 0.0,
+            "maxDrawdown": 0.0, "maxDrawdownPct": 0.0,
+            "tradingDays": 0, "avgTradesPerDay": 0.0,
+            "dailyWinRate": {"pct": 0.0, "wins": 0, "losses": 0},
+            "consistency": {"pct": None, "label": "Not enough data"},
+            "bestDay": None, "worstDay": None,
+            "bestWinStreak": 0, "worstLossStreak": 0,
+            "byQualityGrade": [], "byRegime": [],
+        }
+
+    # Group by calendar day (exit date) for the equity curve + daily stats.
+    by_day = {}
+    for t in dated:
+        day = t["exitDate"][:10]
+        by_day.setdefault(day, []).append(t)
+
+    days = sorted(by_day.keys())
+    equity_curve = []
+    cum = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    max_dd_pct = 0.0
+    for day in days:
+        day_pnl = round(sum(t["pnl"] for t in by_day[day]), 2)
+        cum = round(cum + day_pnl, 2)
+        peak = max(peak, cum)
+        dd = round(peak - cum, 2)
+        if dd > max_dd:
+            max_dd = dd
+            max_dd_pct = round((dd / peak) * 100, 2) if peak > 0 else 0.0
+        equity_curve.append({"date": day, "dailyPnl": day_pnl, "cumulativePnl": cum})
+
+    total_pnl = round(sum(t["pnl"] for t in dated), 2)
+    win_days = [d for d in equity_curve if d["dailyPnl"] > 0]
+    loss_days = [d for d in equity_curve if d["dailyPnl"] < 0]
+    daily_win_rate = round(len(win_days) / len(days) * 100, 1) if days else 0.0
+
+    best_day = max(equity_curve, key=lambda d: d["dailyPnl"]) if equity_curve else None
+    worst_day = min(equity_curve, key=lambda d: d["dailyPnl"]) if equity_curve else None
+
+    # Consistency: how much of total profit came from a single best day —
+    # the same idea prop firms use for "consistency rule" checks. 100 = profit
+    # spread evenly across days, low score = one outsized day carried the book.
+    if total_pnl > 0 and best_day and best_day["dailyPnl"] > 0:
+        consistency_pct = round(max(0.0, 100 - (best_day["dailyPnl"] / total_pnl * 100)), 1)
+    else:
+        consistency_pct = None
+    if consistency_pct is None:
+        consistency_label = "Not enough data"
+    elif consistency_pct >= 80:
+        consistency_label = "Excellent"
+    elif consistency_pct >= 60:
+        consistency_label = "Good"
+    elif consistency_pct >= 40:
+        consistency_label = "Fair"
+    else:
+        consistency_label = "Poor"
+
+    # Win/loss streaks — per trade, chronological, not per day.
+    best_win_streak = worst_loss_streak = cur_win = cur_loss = 0
+    for t in dated:
+        if t["pnl"] > 0:
+            cur_win += 1
+            cur_loss = 0
+        elif t["pnl"] < 0:
+            cur_loss += 1
+            cur_win = 0
+        else:
+            cur_win = cur_loss = 0
+        best_win_streak = max(best_win_streak, cur_win)
+        worst_loss_streak = max(worst_loss_streak, cur_loss)
+
+    def _bucket_by(keyfn, label_none="Untagged"):
+        buckets = {}
+        for t in dated:
+            key = keyfn(t) or label_none
+            buckets.setdefault(key, []).append(t)
+        out = []
+        for key, trades in buckets.items():
+            n = len(trades)
+            wins = len([t for t in trades if t["pnl"] > 0])
+            out.append({
+                "label": key, "count": n,
+                "pnl": round(sum(t["pnl"] for t in trades), 2),
+                "winRate": round(wins / n * 100, 1) if n else 0.0,
+            })
+        return out
+
+    by_quality = _bucket_by(_quality_grade)
+    by_regime = _bucket_by(lambda t: t.get("regime"))
+
+    return {
+        "equityCurve": equity_curve,
+        "totalPnl": total_pnl,
+        "peakEquity": peak,
+        "maxDrawdown": max_dd,
+        "maxDrawdownPct": max_dd_pct,
+        "tradingDays": len(days),
+        "avgTradesPerDay": round(len(dated) / len(days), 1) if days else 0.0,
+        "dailyWinRate": {"pct": daily_win_rate, "wins": len(win_days), "losses": len(loss_days)},
+        "consistency": {"pct": consistency_pct, "label": consistency_label},
+        "bestDay": best_day, "worstDay": worst_day,
+        "bestWinStreak": best_win_streak, "worstLossStreak": worst_loss_streak,
+        "byQualityGrade": sorted(by_quality, key=lambda b: b["label"]),
+        "byRegime": sorted(by_regime, key=lambda b: -b["pnl"]),
+    }
+
+
 def _holdings_to_positions(holdings, open_meta=None):
     open_meta = open_meta or {}
     positions = []
@@ -235,9 +369,21 @@ async def get_portfolio_full():
     closed_trades = _fetch_closed_trades()
     closed_json = [_closed_trade_to_json(t) for t in closed_trades]
     insights = _compute_insights(closed_json)
+    journal = _compute_journal_stats(closed_json)
+
+    total_invested = sum(p["avgCost"] * p["quantity"] for p in positions)
+    total_value = sum(p["totalValue"] for p in positions)
 
     return {
         "holdings": positions,
         "closedTrades": closed_json,
         "insights": insights,
+        "journal": journal,
+        "openSummary": {
+            "totalInvested": round(total_invested, 2),
+            "totalValue": round(total_value, 2),
+            "unrealizedPnL": round(total_value - total_invested, 2),
+            "unrealizedPnLPct": round((total_value - total_invested) / total_invested * 100, 2) if total_invested else 0.0,
+            "count": len(positions),
+        },
     }

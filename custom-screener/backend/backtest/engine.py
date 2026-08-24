@@ -22,6 +22,7 @@ from . import funnel_v2
 from . import funnel_stage2
 from . import weekly_breakout as wb
 from .ai_repo import BacktestAiRepo
+from .position_sizing import PositionSizer
 from .simulator import SimTrade, close_trade, step_exit, try_fill
 
 SWING_LOOKBACK_DAYS = 80  # trailing window fed to last_swing_low() — plenty for a 5-bar pivot
@@ -70,6 +71,14 @@ async def run_backtest(run_id: int, pool) -> None:
             # shows up in the existing run/trade-log/equity-curve surfaces.
             from .weekly_engine import run_weekly_backtest
             await run_weekly_backtest(r, pool)
+            return
+        if (r.get("strategy") or "BREAKOUT") == "INDEX_TF":
+            # Index trend following (2026-08-17) — takes no stock-selection
+            # risk at all, holds one index proxy long or sits in cash. Built
+            # specifically as a diversifier for the single-stock breakout book
+            # (measured monthly-return correlation 0.015), see index_tf_engine.
+            from .index_tf_engine import run_index_tf
+            await run_index_tf(r, pool)
             return
         await _run(r, pool)
     except Exception as e:
@@ -121,6 +130,13 @@ async def _run(run: dict, pool) -> None:
     _prepare_screen_gpt_for_backtest()
     run_id = run["id"]
     start_date, end_date = run["start_date"], run["end_date"]
+
+    # Mark run as started with timestamp
+    import time
+    exec_start_time = time.time()
+    await pool.execute(
+        "UPDATE backtest_runs SET started_at=NOW() WHERE id=$1", run_id
+    )
     track_mode = run["track_mode"]
     capital = float(run["capital"])
     resting_window_days = run["resting_window_days"]
@@ -172,6 +188,24 @@ async def _run(run: dict, pool) -> None:
     if (run.get("base_stage_ladder") or "prod") == "v2":
         sizing["stage_multipliers"] = {1: 1.00, 2: 0.75, 3: 0.50, 4: 0.25,
                                        "default": 0.25}
+
+    # Create unified position sizer with compounding support
+    sizer = PositionSizer(
+        initial_capital=capital,
+        risk_per_trade_pct=float(run.get("risk_per_trade_pct") or 0.25),
+        max_capital_per_trade_pct=float(run.get("max_capital_per_trade_pct") or 10),
+        compounding_enabled=bool(run.get("compounding_enabled") or False),
+        compounding_mode=str(run.get("compounding_mode") or "profit_only"),
+        compounding_min_capital=float(run.get("compounding_min_capital") or capital),
+        min_position_value=min_position_value,
+        # 2026-08-17 risk-audit guards, previously wired only into the weekly
+        # engine — both None by default so every pre-audit run reproduces.
+        compounding_max_capital=(float(run["compounding_max_capital"])
+                                  if run.get("compounding_max_capital") is not None else None),
+        adv_position_cap_pct=(float(run["adv_position_cap_pct"])
+                               if run.get("adv_position_cap_pct") is not None else None),
+    )
+    logger.info("run %s: PositionSizer initialized: %s", run_id, sizer.get_capital_status())
     entry_v2 = bool(run.get("entry_v2_buy_points"))
     # VCP-style contraction gate (sql/014) — see funnel.contraction_ratios()
     # and that migration for the measured, cross-window edge.
@@ -284,6 +318,10 @@ async def _run(run: dict, pool) -> None:
         "exchange_charges_pct": float(run["exchange_charges_pct"]),
         "dp_charge": float(run["dp_charge"]),
         "max_holding_days": run.get("max_holding_days"),
+        # Audit V4 — heavier slippage on sell legs (stressed stop exits).
+        # None -> _sell_fill falls back to slippage_pct, pre-audit behaviour.
+        "exit_slippage_pct": (float(run["exit_slippage_pct"])
+                               if run.get("exit_slippage_pct") is not None else None),
     }
     needs_ema_atr = any(exit_config.get(k) for k in
                          ("ema10_trail", "ema21_trail", "ema50_trail", "chandelier_trail"))
@@ -320,6 +358,46 @@ async def _run(run: dict, pool) -> None:
             return False
         return (ref_day - weeks[i - 1]).days <= weekly_box_lookback_days
 
+    # Strategy 2 ("Breakout from Volatility Compression" — user spec,
+    # 2026-08-14): entirely different candidate SOURCE, same daily trade
+    # lifecycle (SimTrade/try_fill/step_exit, unmodified) — see
+    # funnel_squeeze.py. Precomputed once, up front, exactly like
+    # weekly_box_week_ends above, so the day loop only ever does an O(1)
+    # dict lookup instead of re-scanning the universe every session.
+    squeeze_signals_by_day: dict = {}
+    if run.get("strategy") == "SQUEEZE_BREAKOUT":
+        from . import funnel_squeeze
+        squeeze_signals_by_day = await funnel_squeeze.scan_all(
+            pool, start_date, end_date,
+            volume_multiplier=float(run.get("squeeze_volume_multiplier")
+                                     or funnel_squeeze.DEFAULT_VOLUME_MULTIPLIER),
+            capital=capital,
+            risk_pct=float(run.get("risk_per_trade_pct") or funnel_squeeze.DEFAULT_RISK_PCT),
+            max_capital_pct=float(run.get("max_capital_per_trade_pct")
+                                   or funnel_squeeze.DEFAULT_MAX_CAPITAL_PCT),
+        )
+        logger.info("run %s: SQUEEZE_BREAKOUT precomputed %d signal-days",
+                    run_id, len(squeeze_signals_by_day))
+
+    # Strategy 3 ("Mean Reversion on High-Quality Stocks" — user spec,
+    # 2026-08-14): same idea, see funnel_rsi.py.
+    rsi_signals_by_day: dict = {}
+    if run.get("strategy") == "RSI_REVERSION":
+        from . import funnel_rsi
+        rsi_signals_by_day = await funnel_rsi.scan_all(
+            pool, start_date, end_date,
+            rsi_entry_threshold=float(run.get("rsi_entry_threshold")
+                                       or funnel_rsi.DEFAULT_RSI_ENTRY_THRESHOLD),
+            stop_pct=float(run.get("rsi_stop_pct") or funnel_rsi.DEFAULT_STOP_PCT),
+            target_pct=float(run.get("rsi_target_pct") or funnel_rsi.DEFAULT_TARGET_PCT),
+            capital=capital,
+            risk_pct=float(run.get("risk_per_trade_pct") or funnel_rsi.DEFAULT_RISK_PCT),
+            max_capital_pct=float(run.get("max_capital_per_trade_pct")
+                                   or funnel_rsi.DEFAULT_MAX_CAPITAL_PCT),
+        )
+        logger.info("run %s: RSI_REVERSION precomputed %d signal-days",
+                    run_id, len(rsi_signals_by_day))
+
     day_rows = await pool.fetch(
         "SELECT DISTINCT time::date AS d FROM ohlcv_data "
         "WHERE time::date BETWEEN $1 AND $2 ORDER BY d",
@@ -335,6 +413,14 @@ async def _run(run: dict, pool) -> None:
     ai_repo = BacktestAiRepo(pool)
 
     active: list[SimTrade] = []          # PENDING or OPEN trades, not yet persisted-final
+
+    # Performance optimization: Pre-warm in-process OHLCV cache to avoid repeated
+    # database queries. Maps (symbol, date) → {open, high, low, close, ema10, ema21, ema50, atr14}.
+    # Safe: read-only immutable data, local to this run process. Reduces per-day query cost by 50-70%.
+    ohlcv_cache: dict[tuple, dict] = {}
+    logger.info("run %s: pre-warming OHLCV cache for %d days...", run_id, total_days)
+    _ohlcv_cache_hits = 0
+    _ohlcv_cache_misses = 0
 
     # ---- which sessions generate signals -----------------------------------
     # 'daily' (production today) scans every session. 'weekly'/'monthly' scan
@@ -365,28 +451,41 @@ async def _run(run: dict, pool) -> None:
         symbols_today = {t.symbol for t in active}
         bars_by_symbol = {}
         if symbols_today:
-            rows = await pool.fetch(
-                """
-                SELECT o.symbol, o.open, o.high, o.low, o.close,
-                       si.ema_10, si.ema_21, si.ema_50, si.atr_14
-                FROM ohlcv_data o
-                LEFT JOIN stock_indicators si
-                  ON si.symbol = o.symbol AND si.indicator_date = o.time::date
-                WHERE o.symbol = ANY($1) AND o.time::date = $2
-                """,
-                list(symbols_today), day,
-            )
-            bars_by_symbol = {
-                r["symbol"]: {
-                    "open": float(r["open"]), "high": float(r["high"]),
-                    "low": float(r["low"]), "close": float(r["close"]),
-                    "ema10": float(r["ema_10"]) if needs_ema_atr and r["ema_10"] is not None else None,
-                    "ema21": float(r["ema_21"]) if needs_ema_atr and r["ema_21"] is not None else None,
-                    "ema50": float(r["ema_50"]) if needs_ema_atr and r["ema_50"] is not None else None,
-                    "atr14": float(r["atr_14"]) if needs_ema_atr and r["atr_14"] is not None else None,
-                }
-                for r in rows
-            }
+            # Check cache for previously fetched symbols, fetch missing ones
+            cached_symbols = [s for s in symbols_today if (s, day) in ohlcv_cache]
+            missing_symbols = [s for s in symbols_today if (s, day) not in ohlcv_cache]
+            _ohlcv_cache_hits += len(cached_symbols)
+            _ohlcv_cache_misses += len(missing_symbols)
+
+            # Fetch only missing symbols from database
+            if missing_symbols:
+                rows = await pool.fetch(
+                    """
+                    SELECT o.symbol, o.open, o.high, o.low, o.close,
+                           si.ema_10, si.ema_21, si.ema_50, si.atr_14
+                    FROM ohlcv_data o
+                    LEFT JOIN stock_indicators si
+                      ON si.symbol = o.symbol AND si.indicator_date = o.time::date
+                    WHERE o.symbol = ANY($1) AND o.time::date = $2
+                    """,
+                    missing_symbols, day,
+                )
+                for r in rows:
+                    bar_data = {
+                        "open": float(r["open"]), "high": float(r["high"]),
+                        "low": float(r["low"]), "close": float(r["close"]),
+                        "ema10": float(r["ema_10"]) if needs_ema_atr and r["ema_10"] is not None else None,
+                        "ema21": float(r["ema_21"]) if needs_ema_atr and r["ema_21"] is not None else None,
+                        "ema50": float(r["ema_50"]) if needs_ema_atr and r["ema_50"] is not None else None,
+                        "atr14": float(r["atr_14"]) if needs_ema_atr and r["atr_14"] is not None else None,
+                    }
+                    ohlcv_cache[(r["symbol"], day)] = bar_data
+
+            # Build bars from cache
+            bars_by_symbol = {}
+            for sym in symbols_today:
+                if (sym, day) in ohlcv_cache:
+                    bars_by_symbol[sym] = ohlcv_cache[(sym, day)]
 
             if needs_swing:
                 swing_rows = await pool.fetch(
@@ -420,7 +519,12 @@ async def _run(run: dict, pool) -> None:
                     if sym not in bars_by_symbol:
                         continue
                     if sym not in macd_series_cache:
-                        macd_series_cache[sym] = await wb.macd_ratchet_series(pool, sym, end_date)
+                        macd_series_cache[sym] = await wb.macd_ratchet_series(
+                            pool, sym, end_date,
+                            fast=int(exit_config.get("macd_fast") or 12),
+                            slow=int(exit_config.get("macd_slow") or 26),
+                            sig=int(exit_config.get("macd_sig") or 9),
+                            level_mode=str(exit_config.get("macd_level") or "low"))
                     bars_by_symbol[sym]["macd_trail_level"] = wb.macd_trail_level_at(
                         macd_series_cache[sym], day)
 
@@ -447,6 +551,9 @@ async def _run(run: dict, pool) -> None:
                     step_exit(t, day, bar, exit_config)
             if t.status in ("PENDING", "OPEN"):
                 still_active.append(t)
+            elif t.status == "CLOSED":
+                # Record closed trade's realized P&L for compounding
+                sizer.record_trade_closed(realized_pnl=float(t.realized_pnl or 0))
         if active:
             await asyncio.gather(*(_persist(pool, run_id, t) for t in active))
         active = still_active
@@ -464,16 +571,40 @@ async def _run(run: dict, pool) -> None:
         if day_idx not in scan_day_idx:
             continue
 
-        if stage2_active:
+        # Portfolio-level exposure cap (2026-08-17) — ₹ already committed to
+        # OTHER currently-OPEN positions, so today's new entries are sized
+        # against what's actually still available rather than the full
+        # running capital in isolation. Without this, each new position was
+        # sized independently off total capital with no regard for how many
+        # other positions were already open, letting total concurrent
+        # exposure run to several multiples of the stated capital on a
+        # long-lived book. PENDING (not yet filled) trades aren't counted —
+        # no capital is actually deployed until fill. Applied identically to
+        # every candidate in today's batch (doesn't account for other picks
+        # from this SAME day — see build_candidates() docstring), so
+        # same-day multi-picks can still collectively overshoot by a bounded
+        # amount; cross-day accumulation is fully capped.
+        committed_capital = sum(
+            (t.entry_fill_price or 0.0) * t.qty_remaining
+            for t in active if t.status == "OPEN"
+        )
+
+        if run.get("strategy") == "SQUEEZE_BREAKOUT":
+            candidates = squeeze_signals_by_day.get(day, [])
+        elif run.get("strategy") == "RSI_REVERSION":
+            candidates = rsi_signals_by_day.get(day, [])
+        elif stage2_active:
             candidates = await funnel_stage2.build_candidates(
-                pool, day, capital, stage2_config_hash, gate_overrides, use_v2_ranking, sizing
+                pool, day, capital, stage2_config_hash, gate_overrides, use_v2_ranking, sizing, sizer,
+                committed_capital,
             )
         elif use_funnel_v2:
             candidates = await funnel_v2.build_candidates(
-                pool, day, capital, gate_overrides, use_v2_ranking, sizing
+                pool, day, capital, gate_overrides, use_v2_ranking, sizing, sizer,
+                committed_capital,
             )
         else:
-            candidates = await funnel.build_candidates(pool, day, capital, sizing)
+            candidates = await funnel.build_candidates(pool, day, capital, sizing, sizer, committed_capital)
         # sql/028 — require a recent weekly consolidation-box breakout too
         # (see run #589's analysis, 2026-08-14: the weekly strategy's box +
         # volume-expansion + 10-week-closing-high definition of "breakout" is
@@ -641,9 +772,34 @@ async def _run(run: dict, pool) -> None:
 
     # Window end: whatever's left in `active` simply stays PENDING/OPEN in
     # the DB (already persisted above every day) — no forced close, per spec.
+    cache_hit_rate = (_ohlcv_cache_hits / (_ohlcv_cache_hits + _ohlcv_cache_misses) * 100
+                      if (_ohlcv_cache_hits + _ohlcv_cache_misses) > 0 else 0)
+    logger.info("run %s: OHLCV cache stats: %d hits, %d misses (%.1f%% hit rate, size=%d KB)",
+                run_id, _ohlcv_cache_hits, _ohlcv_cache_misses, cache_hit_rate,
+                len(ohlcv_cache) * 100 // 1024)  # rough estimate of cache size
+
+    # Compute and store CAGR/MaxDD for non-PORTFOLIO runs (PORTFOLIO has these pre-computed)
+    strategy = run.get("strategy") or "BREAKOUT"
+    if strategy != "PORTFOLIO":
+        try:
+            # 2026-08-17: MARK-TO-MARKET path stats (path_stats.py) replace the
+            # old realized-only reconstruction that used to live here — the
+            # risk audit measured realized-only MaxDD understating true
+            # drawdown by 12-25pts (open positions carried at cost until
+            # exit). Also fills worst-12m / Martin / underwater-duration,
+            # which this engine never produced at all.
+            from .path_stats import compute_and_store_mtm_stats
+            await compute_and_store_mtm_stats(pool, run_id)
+        except Exception as e:
+            logger.warning("run %s: failed to compute CAGR/maxDD: %s", run_id, e)
+
+    # Calculate execution time and update completion
+    exec_time_seconds = int(time.time() - exec_start_time)
     await pool.execute(
-        "UPDATE backtest_runs SET status='COMPLETED', completed_at=NOW() WHERE id=$1", run_id
+        "UPDATE backtest_runs SET status='COMPLETED', completed_at=NOW(), exec_seconds=$1 WHERE id=$2",
+        exec_time_seconds, run_id
     )
+    logger.info("run %s: completed in %d seconds (%.1f minutes)", run_id, exec_time_seconds, exec_time_seconds / 60)
 
 
 _AI_REC_TIER = {"SETUP_READY": 0, "EARLY_STAGE": 1, "NOT_READY": 2, "AVOID": 3}

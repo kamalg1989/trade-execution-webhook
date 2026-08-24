@@ -54,3 +54,6 @@ structural_sl_history.json
 # Stray debug screenshots
 /d.png
 /w.png
+
+# Secrets
+*.pem

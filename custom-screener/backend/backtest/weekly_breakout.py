@@ -279,7 +279,9 @@ async def fundamentals_pass(pool, symbol: str, as_of: date) -> bool:
     return float(latest["revenue"]) >= float(prior["revenue"]) and float(latest["net_profit"]) >= float(prior["net_profit"])
 
 
-async def macd_ratchet_series(pool, symbol: str, upto: date) -> list[tuple[date, float | None]]:
+async def macd_ratchet_series(pool, symbol: str, upto: date,
+                               fast: int = 12, slow: int = 26, sig: int = 9,
+                               level_mode: str = "low") -> list[tuple[date, float | None]]:
     """Weekly-MACD bearish-crossover ratchet level over a symbol's history
     through `upto` — used by the daily engine's optional `macd_trail` exit
     (see simulator.step_exit), a slower/less noise-sensitive alternative to
@@ -313,19 +315,32 @@ async def macd_ratchet_series(pool, symbol: str, upto: date) -> list[tuple[date,
         {"Open": float, "High": float, "Low": float, "Close": float, "Volume": float}
     )
     df = df.set_index("week_end")
-    df = compute_weekly_indicators(df)
+    # MACD computed inline with tunable periods (2026-08-18, macd-trail
+    # tuning experiment) rather than via compute_weekly_indicators, whose
+    # fixed 12/26/9 output every OTHER consumer depends on. Defaults
+    # reproduce the original series exactly (same EMA recurrence).
+    ema_f = df["Close"].ewm(span=fast, adjust=False).mean()
+    ema_s = df["Close"].ewm(span=slow, adjust=False).mean()
+    macd = ema_f - ema_s
+    signal = macd.ewm(span=sig, adjust=False).mean()
+    df["_macd"], df["_sig"] = macd, signal
 
     out: list[tuple[date, float | None]] = []
     level: float | None = None
     prev_macd, prev_signal = None, None
     for week_end, row in df.iterrows():
-        macd_line, macd_signal = row["macd_line"], row["macd_signal"]
+        macd_line, macd_signal = row["_macd"], row["_sig"]
         if (pd.notna(macd_line) and pd.notna(macd_signal)
                 and prev_macd is not None and pd.notna(prev_macd) and pd.notna(prev_signal)):
             was_bullish_or_flat = prev_macd >= prev_signal
             now_bearish = macd_line < macd_signal
             if was_bullish_or_flat and now_bearish:
-                new_level = round(float(row["Low"]), 2)
+                # 'low' (default) = crossover week's Low — the original spec.
+                # 'close' = crossover week's Close — a tighter level that
+                # captures more of the open profit at the cost of more
+                # whipsaw re-tests (the tuning question under test).
+                ref = row["Close"] if level_mode == "close" else row["Low"]
+                new_level = round(float(ref), 2)
                 level = new_level if level is None else max(level, new_level)
         d = week_end.date() if hasattr(week_end, "date") else week_end
         out.append((d, level))

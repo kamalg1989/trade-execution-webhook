@@ -125,8 +125,17 @@ def _buy_fill(gross_price: float, cfg: dict) -> float:
 
 
 def _sell_fill(gross_price: float, cfg: dict) -> float:
-    """Slippage always works against the trader: sells fill lower."""
-    return round(gross_price * (1 - cfg.get("slippage_pct", 0) / 100), 2)
+    """Slippage always works against the trader: sells fill lower.
+
+    exit_slippage_pct (2026-08-17 risk audit, V4): optional override applied to
+    SELL legs only. This book's exits are stop-driven — they fire on red days
+    in falling, often illiquid names, exactly when the bid side thins out — so
+    a single symmetric slippage number calibrated on calm entries understates
+    exits. Unset -> falls back to slippage_pct, reproducing every prior run."""
+    slip = cfg.get("exit_slippage_pct")
+    if slip is None:
+        slip = cfg.get("slippage_pct", 0)
+    return round(gross_price * (1 - slip / 100), 2)
 
 
 def _leg_costs(value: float, cfg: dict, is_sell: bool) -> float:
@@ -247,8 +256,41 @@ def step_exit(trade: SimTrade, day: object, bar: dict, exit_config: dict) -> Non
     up_r = int((bar["high"] - entry) // risk) if risk else 0
 
     if exit_config.get("breakeven") and not trade.moved_to_breakeven and up_r >= 1:
-        trade.current_sl = max(trade.current_sl, entry)
+        # breakeven_buffer_pct (2026-08-18, win-rate hygiene): stop parks at
+        # entry*(1+buffer) instead of exact entry, so a breakeven stop-out
+        # covers the ~0.8% round-trip friction and books a scratch instead of
+        # a small structural loss. 0/unset = exact entry, byte-identical to
+        # every prior run.
+        be_buf = float(exit_config.get("breakeven_buffer_pct") or 0)
+        trade.current_sl = max(trade.current_sl, round(entry * (1 + be_buf / 100), 2))
         trade.moved_to_breakeven = True
+
+    # half_booking_r (2026-08-17, exit-hygiene experiment): optional FRACTIONAL
+    # R threshold for the half-book, e.g. 1.5 books at +1.5R instead of the
+    # ladder's +2R. Deliberately a separate early block rather than a rewrite
+    # of the up_r>=2 ladder below: unset (None/2) leaves that ladder byte-for-
+    # byte untouched, and when this fires first, half_booked=True simply makes
+    # the ladder's own +2R book a no-op. Trail moves to entry+(hb_r-1)R —
+    # same "one R behind the book" geometry as the +2R rule's entry+1R.
+    hb_r = exit_config.get("half_booking_r")
+    if (hb_r is not None and float(hb_r) != 2.0 and exit_config.get("half_booking")
+            and not trade.half_booked and risk
+            and (bar["high"] - entry) / risk >= float(hb_r)):
+        hb_r = float(hb_r)
+        half_qty = trade.qty_remaining // 2
+        if half_qty > 0:
+            book_gross = round(entry + hb_r * risk, 2)
+            book_net = _sell_fill(book_gross, exit_config)
+            trade.partial_exits.append({"date": day, "qty": half_qty,
+                                         "price": book_net, "reason": f"HALF_BOOK_{hb_r}R"})
+            trade.gross_pnl += (book_gross - trade.entry_trigger_price) * half_qty
+            trade.realized_pnl += ((book_net - entry) * half_qty
+                                    - _leg_costs(book_net * half_qty, exit_config, is_sell=True))
+            trade.qty_remaining -= half_qty
+        trade.half_booked = True
+        trade.highest_r_acted = max(trade.highest_r_acted, int(hb_r))
+        if exit_config.get("trailing"):
+            trade.current_sl = max(trade.current_sl, round(entry + (hb_r - 1) * risk, 2))
 
     if up_r >= 2:
         if exit_config.get("half_booking") and not trade.half_booked:
@@ -302,6 +344,22 @@ def step_exit(trade: SimTrade, day: object, bar: dict, exit_config: dict) -> Non
         macd_level = bar.get("macd_trail_level")
         if macd_level is not None:
             trade.current_sl = max(trade.current_sl, macd_level)
+
+    # PROFIT-GIVEBACK CAP (2026-08-18, unrealized-capture experiment). Once a
+    # trade's PEAK unrealized gain reaches giveback_arm_r (in R), the stop is
+    # floored so the trade can never give back more than giveback_cap_pct of
+    # that peak gain. Distinct from every previously-tested (and failed)
+    # profit-protection lever: it never books anything early, never touches a
+    # trade that hasn't already proven itself deep in profit, and merely caps
+    # the retracement of an already-large open gain. Ratchets with peak_high;
+    # never loosens (same max() convention as every trail here).
+    gb_arm = exit_config.get("giveback_arm_r")
+    gb_cap = exit_config.get("giveback_cap_pct")
+    if gb_arm is not None and gb_cap is not None and risk:
+        peak_r = (trade.peak_high - entry) / risk
+        if peak_r >= float(gb_arm):
+            keep_r = peak_r * (1 - float(gb_cap) / 100)
+            trade.current_sl = max(trade.current_sl, round(entry + keep_r * risk, 2))
 
     if (exit_config.get("fixed_target") and not trade.half_booked
             and bar["high"] >= trade.target_price):

@@ -113,6 +113,8 @@ async def build_candidates(
     gate_overrides: dict | None = None,
     use_v2_ranking: bool = False,
     sizing: dict | None = None,
+    sizer=None,
+    committed_capital: float = 0.0,
 ) -> list[dict]:
     """Stage 2 results are read from/written to backtest_stage2_signals_cache
     keyed by (symbol, signal_date, chash) — see module docstring. Survivors
@@ -121,7 +123,10 @@ async def build_candidates(
     same as funnel_v2) actually takes effect even when a Stage 2 override is
     also active — see the "Stage 1 combo note" above. use_v2_ranking selects
     the same alternate (already-known-worse) Stage 4 ranking funnel_v2
-    supports, for parity/completeness; defaults off."""
+    supports, for parity/completeness; defaults off.
+
+    If `sizer` (PositionSizer) is provided, uses it for position sizing to support
+    compounding."""
     survivors = await v2.funnel_survivors_v2(pool, d, gate_overrides)
     if not survivors:
         return []
@@ -168,7 +173,7 @@ async def build_candidates(
         entry, sl = float(sig["entry"]), float(sig["sl"])
         risk_per_share = float(sig["risk_per_share"])
         base_stage = sig["base_stage"]
-        qty = v1._size_qty(capital, base_stage, entry, risk_per_share, sizing)
+        qty = v1._size_qty(capital, base_stage, entry, risk_per_share, sizing, sizer, committed_capital)
         if qty <= 0:
             continue
         candidates.append({
