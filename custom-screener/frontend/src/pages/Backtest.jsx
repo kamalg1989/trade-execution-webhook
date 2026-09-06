@@ -1,61 +1,82 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  createBacktestRun, listBacktestRuns, getBacktestRun, getBacktestSummary,
-  getBacktestTrades, getBacktestDay, cancelBacktestRun, backtestTradeChartUrl,
+  listBacktestRuns, getBacktestSummary, getBacktestTrades, getBacktestDay,
+  cancelBacktestRun, backtestTradeChartUrl,
 } from '../api/client.js';
 import CompactBacktestForm from '../components/CompactBacktestForm.jsx';
-import { HELP, Info, LabelWithInfo, Pill, Stat, useIsMobile } from '../components/ui.jsx';
+import { HELP, useIsMobile } from '../components/ui.jsx';
 import {
   getCagr, getMaxDD, getWorst12m, getMartin, getMaxUwDays,
   fmtCagr, fmtMaxDD, fmtW12m, fmtRatio, fmtUwMonths, runBadges,
 } from '../utils/runMetrics.js';
+import '../styles/backtest.css';
 
-// Audit badges rendered next to the run id — driven by the run's own config
-// columns via runBadges(), never by notes text.
-const BADGE_TONE = {
-  emerald: 'bg-emerald-900/50 border-emerald-700 text-emerald-300',
-  sky: 'bg-sky-900/50 border-sky-700 text-sky-300',
-  amber: 'bg-amber-900/50 border-amber-700 text-amber-300',
-  purple: 'bg-purple-900/50 border-purple-700 text-purple-300',
+/* ═══════════════════════════════════════════════════════════════════════
+   Formatters
+   ═══════════════════════════════════════════════════════════════════ */
+const fmtInr = (n) =>
+  n == null ? '—' : `₹${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+const fmtPx = (n) =>
+  n == null ? '—' : Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+const fmtInrCompact = (n) => {
+  if (n == null) return '—';
+  const sign = n < 0 ? '−' : '';
+  const abs = Math.abs(n);
+  if (abs >= 1e7) return `${sign}₹${(abs / 1e7).toFixed(2)}Cr`;
+  if (abs >= 1e5) return `${sign}₹${(abs / 1e5).toFixed(1)}L`;
+  if (abs >= 1e3) return `${sign}₹${(abs / 1e3).toFixed(1)}k`;
+  return `${sign}₹${Math.round(abs)}`;
 };
+const fmtR = (n) => (n == null ? '—' : `${n > 0 ? '+' : ''}${n.toFixed(2)}R`);
+const fmtPctS = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(1)}%`);
+const pnlCls = (n) => (n == null ? 'tert' : n > 0 ? 'g' : n < 0 ? 'l' : 'muted');
+const fmtWindowShort = (s, e) => `${s?.slice(2) ?? ''} → ${e?.slice(2) ?? ''}`;
+const shortDate = (d) => {
+  if (!d) return '—';
+  const M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${d.slice(8, 10)} ${M[+d.slice(5, 7) - 1]} '${d.slice(2, 4)}`;
+};
+const addDays = (dateStr, delta) => {
+  const dt = new Date(`${dateStr}T00:00:00Z`);
+  dt.setUTCDate(dt.getUTCDate() + delta);
+  return dt.toISOString().slice(0, 10);
+};
+
+const RUN_BADGE = {
+  COMPLETED: ['b-done', 'Completed'], RUNNING: ['b-run', 'Running'],
+  FAILED: ['b-fail', 'Failed'], QUEUED: ['b-void', 'Queued'], CANCELLED: ['b-void', 'Cancelled'],
+};
+const runBadgeFor = (s) => RUN_BADGE[s] || ['b-void', s || '—'];
+const TRADE_DOT = {
+  PENDING: ['var(--ink-tert)', 'tert'], OPEN: ['var(--info)', 'i'],
+  CLOSED: ['var(--ink-subtle)', 'muted'], SUPERSEDED: ['var(--hair-strong)', 'tert'],
+};
+const trackRowClass = (t) => {
+  const q = t.quantRank != null, a = t.aiRank != null;
+  if (q && a) return 'tk-b';
+  if (q) return 'tk-q';
+  if (a) return 'tk-a';
+  return '';
+};
+
+// Audit badges next to the run id — driven by the run's own config columns
+// via runBadges(), never by notes text.
 function AuditBadges({ run }) {
   const badges = runBadges(run);
   if (!badges.length) return null;
   return (
-    <span className="inline-flex gap-1 ml-1.5 align-middle">
+    <>
       {badges.map((b) => (
-        <span key={b.label} title={b.title}
-          className={`px-1 py-px rounded border text-[9px] font-semibold whitespace-nowrap ${BADGE_TONE[b.tone]}`}>
-          {b.label}
-        </span>
+        <span key={b.label} className={`badge b-${b.tone}`} title={b.title}>{b.label}</span>
       ))}
-    </span>
+    </>
   );
 }
 
-const fmtInr = (n) =>
-  n == null ? '—' : `₹${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
-const fmtR = (n) => (n == null ? '—' : `${n > 0 ? '+' : ''}${n.toFixed(2)}R`);
-const pnlColor = (n) => (n == null ? 'text-slate-400' : n > 0 ? 'text-emerald-400' : n < 0 ? 'text-red-400' : 'text-slate-300');
-
-const STATUS_COLOR = {
-  RUNNING: 'text-amber-300', COMPLETED: 'text-emerald-400', FAILED: 'text-red-400',
-};
-const TRADE_STATUS_COLOR = {
-  PENDING: 'text-slate-400', OPEN: 'text-blue-300', CLOSED: 'text-slate-200', SUPERSEDED: 'text-slate-500',
-};
-
-// Light transparent row tint by track — quant (sky), AI (purple), both (indigo blend).
-const trackRowClass = (t) => {
-  const q = t.quantRank != null, a = t.aiRank != null;
-  if (q && a) return 'bg-indigo-500/10';
-  if (q) return 'bg-sky-500/10';
-  if (a) return 'bg-purple-500/10';
-  return '';
-};
-
-// ---------------- Run settings summary (for the run list "Settings" column) ----------------
-
+/* ═══════════════════════════════════════════════════════════════════════
+   Run settings summary (unchanged logic — this is what the Settings column
+   and the rail tags are built from)
+   ═══════════════════════════════════════════════════════════════════ */
 const EXIT_LABELS = [
   ['ema10_trail', 'EMA10 trail'], ['ema21_trail', 'EMA21 trail'], ['ema50_trail', 'EMA50 trail'],
   ['chandelier_trail', 'Chandelier trail'], ['swing_trail', 'Swing trail'],
@@ -72,70 +93,36 @@ const GATE_LABELS = [
   ['gateMaxDistFromHighPct', (v) => `distFromHigh≥${v}%`],
   ['gateMinIfpScore', (v) => `ifp≥${v}`],
 ];
+const POS_SL_NEEDS_PCT = new Set(['fixed', 'trail']);
 
-// The positional stop-loss choices, ordered the way they should be REASONED
-// about rather than alphabetically: no stop, then the two price-distance stops,
-// then the moving-average stops from fastest (EMA21, exits early and often) to
-// slowest (SMA200, barely fires). Presenting the MA group as an ordered speed
-// ladder is what lets a plateau across neighbours be read as a real effect.
-const POS_SL_MODES = [
-  { v: 'none', label: 'None — exit only at rebalance' },
-  { v: 'fixed', label: 'Fixed % below entry', pct: true },
-  { v: 'trail', label: 'Trailing % below peak', pct: true },
-  { v: 'ema21', label: 'Structural — close < EMA21 (fastest)' },
-  { v: 'sma50', label: 'Structural — close < SMA50' },
-  { v: 'ema50', label: 'Structural — close < EMA50' },
-  { v: 'sma200', label: 'Structural — close < SMA200 (slowest)' },
-];
-const POS_SL_NEEDS_PCT = new Set(POS_SL_MODES.filter((m) => m.pct).map((m) => m.v));
-
-// A PORTFOLIO run spanning under ~2 years is a standalone simulation that starts
-// fresh at the run's capital. Its CAGR annualises one short window and its P&L
-// is not additive with the compounded continuous run.
 function isShortWindow(run) {
   if (!run.startDate || !run.endDate) return false;
   const days = (new Date(run.endDate) - new Date(run.startDate)) / 86400000;
   return days < 730;
 }
-
 function slLabel(mode, pct) {
   if (!mode || mode === 'none') return null;
   if (POS_SL_NEEDS_PCT.has(mode)) return `SL ${mode} ${Number(pct)}%`;
   return `SL ${mode.toUpperCase()}`;
 }
-
-// Compact list of tags describing what actually differs from stock defaults
-// on this run — shown as the "Settings" column in the run list, and as a
-// fuller tooltip (title attr) on hover. Intentionally omits anything at its
-// default value so the column stays scannable across many runs.
 function summarizeRunSettings(run) {
   const tags = [];
   if (run.strategy === 'PORTFOLIO') {
-    // A continuous compounding book — the knobs that describe it are the risk
-    // controls, not the breakout gates, so summarise on its own terms.
     const t = ['PORTFOLIO', `${run.posMomentum?.replace('pct_chg_', '') ?? '6m'} mom`,
                `top${run.posTopN}`, `rebal ${run.posRebalanceDays}d`];
-    // A window under ~2 years is a STANDALONE simulation that restarts at the
-    // initial capital. Its CAGR annualises a single short period and its P&L
-    // cannot be added to, or compared with, the compounded continuous run. That
-    // warning has to be on the ROW — a reader scanning the list will not go
-    // looking for it in the notes.
     if (isShortWindow(run)) t.unshift('⚠ 1-YR STANDALONE — DO NOT SUM');
+    if (run.posTranches > 1) t.push(`${run.posTranches} tranches`);
+    if (run.posPhaseDays != null && run.posPhaseDays !== 0) t.push(`phase ${run.posPhaseDays}`);
     if (run.posSlPct > 0) t.push(`stop ${run.posSlPct}%`);
     if (run.pfVolMode && run.pfVolMode !== 'none') {
       t.push(`vol:${run.pfVolMode}${run.pfVolFloor ? ` floor${run.pfVolFloor}%` : ''}`);
     }
     if (run.pfDdThrottleAt > 0) t.push(`ddThrottle ${(run.pfDdThrottleAt * 100).toFixed(0)}%`);
-    if (run.pfMaxStocksPerSector && run.pfMaxStocksPerSector < 99) {
-      t.push(`${run.pfMaxStocksPerSector}/sector`);
-    }
+    if (run.pfMaxStocksPerSector && run.pfMaxStocksPerSector < 99) t.push(`${run.pfMaxStocksPerSector}/sector`);
     if (run.pfRequireSector) t.push('⚠ sector-only universe');
     return t;
   }
   if (run.strategy === 'WEEKLY_BREAKOUT') {
-    // Weekly consolidation-box breakout — an entirely different engine, so
-    // summarise on its own terms (risk %, max picks/day, resting window)
-    // rather than falling through to the daily-funnel gate tags below.
     const t = ['WEEKLY_BREAKOUT', `risk${run.weeklyRiskPct ?? 1.0}%`];
     if (run.maxPicksPerTrack != null && run.maxPicksPerTrack !== 3) t.push(`top${run.maxPicksPerTrack}/wk`);
     if (run.restingWindowDays != null) t.push(`rest:${run.restingWindowDays}wk`);
@@ -156,8 +143,6 @@ function summarizeRunSettings(run) {
     return t;
   }
   if (run.strategy === 'SQUEEZE_BREAKOUT') {
-    // Strategy 2 (user spec, 2026-08-14) — new candidate SOURCE plugged into
-    // the daily engine, so summarise on its own spec-specific terms.
     const t = ['SQUEEZE_BREAKOUT', `vol≥${run.squeezeVolumeMultiplier ?? 1.5}x`];
     if (run.maxHoldingDays != null) t.push(`hold≤${run.maxHoldingDays}d`);
     if (run.riskPerTradePct != null) t.push(`risk${run.riskPerTradePct}%`);
@@ -165,7 +150,6 @@ function summarizeRunSettings(run) {
     return t;
   }
   if (run.strategy === 'RSI_REVERSION') {
-    // Strategy 3 (user spec, 2026-08-14).
     const t = ['RSI_REVERSION', `RSI<${run.rsiEntryThreshold ?? 35}`,
                `stop${run.rsiStopPct ?? 4.5}%`, `tgt${run.rsiTargetPct ?? 5}%`];
     if (run.maxHoldingDays != null) t.push(`hold≤${run.maxHoldingDays}d`);
@@ -174,15 +158,11 @@ function summarizeRunSettings(run) {
   }
   if (run.maxPicksPerTrack != null && run.maxPicksPerTrack !== 3) tags.push(`top${run.maxPicksPerTrack}/track`);
   if (run.strategy === 'POSITIONAL') {
-    // Positional runs share almost none of the breakout knobs, so summarise
-    // them on their own terms rather than showing a wall of "not set".
-    return [`POSITIONAL`, `${run.posMomentum?.replace('pct_chg_', '') ?? '6m'} mom`,
-            `top${run.posTopN}/buf${run.posBufferN}`,
-            `rebal ${run.posRebalanceDays}d`,
+    return ['POSITIONAL', `${run.posMomentum?.replace('pct_chg_', '') ?? '6m'} mom`,
+            `top${run.posTopN}/buf${run.posBufferN}`, `rebal ${run.posRebalanceDays}d`,
             slLabel(run.posSlMode, run.posSlPct)].filter(Boolean);
   }
   if (run.quantFunnelVariant === 'v2') tags.push('rank:v2');
-  // The validated edges — shown first-class so a run's identity is obvious
   if (run.stage2BaseStageMaxAllowed != null) tags.push(`baseStage≤${run.stage2BaseStageMaxAllowed}`);
   if (run.entryBreadthMaxPct != null) tags.push(`breadth<${run.entryBreadthMaxPct}%`);
   if (run.entryBreadthRequireRising) tags.push('breadth↑');
@@ -190,13 +170,9 @@ function summarizeRunSettings(run) {
   if (run.requireWeeklyBoxBreakout) tags.push(`weekly-box≤${run.weeklyBoxLookbackDays ?? 10}d`);
   if (run.riskPerTradePct != null) tags.push(`risk${run.riskPerTradePct}%`);
   if (run.maxCapitalPerTradePct != null) tags.push(`cap${run.maxCapitalPerTradePct}%`);
-  for (const [key, fmt] of GATE_LABELS) {
-    if (run[key] != null) tags.push(fmt(run[key]));
-  }
+  for (const [key, fmt] of GATE_LABELS) if (run[key] != null) tags.push(fmt(run[key]));
   const ec = run.exitConfig || {};
-  for (const [key, label] of EXIT_LABELS) {
-    if (ec[key]) tags.push(label);
-  }
+  for (const [key, label] of EXIT_LABELS) if (ec[key]) tags.push(label);
   if (ec.fixed_target === false) tags.push('no fixed target');
   if (ec.half_booking === false) tags.push('no half-book');
   if (ec.breakeven === false) tags.push('no breakeven');
@@ -208,1363 +184,192 @@ function summarizeRunSettings(run) {
   return tags;
 }
 
-function SettingsCell({ run }) {
-  const tags = summarizeRunSettings(run);
-  const notes = run.params?.notes;
-  const full = [notes, ...tags].filter(Boolean).join(' · ');
-  return (
-    <td className="py-1.5 px-2 text-[11px] text-slate-400 min-w-[220px]" title={full || undefined}>
-      {notes && <div className="text-slate-300 truncate max-w-[320px]">{notes}</div>}
-      <div className="flex flex-wrap gap-1 mt-0.5">
-        {tags.length ? tags.map((t, i) => (
-          <span key={i} className="px-1 py-0.5 rounded bg-slate-800 border border-slate-700 whitespace-nowrap leading-tight">{t}</span>
-        )) : !notes ? <span className="text-slate-600">defaults</span> : null}
-      </div>
-    </td>
-  );
-}
-
-// ---------------- Run config form ----------------
-
-const DEFAULT_FORM = {
-  // The form opens on the FROZEN strategy over the full continuous window, so
-  // the default action is "run the thing we concluded is right" rather than
-  // "assemble a config from 47 blank fields". The breakout defaults below are
-  // retained for the advanced panel but are no longer what loads first.
-  strategy: 'PORTFOLIO',
-  // Frozen values (BACKTEST_REPORT section 10), so the form is runnable as-is.
-  pos_momentum: 'pct_chg_6m', pos_rebalance_days: 63, pos_top_n: 20,
-  pos_buffer_n: 40, pos_min_turnover_cr: 5,
-  pos_sl_mode: 'fixed', pos_sl_pct: 15,
-  // PORTFOLIO risk controls. Every one defaults to INERT — a control that is on
-  // by default cannot be measured against a baseline, which is exactly the bug
-  // that made the first sector-cap run identical to the run it should have
-  // differed from.
-  pf_vol_mode: 'none', pf_vol_floor: 75,
-  pf_max_per_stock_pct: 100, pf_max_per_sector_pct: 100,
-  pf_max_stocks_per_sector: 99, pf_require_sector: false,
-  pf_dd_throttle_at: 0,
-  // Full continuous window by default — a portfolio run over a few months
-  // annualises noise, and the whole point of this strategy is compounding.
-  start_date: '2016-01-01', end_date: '2026-08-08',
-  track_mode: 'QUANT', capital: 400000,
-  restIndefinite: true, resting_window_days: 5,
-  stacking_guard: true, stacking_guard_mode: 'OVERRIDE',
-  max_picks_per_track: 2,
-  // Validated edges (see PRESETS below / sql/011-014 migration comments)
-  stage2_base_stage_max_allowed: 2,
-  entry_breadth_max_pct: 40,
-  entry_breadth_require_rising: true,
-  max_contraction_ratio: '',
-  risk_per_trade_pct: '',
-  // Exits — defaults are the combination that won every sweep so far
-  breakeven: true, half_booking: true, trailing: true, fixed_target: false,
-  ema21_trail: true,
-  ema10_trail: false, ema50_trail: false, chandelier_trail: false, swing_trail: false,
-  failed_breakout_exit: false, swing_break_exit: false,
-  // Untested experiments borrowed from WEEKLY_BREAKOUT — see run #589 note
-  // in the BREAKOUT-strategy panel below.
-  macd_trail: false, require_weekly_box_breakout: false, weekly_box_lookback_days: 10,
-  // Production's sl_engine.py runs at 18:00 IST when Dhan rejects market
-  // orders, so exits are forever orders that fill at the NEXT session's open,
-  // not the trigger day's close. Defaulting this on is what production
-  // actually does — close-fill modelling understates it by ~Rs.90k/decade.
-  next_open_exit: true,
-  safety_sl_pct: 10.0, slippage_pct: 0.10, brokerage_per_order: 0.0, chandelier_atr_mult: 3.0,
-  max_capital_per_trade_pct: '', min_position_value: '',
-  // Signal cadence — how often the funnel scans for new candidates. Daily is
-  // production today; weekly is what the validated exit-ladder-fix preset uses.
-  signal_cadence: 'daily', signal_scan_day: 'last',
-  entry_v2_buy_points: false, base_stage_ladder: 'prod',
-  // WEEKLY_BREAKOUT-only — account-risk % per trade for that strategy's own
-  // position-sizing formula (see backtest/weekly_breakout.py size_position()).
-  weekly_risk_pct: 1.0,
-  // sql/030 — WEEKLY_BREAKOUT-only. Check stop-breach daily instead of only
-  // at week-end (MACD ratchet level itself still updates weekly).
-  weekly_daily_exit_check: false,
-  weekly_compounding_sizing: false,
-  // sql/029 — SQUEEZE_BREAKOUT-only (Strategy 2) / RSI_REVERSION-only
-  // (Strategy 3), user spec 2026-08-14. Both reuse max_holding_days (below,
-  // now wired generically) + risk_per_trade_pct/max_capital_per_trade_pct
-  // (already generic, above) for sizing/time-stop.
-  squeeze_volume_multiplier: 1.5,
-  rsi_entry_threshold: 35, rsi_stop_pct: 4.5, rsi_target_pct: 5.0,
-  // Generic time-stop (sql/016 max_holding_days) — previously unwired in this
-  // form (every prior strategy either didn't need it or used its own knob).
-  // '' = no cap, matching every existing run's behaviour unchanged.
-  max_holding_days: '',
-  notes: '',
-};
-
-// One-click starting points. "Best known" is the configuration that came out
-// ahead across BOTH validation windows (2025 + 2026) in the sweeps; "Production
-// today" is what screen_gpt.py actually runs right now, for A/B comparison.
-const PRESETS = {
-  validated: {
-    label: '⭐ Validated: exit-ladder fix', hint: 'Best return/drawdown found so far — '
-        + 'weekly scans, EMA21 trail, no half-booking or R-ladder',
-    values: {
-      // The B5 finding (BACKTEST_REPORT §9.19): removing half-booking and the
-      // R-ladder ratchet from production's exit ladder roughly TRIPLES return
-      // at unchanged drawdown. Won BOTH halves of a FIT(2016-20)/TEST(2021-26)
-      // split — the only candidate in this project's history to do that.
-      // Full-window result: Rs.315,597 total P&L, Rs.51,203 maxDD, ret/DD
-      // 6.16, win rate 34.1%, 1,287 trades over 2016-2026 at weekly cadence /
-      // 3 picks per scan.
-      strategy: 'BREAKOUT', track_mode: 'QUANT', capital: 400000,
-      max_picks_per_track: 3, stage2_base_stage_max_allowed: 2,
-      risk_per_trade_pct: 0.25, max_capital_per_trade_pct: 10.0,
-      safety_sl_pct: 10.0,
-      stacking_guard: true, stacking_guard_mode: 'OVERRIDE',
-      signal_cadence: 'weekly', signal_scan_day: 'last',
-      entry_v2_buy_points: false, base_stage_ladder: 'prod',
-      // The exit ladder itself — this is the whole finding.
-      breakeven: true, half_booking: false, trailing: false, fixed_target: false,
-      ema21_trail: true, ema10_trail: false, ema50_trail: false,
-      chandelier_trail: false, swing_trail: false,
-      failed_breakout_exit: false, swing_break_exit: false,
-      next_open_exit: true,
-      start_date: '2016-01-01', end_date: '2026-08-08',
-    },
-  },
-  best: {
-    label: 'Best known', hint: 'Winner across both validation windows',
-    values: {
-      strategy: 'BREAKOUT',
-      track_mode: 'QUANT', max_picks_per_track: 2, stage2_base_stage_max_allowed: 2,
-      entry_breadth_max_pct: 40, entry_breadth_require_rising: true,
-      max_contraction_ratio: 0.7, risk_per_trade_pct: 1.0,
-      stacking_guard: true, stacking_guard_mode: 'OVERRIDE', safety_sl_pct: 10,
-      breakeven: true, half_booking: true, trailing: true, fixed_target: false,
-      ema21_trail: true, ema10_trail: false, ema50_trail: false,
-      chandelier_trail: false, swing_trail: false,
-      failed_breakout_exit: false, swing_break_exit: false,
-    },
-  },
-  positional: {
-    label: 'Positional momentum',
-    hint: 'Low-turnover rotation, 11-window validated: 63d rebalance, top-20, '
-        + 'fixed 15% stop. Cost drag ~1.6%/yr vs ~5.7% for breakout.',
-    values: {
-      // These are the plateau-supported settings from the 11-window sweep, not
-      // the grid maximum: 63d/top-20 sit in the middle of a smooth region, and
-      // the 15% stop was the one change that improved return AND drawdown at
-      // once (969k -> 1034k total, 42% -> 33% maxDD).
-      strategy: 'POSITIONAL', pos_momentum: 'pct_chg_6m', pos_rebalance_days: 63,
-      pos_top_n: 20, pos_buffer_n: 40, pos_min_turnover_cr: 5, capital: 400000,
-      pos_sl_mode: 'fixed', pos_sl_pct: 15,
-    },
-  },
-  portfolio: {
-    label: 'Portfolio (continuous)',
-    hint: 'FROZEN CANDIDATE. ONE compounding run 2016→2026 — capital carried '
-        + 'forward, positions held across year ends, daily mark-to-market. '
-        + 'Reports CAGR / maxDD / ulcer, not summed annual P&L. top-20 is the '
-        + 'frozen baseline: the pre-registered selection rule did not identify '
-        + 'a better value, and a pre-registered rule cannot be discarded after '
-        + 'seeing the data it was written to judge.',
-    values: {
-      // FROZEN (BACKTEST_REPORT section 10). top-20 is the baseline because the
-      // pre-registered Martin criterion did NOT select any value in 30-50 - not
-      // because 20 scored best (it did not; it was worst on TEST). A separate,
-      // legitimate finding is that going 20 -> 45 reduced out-of-sample drawdown
-      // by ~8pp at a cost of ~2-3pp CAGR. Substituting 35 or 45 is permitted
-      // ONLY as an explicit pre-registered preference for lower drawdown over
-      // return, recorded BEFORE paper trading - never chosen afterwards.
-      // The stop is a supported RANGE of 15-20%; 15 is the midpoint, not a
-      // proven optimum. Every risk control is off: vol scaling and the
-      // drawdown throttle both measured NET NEGATIVE.
-      strategy: 'PORTFOLIO', pos_momentum: 'pct_chg_6m', pos_rebalance_days: 63,
-      pos_top_n: 20, pos_buffer_n: 40, pos_min_turnover_cr: 5, capital: 400000,
-      pos_sl_pct: 15, pf_vol_mode: 'none', pf_dd_throttle_at: 0,
-      pf_max_stocks_per_sector: 3, pf_max_per_sector_pct: 30,
-      pf_require_sector: false,
-      start_date: '2016-01-01', end_date: '2026-08-08',
-    },
-  },
-  portfolioBaseline: {
-    label: 'Portfolio (no controls)',
-    hint: 'Same continuous book with NO stop and no risk controls — the true '
-        + 'baseline every control must be measured against.',
-    values: {
-      strategy: 'PORTFOLIO', pos_momentum: 'pct_chg_6m', pos_rebalance_days: 63,
-      pos_top_n: 20, pos_buffer_n: 40, pos_min_turnover_cr: 5, capital: 400000,
-      pos_sl_pct: 0, pf_vol_mode: 'none', pf_dd_throttle_at: 0,
-      pf_max_stocks_per_sector: 99, pf_max_per_sector_pct: 100,
-      start_date: '2016-01-01', end_date: '2026-08-08',
-    },
-  },
-  weeklyBreakout: {
-    label: 'Weekly consolidation breakout',
-    hint: 'Weekly-timeframe box-breakout strategy — 20W SMA trend filter, '
-        + 'weekly MACD momentum + trailing exit, 6+ week consolidation box, '
-        + '5-20% breakout above resistance. See weekly_breakout.py for the full spec.',
-    values: {
-      strategy: 'WEEKLY_BREAKOUT', capital: 400000, weekly_risk_pct: 1.0,
-      max_picks_per_track: 3, resting_window_days: 2, restIndefinite: false,
-      stacking_guard: true, stacking_guard_mode: 'SKIP',
-      max_capital_per_trade_pct: 10, weekly_compounding_sizing: false,
-      start_date: '2016-01-01', end_date: '2026-08-08',
-    },
-  },
-  weeklyBreakoutTuned: {
-    label: 'Weekly breakout — tuned (base≤2)',
-    hint: 'Best trade-level setup across all 250 runs (2026-08-16 hybrid sweep): '
-        + 'weekly box breakout + base-stage≤2 quality gate. 19.85% CAGR / 38.0% maxDD '
-        + '(run #607) vs 20.75%/47.6% ungated — best risk-adjusted. Every hybrid mix '
-        + '(base+VCP #617, base+daily-exit #619, base+picks2 #620) tested WORSE; '
-        + 'do not stack more gates on top.',
-    values: {
-      strategy: 'WEEKLY_BREAKOUT', capital: 400000, weekly_risk_pct: 1.0,
-      max_picks_per_track: 3, resting_window_days: 2, restIndefinite: false,
-      stacking_guard: true, stacking_guard_mode: 'SKIP',
-      stage2_base_stage_max_allowed: 2, weekly_daily_exit_check: false,
-      max_capital_per_trade_pct: 10, weekly_compounding_sizing: false,
-      // explicitly clear every other quality gate — stacking them tested worse
-      gate_min_turnover_cr: '', gate_max_base_range_pct: '', gate_min_vol_mult: '',
-      gate_min_prior_upmove_pct: '', gate_max_giveback_pct: '',
-      gate_max_vol_dryup_ratio: '', gate_max_dist_from_high_pct: '',
-      gate_min_ifp_score: '', max_contraction_ratio: '',
-      start_date: '2016-01-01', end_date: '2026-08-08',
-    },
-  },
-  squeezeBreakout: {
-    label: 'Squeeze breakout (Strategy 2)',
-    hint: 'Bollinger-squeeze compression + 20d-high volume breakout. Half-books '
-        + '50% at 2R, trails the remainder, hard time-stop if neither hits within '
-        + 'the holding cap. See funnel_squeeze.py for the full spec.',
-    values: {
-      strategy: 'SQUEEZE_BREAKOUT', capital: 400000,
-      squeeze_volume_multiplier: 1.5, max_holding_days: 20,
-      risk_per_trade_pct: 1.0, max_capital_per_trade_pct: 15,
-      max_picks_per_track: 3, resting_window_days: 3, restIndefinite: false,
-      stacking_guard: true, stacking_guard_mode: 'SKIP',
-      breakeven: false, half_booking: true, trailing: true, fixed_target: false,
-      ema10_trail: false, ema21_trail: false, ema50_trail: false,
-      chandelier_trail: false, swing_trail: false, macd_trail: false,
-      failed_breakout_exit: false, swing_break_exit: false,
-      safety_sl_pct: 20,
-      start_date: '2016-01-01', end_date: '2026-08-08',
-    },
-  },
-  rsiReversion: {
-    label: 'RSI mean reversion (Strategy 3)',
-    hint: 'RSI(14) oversold + bullish reversal candle on quality large-caps, '
-        + 'Nifty-proxy macro filter. Fixed % target, fixed % stop, hard time-stop. '
-        + 'See funnel_rsi.py for the full spec.',
-    values: {
-      strategy: 'RSI_REVERSION', capital: 400000,
-      rsi_entry_threshold: 35, rsi_stop_pct: 4.5, rsi_target_pct: 5.0,
-      max_holding_days: 15,
-      risk_per_trade_pct: 1.0, max_capital_per_trade_pct: 15,
-      max_picks_per_track: 3, resting_window_days: 2, restIndefinite: false,
-      stacking_guard: true, stacking_guard_mode: 'SKIP',
-      breakeven: false, half_booking: false, trailing: false, fixed_target: true,
-      ema10_trail: false, ema21_trail: false, ema50_trail: false,
-      chandelier_trail: false, swing_trail: false, macd_trail: false,
-      failed_breakout_exit: false, swing_break_exit: false,
-      safety_sl_pct: 20,
-      start_date: '2016-01-01', end_date: '2026-08-08',
-    },
-  },
-  positionalNoSl: {
-    label: 'Positional (no stop)',
-    hint: 'Same rotation with exits only at rebalance — the original behaviour, '
-        + 'kept as the reference point the stop is measured against.',
-    values: {
-      strategy: 'POSITIONAL', pos_momentum: 'pct_chg_6m', pos_rebalance_days: 63,
-      pos_top_n: 20, pos_buffer_n: 40, pos_min_turnover_cr: 5, capital: 400000,
-      pos_sl_mode: 'none', pos_sl_pct: 0,
-    },
-  },
-  production: {
-    label: 'Production today', hint: 'What screen_gpt.py currently runs',
-    values: {
-      strategy: 'BREAKOUT',
-      track_mode: 'QUANT', max_picks_per_track: 3, stage2_base_stage_max_allowed: '',
-      entry_breadth_max_pct: '', entry_breadth_require_rising: false,
-      max_contraction_ratio: '', risk_per_trade_pct: '',
-      stacking_guard: true, stacking_guard_mode: 'OVERRIDE', safety_sl_pct: 8,
-      breakeven: true, half_booking: true, trailing: true, fixed_target: true,
-      ema21_trail: false, ema10_trail: false, ema50_trail: false,
-      chandelier_trail: false, swing_trail: false,
-      failed_breakout_exit: false, swing_break_exit: false,
-    },
-  },
-};
-
-function Toggle({ label, checked, onChange, hint }) {
-  return (
-    <label className="flex items-start gap-2 cursor-pointer select-none">
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)}
-        className="mt-0.5 accent-emerald-500" />
-      <span>
-        <span className="text-sm text-slate-200">{label}</span>
-        {hint && <span className="block text-[11px] text-slate-500">{hint}</span>}
-      </span>
-    </label>
-  );
-}
-
-function Field({ label, hint, help, value, onChange, type = 'text', ...rest }) {
-  return (
-    <label className="text-xs text-slate-400 flex flex-col gap-1">
-      <LabelWithInfo help={help}>{label}</LabelWithInfo>
-      {/* text-base on mobile: iOS Safari zooms the page when focusing an input
-          under 16px, and that zoom does not undo itself on blur. */}
-      <input type={type} value={value} onChange={(e) => onChange(e.target.value)}
-        className="bg-slate-800 border border-slate-600 rounded px-2.5 py-2 text-slate-100
-          text-base sm:text-sm focus:border-sky-500 focus:outline-none focus:ring-1
-          focus:ring-sky-500/40 transition-colors" {...rest} />
-      {hint && <span className="text-[11px] text-slate-500 leading-snug">{hint}</span>}
-    </label>
-  );
-}
-
-/** Select with the same label / help / touch treatment as Field. */
-function SelectField({ label, hint, help, value, onChange, children }) {
-  return (
-    <label className="text-xs text-slate-400 flex flex-col gap-1">
-      <LabelWithInfo help={help}>{label}</LabelWithInfo>
-      <select value={value} onChange={(e) => onChange(e.target.value)}
-        className="bg-slate-800 border border-slate-600 rounded px-2.5 py-2 text-slate-100
-          text-base sm:text-sm focus:border-sky-500 focus:outline-none focus:ring-1
-          focus:ring-sky-500/40 transition-colors">
-        {children}
-      </select>
-      {hint && <span className="text-[11px] text-slate-500 leading-snug">{hint}</span>}
-    </label>
-  );
-}
-
-function RunConfigForm({ onCreated, blocked, blockedReason, open, onToggleOpen }) {
-  const [f, setF] = useState(DEFAULT_FORM);
-  // Collapsed by default. The frozen config is the intended path; the other 40+
-  // fields are research surface for re-verifying findings, not a starting point.
-  const [advanced, setAdvanced] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
-  const set = (k) => (v) => setF((s) => ({ ...s, [k]: v }));
-
-  const submit = async (e) => {
-    e.preventDefault();
-    if (!f.start_date || !f.end_date) { setError('Pick a start and end date.'); return; }
-    setSubmitting(true);
-    setError('');
-    try {
-      const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
-      const payload = {
-        strategy: f.strategy,
-        pos_momentum: f.pos_momentum,
-        pos_rebalance_days: Number(f.pos_rebalance_days) || 21,
-        pos_top_n: Number(f.pos_top_n) || 10,
-        pos_buffer_n: Number(f.pos_buffer_n) || 20,
-        pos_min_turnover_cr: Number(f.pos_min_turnover_cr) || 5,
-        pos_sl_mode: f.pos_sl_mode || 'none',
-        // The MA stops ignore a percentage; send 0 rather than a stale value so
-        // the run row can't imply a threshold that was never applied.
-        // PORTFOLIO always uses a fixed stop (the only stop type that survived
-        // testing), so it reads pos_sl_pct directly rather than via pos_sl_mode.
-        pos_sl_pct: f.strategy === 'PORTFOLIO'
-          ? Number(f.pos_sl_pct) || 0
-          : (POS_SL_NEEDS_PCT.has(f.pos_sl_mode) ? Number(f.pos_sl_pct) || 0 : 0),
-        pf_vol_mode: f.pf_vol_mode || 'none',
-        pf_vol_floor: f.pf_vol_mode === 'none' ? null : Number(f.pf_vol_floor) || 75,
-        pf_max_per_stock_pct: Number(f.pf_max_per_stock_pct) || 100,
-        pf_max_per_sector_pct: Number(f.pf_max_per_sector_pct) || 100,
-        pf_max_stocks_per_sector: Number(f.pf_max_stocks_per_sector) || 99,
-        pf_require_sector: !!f.pf_require_sector,
-        pf_dd_throttle_at: Number(f.pf_dd_throttle_at) || 0,
-        start_date: f.start_date, end_date: f.end_date, track_mode: f.track_mode,
-        capital: Number(f.capital) || 400000,
-        resting_window_days: f.restIndefinite ? null : Number(f.resting_window_days) || null,
-        stacking_guard: f.stacking_guard,
-        stacking_guard_mode: f.stacking_guard ? f.stacking_guard_mode : null,
-        max_picks_per_track: Number(f.max_picks_per_track) || 2,
-        stage2_base_stage_max_allowed: numOrNull(f.stage2_base_stage_max_allowed),
-        entry_breadth_max_pct: numOrNull(f.entry_breadth_max_pct),
-        entry_breadth_require_rising: f.entry_breadth_require_rising,
-        max_contraction_ratio: numOrNull(f.max_contraction_ratio),
-        risk_per_trade_pct: numOrNull(f.risk_per_trade_pct),
-        max_capital_per_trade_pct: numOrNull(f.max_capital_per_trade_pct),
-        min_position_value: Number(f.min_position_value) || 0,
-        signal_cadence: f.signal_cadence || 'daily',
-        signal_scan_day: f.signal_scan_day || 'last',
-        entry_v2_buy_points: !!f.entry_v2_buy_points,
-        base_stage_ladder: f.base_stage_ladder || 'prod',
-        exit_config: {
-          breakeven: f.breakeven, half_booking: f.half_booking,
-          trailing: f.trailing, fixed_target: f.fixed_target,
-          ema10_trail: f.ema10_trail, ema21_trail: f.ema21_trail, ema50_trail: f.ema50_trail,
-          chandelier_trail: f.chandelier_trail, swing_trail: f.swing_trail,
-          macd_trail: !!f.macd_trail,
-          failed_breakout_exit: f.failed_breakout_exit, swing_break_exit: f.swing_break_exit,
-          next_open_exit: !!f.next_open_exit,
-        },
-        safety_sl_pct: Number(f.safety_sl_pct) || 10.0,
-        slippage_pct: Number(f.slippage_pct) || 0,
-        brokerage_per_order: Number(f.brokerage_per_order) || 0,
-        chandelier_atr_mult: Number(f.chandelier_atr_mult) || 3.0,
-        weekly_risk_pct: Number(f.weekly_risk_pct) || 1.0,
-        weekly_daily_exit_check: !!f.weekly_daily_exit_check,
-        weekly_compounding_sizing: !!f.weekly_compounding_sizing,
-        require_weekly_box_breakout: !!f.require_weekly_box_breakout,
-        weekly_box_lookback_days: Number(f.weekly_box_lookback_days) || 10,
-        squeeze_volume_multiplier: Number(f.squeeze_volume_multiplier) || 1.5,
-        rsi_entry_threshold: Number(f.rsi_entry_threshold) || 35,
-        rsi_stop_pct: Number(f.rsi_stop_pct) || 4.5,
-        rsi_target_pct: Number(f.rsi_target_pct) || 5.0,
-        max_holding_days: numOrNull(f.max_holding_days),
-        notes: f.notes || null,
-      };
-      const res = await createBacktestRun(payload);
-      onCreated(res.id);
-      onToggleOpen(false);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  if (!open) {
-    return (
-      <button onClick={() => onToggleOpen(true)}
-        className="w-full flex items-center justify-between bg-slate-900/60 border border-slate-700 rounded-lg px-4 py-2.5 text-left hover:bg-slate-900">
-        <span className="text-sm font-semibold text-slate-200">+ New Backtest Run</span>
-        {blocked && <span className="text-xs text-amber-300">{blockedReason}</span>}
-      </button>
-    );
-  }
-
-  return (
-    <form onSubmit={submit} className="bg-slate-900/60 border border-slate-700 rounded-lg p-4 space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="text-sm font-semibold text-slate-200">New Backtest Run</div>
-        <button type="button" onClick={() => onToggleOpen(false)}
-          className="text-xs text-slate-400 hover:text-white px-2 py-1">Collapse ✕</button>
-      </div>
-
-      {/* ---- FROZEN QUICK START ------------------------------------------
-          The default path. One click loads the configuration that survived
-          validation (BACKTEST_REPORT section 10) over the full continuous
-          window. Everything else on this form exists for research and is
-          hidden until asked for — 47 fields, most of which belong to a
-          strategy the evidence says not to trade, is not a starting point. */}
-      {!advanced && (
-        <div className="rounded-lg border border-emerald-800/60 bg-emerald-950/20 p-3">
-          <div className="flex items-start justify-between gap-3 mb-2">
-            <div>
-              <div className="text-sm font-semibold text-emerald-300">Frozen strategy</div>
-              <div className="text-[11px] text-slate-400 leading-snug mt-0.5">
-                6-month momentum · 63-session rebalance · top 20 · buffer 40 ·
-                15% stop · no overlays. Observed 19.5% CAGR / 39.3% max drawdown
-                over 2016–2026.
-              </div>
-            </div>
-            <button type="button"
-              onClick={() => setF((s0) => ({ ...s0, ...PRESETS.portfolio.values }))}
-              className="shrink-0 text-xs px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 text-white font-medium">
-              Load frozen config
-            </button>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-            <Field label="Start date" help={HELP.startDate} type="date"
-              value={f.start_date} onChange={set('start_date')} required />
-            <Field label="End date" help={HELP.endDate} type="date"
-              value={f.end_date} onChange={set('end_date')} required />
-            <Field label="Capital (₹)" help={HELP.capital} type="number"
-              value={f.capital} onChange={set('capital')} min="10000" step="10000" />
-            <Field label="Hold top N" help={HELP.topN}
-              hint="20 frozen · 30–45 lowers drawdown, costs ~2–3pp CAGR"
-              value={f.pos_top_n}
-              onChange={(v) => setF((s0) => ({ ...s0, pos_top_n: v, pos_buffer_n: Number(v) * 2 }))}
-              type="number" min="1" max="60" />
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mt-3">
-            <Field label="Fixed stop (%)" help={HELP.slPct}
-              hint="Range 15–20% · 10% rejected"
-              value={f.pos_sl_pct} onChange={set('pos_sl_pct')} type="number" min="0" max="50" step="0.5" />
-            <Field label="Rebalance (sessions)" help={HELP.rebalance} hint="63 ≈ quarterly"
-              value={f.pos_rebalance_days} onChange={set('pos_rebalance_days')} type="number" min="1" max="250" />
-            <SelectField label="Momentum lookback" help={HELP.momentum}
-              value={f.pos_momentum} onChange={set('pos_momentum')}>
-              <option value="pct_chg_3m">3 months</option>
-              <option value="pct_chg_6m">6 months (frozen)</option>
-              <option value="pct_chg_1y">12 months</option>
-            </SelectField>
-            <Field label="Min turnover (₹ cr)" help={HELP.minTurnover} hint="Liquidity floor"
-              value={f.pos_min_turnover_cr} onChange={set('pos_min_turnover_cr')} type="number" min="0" step="0.5" />
-          </div>
-          {f.strategy !== 'PORTFOLIO' && (
-            <div className="text-[11px] text-amber-300/90 mt-2">
-              ⚠ Strategy is <b>{f.strategy}</b>, so these fields may not all apply.
-              Click <b>Load frozen config</b> to switch to the continuous portfolio.
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ---- VALIDATED EXIT-LADDER-FIX QUICK START ------------------------
-          The B5 finding (BACKTEST_REPORT §9.19): dropping half-booking and the
-          R-ladder ratchet from production's exit ladder ~triples return at
-          unchanged drawdown, and is the first candidate to win BOTH halves of
-          a FIT/TEST split. Surfaced here as its own one-click config, same as
-          the frozen portfolio above, rather than buried in advanced toggles. */}
-      {!advanced && (
-        <div className="rounded-lg border border-sky-800/60 bg-sky-950/20 p-3">
-          <div className="flex items-start justify-between gap-3 mb-2">
-            <div>
-              <div className="text-sm font-semibold text-sky-300">
-                ⭐ Validated: exit-ladder fix
-              </div>
-              <div className="text-[11px] text-slate-400 leading-snug mt-0.5">
-                Breakout strategy, weekly scans (3 picks/scan), EMA21 trail,
-                <b> no</b> half-booking, <b>no</b> R-ladder ratchet — just breakeven
-                at +1R then trail. Best return/drawdown found so far and the only
-                config to win both the FIT(2016–20) and TEST(2021–26) halves.
-                Full window (2016–2026): ₹315,597 total P&amp;L on ₹4L capital,
-                ₹51,203 max drawdown, ret/DD 6.16, 34.1% win rate, 1,287 trades.
-              </div>
-            </div>
-            <button type="button"
-              onClick={() => { setF((s0) => ({ ...s0, ...PRESETS.validated.values })); setAdvanced(true); }}
-              className="shrink-0 text-xs px-3 py-1.5 rounded bg-sky-700 hover:bg-sky-600 text-white font-medium">
-              Load validated config
-            </button>
-          </div>
-          <div className="text-[11px] text-amber-300/80 leading-snug">
-            ⚠ Not yet live-traded and not yet re-tested on production's actual
-            daily×3 cadence (this was validated on weekly×3). Magnitude may be
-            smaller than 6.16 in practice — see BACKTEST_REPORT §9.19 &ldquo;What
-            this does NOT establish.&rdquo; Loading it opens the advanced panel
-            below so every field is visible and editable before you run it.
-          </div>
-        </div>
-      )}
-
-      <div className="flex items-center justify-between gap-2 pt-1">
-        <button type="button" onClick={() => setAdvanced((v) => !v)}
-          className="text-xs px-2.5 py-1 rounded border border-slate-600 bg-slate-800 hover:bg-slate-700 text-slate-200">
-          {advanced ? '▾ Hide advanced / research settings' : '▸ Advanced / research settings'}
-        </button>
-        {!advanced && (
-          <span className="text-[11px] text-slate-500">
-            Other strategies, rejected overlays and cost model live in here
-          </span>
-        )}
-      </div>
-
-      {advanced && (<>
-      <div className="flex flex-wrap items-center gap-2 pb-1">
-        <span className="text-[11px] uppercase tracking-wide text-slate-500">Start from</span>
-        {Object.entries(PRESETS).map(([key, p]) => (
-          <button key={key} type="button" title={p.hint}
-            onClick={() => setF((s0) => ({ ...s0, ...p.values }))}
-            className="text-xs px-2.5 py-1 rounded border border-slate-600 bg-slate-800 hover:bg-slate-700 text-slate-200">
-            {p.label}
-          </button>
-        ))}
-        <span className="text-[11px] text-slate-500">then tweak below</span>
-      </div>
-
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <label className="text-xs text-slate-400 flex flex-col gap-1">
-          Start date
-          <input type="date" value={f.start_date} onChange={(e) => set('start_date')(e.target.value)}
-            className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" required />
-        </label>
-        <label className="text-xs text-slate-400 flex flex-col gap-1">
-          End date
-          <input type="date" value={f.end_date} onChange={(e) => set('end_date')(e.target.value)}
-            className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" required />
-        </label>
-        <label className="text-xs text-slate-400 flex flex-col gap-1">
-          Strategy
-          <select value={f.strategy} onChange={(e) => set('strategy')(e.target.value)}
-            className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
-            <option value="BREAKOUT">Breakout (swing) — not allocated</option>
-            <option value="POSITIONAL">Positional momentum (annual-reset)</option>
-            <option value="PORTFOLIO">Portfolio (continuous, compounding)</option>
-            <option value="WEEKLY_BREAKOUT">Weekly consolidation breakout</option>
-            <option value="SQUEEZE_BREAKOUT">Squeeze breakout (Strategy 2)</option>
-            <option value="RSI_REVERSION">RSI mean reversion (Strategy 3)</option>
-          </select>
-        </label>
-        <label className="text-xs text-slate-400 flex flex-col gap-1">
-          Capital (₹)
-          <input type="number" value={f.capital} onChange={(e) => set('capital')(e.target.value)}
-            className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" min="10000" step="10000" />
-        </label>
-      </div>
-
-      {f.strategy === 'PORTFOLIO' && (
-        <div className="pt-3 border-t border-slate-800">
-          <div className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-1">
-            Continuous portfolio
-          </div>
-          <p className="text-[11px] text-slate-500 mb-2 leading-snug">
-            ONE simulation start to finish: capital compounds, positions are held
-            across year ends, the book is marked to market daily. This is not the
-            same measurement as the other strategies, which run a separate backtest
-            per year and add the P&amp;L — that framing resets capital every January
-            and cannot show a drawdown that spans a year boundary.
-            Results are reported as <b>CAGR, max drawdown, ulcer index and worst
-            rolling 12-month return</b>, not as a P&amp;L total.
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
-            <label className="text-xs text-slate-400 flex flex-col gap-1">
-              <span>Momentum lookback</span>
-              <select value={f.pos_momentum} onChange={(e) => set('pos_momentum')(e.target.value)}
-                className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
-                <option value="pct_chg_3m">3 months</option>
-                <option value="pct_chg_6m">6 months (tested)</option>
-                <option value="pct_chg_1y">12 months</option>
-              </select>
-            </label>
-            <Field label="Rebalance every (sessions)" hint="63 ≈ quarterly."
-              value={f.pos_rebalance_days} onChange={set('pos_rebalance_days')}
-              type="number" min="1" max="250" />
-            <Field label="Hold top N"
-              hint="Provisional 30–40. The direction (more names → less drawdown) held out of sample; no specific value did. top-30 was best in-sample and ranked 6th of 10 out of sample."
-              value={f.pos_top_n} onChange={set('pos_top_n')} type="number" min="1" max="60" />
-            <Field label="Sell below rank (buffer)" hint="Anti-churn hysteresis; 2x top-N."
-              value={f.pos_buffer_n} onChange={set('pos_buffer_n')} type="number" min="1" max="120" />
-            <Field label="Fixed stop (%)"
-              hint="Supported RANGE is 15–20%. 10% was rejected out-of-sample. 0 disables."
-              value={f.pos_sl_pct} onChange={set('pos_sl_pct')}
-              type="number" min="0" max="50" step="0.5" />
-            <Field label="Min turnover (₹ cr)" hint="Liquidity floor."
-              value={f.pos_min_turnover_cr} onChange={set('pos_min_turnover_cr')}
-              type="number" min="0" step="0.5" />
-          </div>
-
-          <div className="mt-4 pt-3 border-t border-slate-800">
-            <div className="text-xs font-semibold text-amber-400 uppercase tracking-wide mb-1">
-              Risk controls — all measured, most rejected
-            </div>
-            <p className="text-[11px] text-slate-500 mb-2 leading-snug">
-              These default to OFF because that is what testing supported, not as a
-              placeholder. Volatility scaling cost 5.4pp of CAGR for <i>zero</i>
-              {' '}drawdown reduction; the drawdown throttle scored worse than doing
-              nothing at every threshold and made the ulcer index <i>worse</i> — it
-              cuts exposure after the loss and restores it after the recovery.
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
-              <label className="text-xs text-slate-400 flex flex-col gap-1">
-                <span>Volatility scaling</span>
-                <select value={f.pf_vol_mode} onChange={(e) => set('pf_vol_mode')(e.target.value)}
-                  className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
-                  <option value="none">Off (tested best)</option>
-                  <option value="pct">On — percentile of the book&apos;s own past vol</option>
-                  <option value="abs">On — absolute vol bands</option>
-                </select>
-                <span className="text-[11px] text-slate-500 leading-snug">
-                  Cuts the number of slots held, so reducing exposure raises cash
-                  rather than concentrating the book.
-                </span>
-              </label>
-              {f.pf_vol_mode !== 'none' && (
-                <Field label="Exposure floor (%)"
-                  hint="Lowest exposure allowed. Only mild floors (≥75%) ever helped."
-                  value={f.pf_vol_floor} onChange={set('pf_vol_floor')}
-                  type="number" min="10" max="100" step="5" />
-              )}
-              <Field label="Drawdown throttle at (0 = off)"
-                hint="e.g. 0.10 halves new exposure past −10%. Net negative at every value tested."
-                value={f.pf_dd_throttle_at} onChange={set('pf_dd_throttle_at')}
-                type="number" min="0" max="0.5" step="0.01" />
-              <Field label="Max stocks per sector (99 = off)"
-                hint="2 costs more than it buys; 3 is roughly neutral."
-                value={f.pf_max_stocks_per_sector} onChange={set('pf_max_stocks_per_sector')}
-                type="number" min="1" max="99" />
-              <Field label="Max % per sector"
-                value={f.pf_max_per_sector_pct} onChange={set('pf_max_per_sector_pct')}
-                type="number" min="1" max="100" step="5" />
-              <Field label="Max % per stock"
-                hint="Near-inert at top-20+ where a slot is already ≤5%."
-                value={f.pf_max_per_stock_pct} onChange={set('pf_max_per_stock_pct')}
-                type="number" min="1" max="100" step="1" />
-            </div>
-            <label className="flex items-start gap-2 mt-3 text-xs text-slate-400">
-              <input type="checkbox" checked={!!f.pf_require_sector}
-                onChange={(e) => set('pf_require_sector')(e.target.checked)}
-                className="mt-0.5" />
-              <span>
-                Restrict universe to stocks with a known sector
-                <span className="block text-[11px] text-rose-400/90 leading-snug mt-0.5">
-                  ⚠ Do not trust results from this. Sector data exists only for
-                  <i> current</i> NSE index members, so this filters the 2016
-                  universe by &ldquo;was in an index in 2026&rdquo; — selecting
-                  winners with a decade of hindsight. It posts the best numbers in
-                  the whole project and they are survivorship artifacts.
-                </span>
-              </span>
-            </label>
-          </div>
-          <div className="text-[11px] text-amber-300/80 mt-3 leading-snug">
-            Survivorship bias across the whole dataset is still unquantified, so
-            treat every figure here as <b>observed on this data</b>, not as expected
-            forward performance.
-          </div>
-        </div>
-      )}
-
-      {f.strategy === 'WEEKLY_BREAKOUT' && (
-        <div className="pt-3 border-t border-slate-800">
-          <div className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-1">
-            Weekly consolidation breakout
-          </div>
-          <p className="text-[11px] text-slate-500 mb-2 leading-snug">
-            Weekly candles only. Entry needs: price above a RISING 20-week SMA,
-            weekly MACD(12,26,9) line above signal, a 6-26 week consolidation
-            box (body-based, depth ≤35%) breaking out 5-20% above resistance on
-            expanded volume, upper wick &lt;50%, and a fresh 10-week closing
-            high. Exit trails via MACD bearish-crossover (stop ratchets to the
-            crossover week&apos;s low, closes on a later breach). Market-cap
-            filter is substituted with a liquidity floor — no ₹ market-cap data
-            exists for a 2016-2026 backtest without look-ahead bias (see
-            weekly_breakout.py docstring).
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
-            <Field label="Account risk % per trade"
-              hint="Position size = Equity × risk% / stop-distance%. Spec suggests 1-1.5%."
-              value={f.weekly_risk_pct} onChange={set('weekly_risk_pct')}
-              type="number" min="0.1" max="10" step="0.1" />
-            <Field label="Max new picks per week"
-              value={f.max_picks_per_track} onChange={set('max_picks_per_track')}
-              type="number" min="1" max="10" />
-            <Field label="Entry order resting window (weeks)"
-              hint="Buy-stop above breakout week's close expires unfilled after this many weeks."
-              value={f.resting_window_days} onChange={set('resting_window_days')}
-              type="number" min="1" max="12" />
-            <Field label="Max capital per trade %"
-              hint="Cap on a single position's value as % of (sizing) capital. Blank = engine default 25 (what all runs ≤ #620 used). Production discipline is 10."
-              value={f.max_capital_per_trade_pct} onChange={set('max_capital_per_trade_pct')}
-              type="number" min="1" max="100" step="1" />
-          </div>
-          <label className="flex items-start gap-2 mt-3 text-xs text-slate-400">
-            <input type="checkbox" checked={!!f.stacking_guard}
-              onChange={(e) => set('stacking_guard')(e.target.checked)}
-              className="mt-0.5" />
-            <span>Block a new signal in a symbol already held (stacking guard)</span>
-          </label>
-          <label className="flex items-start gap-2 mt-2 text-xs text-slate-400">
-            <input type="checkbox" checked={!!f.weekly_daily_exit_check}
-              onChange={(e) => set('weekly_daily_exit_check')(e.target.checked)}
-              className="mt-0.5" />
-            <span>
-              Check stop-breach daily instead of weekly
-              <span className="block text-[11px] text-slate-500 leading-snug mt-0.5">
-                Exits react to a daily Low breach of the current SL instead of waiting
-                for the week to close. The MACD ratchet level itself still only updates
-                weekly (MACD is a weekly indicator here) — this only speeds up how fast
-                a breach of an already-set level is caught. Expect faster/tighter exits
-                at the cost of more whipsaw on daily noise.
-              </span>
-            </span>
-          </label>
-          <label className="flex items-start gap-2 mt-2 text-xs text-slate-400">
-            <input type="checkbox" checked={!!f.weekly_compounding_sizing}
-              onChange={(e) => set('weekly_compounding_sizing')(e.target.checked)}
-              className="mt-0.5" />
-            <span>
-              Compounding position sizing (2026-08-16)
-              <span className="block text-[11px] text-slate-500 leading-snug mt-0.5">
-                Size each new trade off running equity (starting capital + cumulative
-                realized P&amp;L at entry time) instead of fixed starting capital.
-                Realized-only — open trades don&apos;t count until closed. Profits grow
-                position size, losses shrink it; both the risk% base and the
-                max-capital cap scale together. Off = fixed sizing (all runs ≤ #620).
-              </span>
-            </span>
-          </label>
-
-          <div className="mt-4 pt-3 border-t border-slate-800">
-            <div className="text-xs font-semibold text-amber-400 uppercase tracking-wide mb-1">
-              Daily-funnel quality filters (optional, 2026-08-15)
-            </div>
-            <p className="text-[11px] text-slate-500 mb-2 leading-snug">
-              Same thresholds the daily BREAKOUT strategy uses, applied to this
-              strategy&apos;s weekly signals using daily data as of the breakout
-              week&apos;s own Friday close — point-in-time, no look-ahead. Each field
-              is independently opt-in (blank = not applied) so you can test any
-              combination; leaving everything blank reproduces the strategy exactly
-              as before this existed.
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
-              <Field label="Min turnover (₹ cr)" hint="Liquidity floor."
-                value={f.gate_min_turnover_cr} onChange={set('gate_min_turnover_cr')}
-                type="number" min="0" step="0.5" placeholder="off" />
-              <Field label="Min IFP score" hint="Accumulation-footprint quality score."
-                value={f.gate_min_ifp_score} onChange={set('gate_min_ifp_score')}
-                type="number" min="0" max="1" step="0.01" placeholder="off" />
-              <Field label="Max base range (20d, %)" hint="Tighter base = lower value."
-                value={f.gate_max_base_range_pct} onChange={set('gate_max_base_range_pct')}
-                type="number" min="0" step="0.5" placeholder="off" />
-              <Field label="Min volume multiplier" hint="Breakout-day volume vs average."
-                value={f.gate_min_vol_mult} onChange={set('gate_min_vol_mult')}
-                type="number" min="0" step="0.1" placeholder="off" />
-              <Field label="Min prior upmove (%)"
-                value={f.gate_min_prior_upmove_pct} onChange={set('gate_min_prior_upmove_pct')}
-                type="number" min="0" step="1" placeholder="off" />
-              <Field label="Max giveback (%)"
-                value={f.gate_max_giveback_pct} onChange={set('gate_max_giveback_pct')}
-                type="number" min="0" step="1" placeholder="off" />
-              <Field label="Max volume dry-up ratio"
-                value={f.gate_max_vol_dryup_ratio} onChange={set('gate_max_vol_dryup_ratio')}
-                type="number" min="0" step="0.1" placeholder="off" />
-              <Field label="Max distance from 20d high (%)"
-                value={f.gate_max_dist_from_high_pct} onChange={set('gate_max_dist_from_high_pct')}
-                type="number" min="0" step="0.5" placeholder="off" />
-              <Field label="Base-stage max allowed (base-count filter)"
-                hint="1 = earliest base only. Uses screen_gpt.classify_base_stage()."
-                value={f.stage2_base_stage_max_allowed} onChange={set('stage2_base_stage_max_allowed')}
-                type="number" min="1" max="6" step="1" placeholder="off" />
-              <Field label="Max VCP contraction ratio"
-                hint="Last-10-bar range / prior-15-bar range. &lt;1 = tightening base."
-                value={f.max_contraction_ratio} onChange={set('max_contraction_ratio')}
-                type="number" min="0" max="5" step="0.05" placeholder="off" />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {f.strategy === 'SQUEEZE_BREAKOUT' && (
-        <div className="pt-3 border-t border-slate-800">
-          <div className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-1">
-            Squeeze breakout (Strategy 2)
-          </div>
-          <p className="text-[11px] text-slate-500 mb-2 leading-snug">
-            Daily candles, reuses the same trade lifecycle as Breakout (half-book,
-            trailing, time-stop) with a different signal source. Entry: Close &gt;
-            EMA50, Bollinger Bandwidth(20,2) at/near a 126-session low within the
-            prior 10 sessions, then Close breaks the prior 20-day High on volume ≥
-            the multiplier below. Stop = prior 20-day swing low (clamped 2-15%).
-            Target = 2R, half-booked; remainder trails and is exempt from the
-            holding cap once booked (see funnel_squeeze.py docstring). Universe
-            substituted with a liquidity pre-filter — no Nifty-200 membership
-            history in this DB.
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
-            <Field label="Volume multiplier" hint="Spec sweep: 1.2x / 1.5x / 2.0x."
-              value={f.squeeze_volume_multiplier} onChange={set('squeeze_volume_multiplier')}
-              type="number" min="1" max="5" step="0.1" />
-            <Field label="Max holding days (time-stop)"
-              hint="Spec sweep: 15 / 20 / 30. Exempted once half-booked — see docstring."
-              value={f.max_holding_days} onChange={set('max_holding_days')}
-              type="number" min="1" max="60" />
-            <Field label="Account risk % per trade"
-              value={f.risk_per_trade_pct} onChange={set('risk_per_trade_pct')}
-              type="number" min="0.1" max="10" step="0.1" />
-            <Field label="Max capital % per trade"
-              value={f.max_capital_per_trade_pct} onChange={set('max_capital_per_trade_pct')}
-              type="number" min="1" max="50" step="1" />
-            <Field label="Max new picks per day"
-              value={f.max_picks_per_track} onChange={set('max_picks_per_track')}
-              type="number" min="1" max="10" />
-            <Field label="Entry order resting window (days)"
-              value={f.resting_window_days} onChange={set('resting_window_days')}
-              type="number" min="1" max="20" />
-          </div>
-          <label className="flex items-start gap-2 mt-3 text-xs text-slate-400">
-            <input type="checkbox" checked={!!f.stacking_guard}
-              onChange={(e) => set('stacking_guard')(e.target.checked)}
-              className="mt-0.5" />
-            <span>Block a new signal in a symbol already held (stacking guard)</span>
-          </label>
-        </div>
-      )}
-
-      {f.strategy === 'RSI_REVERSION' && (
-        <div className="pt-3 border-t border-slate-800">
-          <div className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-1">
-            RSI mean reversion (Strategy 3)
-          </div>
-          <p className="text-[11px] text-slate-500 mb-2 leading-snug">
-            Daily candles, reuses the same trade lifecycle with a fixed-%-target
-            exit (the spec's own "Fixed % target" branch, vs. the alternative
-            RSI&gt;60/EMA20 indicator-target — not built, see funnel_rsi.py
-            docstring). Entry: Close &gt; EMA200, prior session&apos;s RSI(14) below
-            the threshold, today a bullish candle. Macro filter uses NIFTYBEES as
-            a Nifty 50 proxy (only has data from 2019 onward — earlier signals are
-            not macro-gated). Unlike Strategy 2, the time-stop here is
-            unconditional (no half-booking to exempt it).
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
-            <Field label="RSI entry threshold" hint="Spec sweep: 30 vs 35."
-              value={f.rsi_entry_threshold} onChange={set('rsi_entry_threshold')}
-              type="number" min="10" max="50" step="1" />
-            <Field label="Stop %" value={f.rsi_stop_pct} onChange={set('rsi_stop_pct')}
-              type="number" min="1" max="15" step="0.5" />
-            <Field label="Target %" value={f.rsi_target_pct} onChange={set('rsi_target_pct')}
-              type="number" min="1" max="20" step="0.5" />
-            <Field label="Max holding days (time-stop)"
-              value={f.max_holding_days} onChange={set('max_holding_days')}
-              type="number" min="1" max="60" />
-            <Field label="Account risk % per trade"
-              value={f.risk_per_trade_pct} onChange={set('risk_per_trade_pct')}
-              type="number" min="0.1" max="10" step="0.1" />
-            <Field label="Max capital % per trade"
-              value={f.max_capital_per_trade_pct} onChange={set('max_capital_per_trade_pct')}
-              type="number" min="1" max="50" step="1" />
-            <Field label="Max new picks per day"
-              value={f.max_picks_per_track} onChange={set('max_picks_per_track')}
-              type="number" min="1" max="10" />
-            <Field label="Entry order resting window (days)"
-              value={f.resting_window_days} onChange={set('resting_window_days')}
-              type="number" min="1" max="20" />
-          </div>
-          <label className="flex items-start gap-2 mt-3 text-xs text-slate-400">
-            <input type="checkbox" checked={!!f.stacking_guard}
-              onChange={(e) => set('stacking_guard')(e.target.checked)}
-              className="mt-0.5" />
-            <span>Block a new signal in a symbol already held (stacking guard)</span>
-          </label>
-        </div>
-      )}
-
-      {f.strategy === 'POSITIONAL' && (
-        <div className="pt-3 border-t border-slate-800">
-          <div className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-1">
-            Positional momentum
-          </div>
-          <p className="text-[11px] text-slate-500 mb-2 leading-snug">
-            Holds the top-ranked momentum names above their 200SMA, rebalanced monthly.
-            Sells only when a name drops outside the buffer rank — the gap between
-            &ldquo;hold&rdquo; and &ldquo;buffer&rdquo; is deliberate hysteresis that stops a name
-            oscillating around the cutoff from churning every rebalance.
-            Measured: ~43 trades/yr held ~66 days, vs ~118 held ~14 for breakout.
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
-            <label className="text-xs text-slate-400 flex flex-col gap-1">
-              <span>Momentum lookback</span>
-              <select value={f.pos_momentum} onChange={(e) => set('pos_momentum')(e.target.value)}
-                className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
-                <option value="pct_chg_3m">3 months</option>
-                <option value="pct_chg_6m">6 months (tested)</option>
-                <option value="pct_chg_1y">12 months</option>
-              </select>
-            </label>
-            <Field label="Rebalance every (sessions)"
-              hint="21 ≈ monthly. Lower = more turnover = more cost drag."
-              value={f.pos_rebalance_days} onChange={set('pos_rebalance_days')}
-              type="number" min="1" max="250" />
-            <Field label="Hold top N" hint="Equal-weighted; each position is capital/N."
-              value={f.pos_top_n} onChange={set('pos_top_n')} type="number" min="1" max="50" />
-            <Field label="Sell below rank (buffer)"
-              hint="Must exceed 'hold top N'. This gap is the anti-churn hysteresis."
-              value={f.pos_buffer_n} onChange={set('pos_buffer_n')} type="number" min="1" max="100" />
-            <Field label="Min turnover (₹ cr)" hint="Liquidity floor."
-              value={f.pos_min_turnover_cr} onChange={set('pos_min_turnover_cr')}
-              type="number" min="0" step="0.5" />
-          </div>
-          <div className="mt-4 pt-3 border-t border-slate-800">
-            <div className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-1">
-              Stop-loss
-            </div>
-            <p className="text-[11px] text-slate-500 mb-2 leading-snug">
-              Checked on <b>every session</b>, not just rebalance days. A stopped slot
-              stays in cash until the next rebalance rather than refilling immediately —
-              refilling would re-buy from the same ranking that just stopped a name out.
-              With no stop this book drew down ~42%; a fixed 15% stop cut that to ~33%
-              while <i>raising</i> total return, which is why it is the preset default.
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
-              <label className="text-xs text-slate-400 flex flex-col gap-1">
-                <span>Stop type</span>
-                <select value={f.pos_sl_mode} onChange={(e) => set('pos_sl_mode')(e.target.value)}
-                  className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
-                  {POS_SL_MODES.map((m) => (
-                    <option key={m.v} value={m.v}>{m.label}</option>
-                  ))}
-                </select>
-                <span className="text-[11px] text-slate-500 leading-snug">
-                  The four structural stops are one mechanism at four speeds. EMA21 exits
-                  earliest and most often; SMA200 is so slow it barely differs from no stop.
-                </span>
-              </label>
-              {POS_SL_NEEDS_PCT.has(f.pos_sl_mode) && (
-                <Field label="Stop distance (%)"
-                  hint={f.pos_sl_mode === 'trail'
-                    ? 'Below the highest close since entry — ratchets up, never down.'
-                    : 'Below the entry fill price — fixed for the life of the trade.'}
-                  value={f.pos_sl_pct} onChange={set('pos_sl_pct')}
-                  type="number" min="1" max="50" step="0.5" />
-              )}
-            </div>
-          </div>
-          <div className="text-[11px] text-amber-300/80 mt-3 leading-snug">
-            Note: this runs ~100% deployed, so its swings are much larger than the
-            breakout book&rsquo;s — measured calendar years include +95% and −34%.
-          </div>
-        </div>
-      )}
-
-      {f.strategy === 'BREAKOUT' && (<>
-      {/* ---- The four settings that actually moved the needle in testing ---- */}
-      <div className="pt-3 border-t border-slate-800">
-        <div className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-2">
-          Edges — validated on both 2025 &amp; 2026 windows
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
-          <Field label="Max base stage" hint="2 = only fresh 1st/2nd bases. Best on both windows; 4 = production."
-            value={f.stage2_base_stage_max_allowed} onChange={set('stage2_base_stage_max_allowed')}
-            type="number" min="1" max="6" placeholder="blank = production (4)" />
-          <Field label="Skip entries above breadth %" hint="Don't buy when this much of the market is already above its 200SMA. 40 tested best."
-            value={f.entry_breadth_max_pct} onChange={set('entry_breadth_max_pct')}
-            type="number" min="5" max="100" step="1" placeholder="blank = no filter" />
-          <Field label="Max contraction ratio (VCP)" hint="range(last 10 bars)/range(prior 15). ≤0.7 = base is tightening into the pivot."
-            value={f.max_contraction_ratio} onChange={set('max_contraction_ratio')}
-            type="number" min="0.2" max="2" step="0.05" placeholder="blank = no filter" />
-          <Field label="Risk per trade %" hint="Production is 0.25% (very conservative). 1.0% scaled returns more than drawdown."
-            value={f.risk_per_trade_pct} onChange={set('risk_per_trade_pct')}
-            type="number" min="0.05" max="3" step="0.05" placeholder="blank = production (0.25)" />
-          <div className="sm:col-span-2">
-            <Toggle label="Only enter while breadth is rising" checked={f.entry_breadth_require_rising}
-              onChange={set('entry_breadth_require_rising')}
-              hint="Breadth ≥ its own 20-session average — buy early in a recovery, not into a decline. Biggest single drawdown reducer found." />
-          </div>
-        </div>
-      </div>
-
-      {/* ---- Core, frequently-changed knobs ---- */}
-      <div className="pt-3 border-t border-slate-800 grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div className="space-y-2">
-          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Position &amp; entry</div>
-          <label className="text-xs text-slate-400 flex items-center gap-2">
-            Scan cadence
-            <select value={f.signal_cadence} onChange={(e) => set('signal_cadence')(e.target.value)}
-              className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm">
-              <option value="daily">Daily (production)</option>
-              <option value="weekly">Weekly (validated exit-ladder-fix preset)</option>
-              <option value="monthly">Monthly</option>
-            </select>
-          </label>
-          {f.signal_cadence !== 'daily' && (
-            <label className="text-xs text-slate-400 flex items-center gap-2 ml-6">
-              Scan on
-              <select value={f.signal_scan_day} onChange={(e) => set('signal_scan_day')(e.target.value)}
-                className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm">
-                <option value="last">Last session of period</option>
-                <option value="first">First session of period</option>
-              </select>
-            </label>
-          )}
-          <label className="text-xs text-slate-400 flex items-center gap-2">
-            Picks per scan
-            <input type="number" min="1" max="10" value={f.max_picks_per_track}
-              onChange={(e) => set('max_picks_per_track')(e.target.value)}
-              className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
-            <span className="text-slate-500">(2 daily / 3 weekly tested best)</span>
-          </label>
-          <Toggle label="Fill at next session's open" checked={f.next_open_exit}
-            onChange={set('next_open_exit')}
-            hint="What production actually does — sl_engine.py runs at 18:00 IST after Dhan stops accepting market orders. Close-fill modelling understates production by ~₹90k/decade." />
-          <label className="text-xs text-slate-400 flex items-center gap-2">
-            Safety SL floor
-            <input type="number" min="1" max="30" step="0.5" value={f.safety_sl_pct}
-              onChange={(e) => set('safety_sl_pct')(e.target.value)}
-              className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
-            % below entry
-          </label>
-          <Toggle label="Rest indefinitely until window ends" checked={f.restIndefinite}
-            onChange={set('restIndefinite')} />
-          {!f.restIndefinite && (
-            <label className="text-xs text-slate-400 flex items-center gap-2 ml-6">
-              Expire after
-              <input type="number" min="1" value={f.resting_window_days}
-                onChange={(e) => set('resting_window_days')(e.target.value)}
-                className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
-              days unfilled
-            </label>
-          )}
-          <Toggle label="Position-stacking guard" checked={f.stacking_guard}
-            onChange={set('stacking_guard')}
-            hint="Never stack a second buy into a symbol already held." />
-          {f.stacking_guard && (
-            <label className="text-xs text-slate-400 flex items-center gap-2 ml-6">
-              If already PENDING
-              <select value={f.stacking_guard_mode} onChange={(e) => set('stacking_guard_mode')(e.target.value)}
-                className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm">
-                <option value="SKIP">Skip new pick</option>
-                <option value="OVERRIDE">Override with new order</option>
-              </select>
-            </label>
-          )}
-        </div>
-
-        <div className="space-y-2">
-          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Exits</div>
-          <Toggle label="Breakeven move at +1R" checked={f.breakeven} onChange={set('breakeven')} />
-          <Toggle label="Half-book + trail rest at +2R" checked={f.half_booking} onChange={set('half_booking')} />
-          <Toggle label="Trailing stop ladder (R-based)" checked={f.trailing} onChange={set('trailing')} />
-          <Toggle label="EMA21 trail" checked={f.ema21_trail} onChange={set('ema21_trail')}
-            hint="Beat the pure R-ladder on both windows — recommended on." />
-          <Toggle label="Fixed target exit (2R)" checked={f.fixed_target} onChange={set('fixed_target')}
-            hint="Caps winners; testing favoured leaving this off." />
-        </div>
-      </div>
-
-      {/* ---- New, not yet A/B tested — borrowed from WEEKLY_BREAKOUT (run #589 analysis) ---- */}
-      <div className="pt-3 border-t border-slate-800">
-        <div className="text-xs font-semibold text-amber-400 uppercase tracking-wide mb-2">
-          New — untested, from the weekly-strategy comparison
-        </div>
-        <p className="text-[11px] text-slate-500 mb-2 leading-snug">
-          Run #589 found the weekly strategy's MACD-crossover trail let winners
-          run to +2.09R on average vs +1.15R for the daily EMA21 trail, and its
-          box+volume-expansion breakout definition is coarser/less noisy than
-          the daily funnel's own gates. Both borrowed here as opt-in toggles —
-          not yet measured against the validated baseline above.
-        </p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
-          <Toggle label="MACD trail (weekly)" checked={f.macd_trail} onChange={set('macd_trail')}
-            hint="SL ratchets to the low of the most recent weekly bearish-MACD-crossover — slower/coarser than EMA trails." />
-          <Toggle label="Require recent weekly box breakout" checked={f.require_weekly_box_breakout}
-            onChange={set('require_weekly_box_breakout')}
-            hint="Only enter if the symbol also had a WEEKLY_BREAKOUT-style box breakout recently." />
-          {f.require_weekly_box_breakout && (
-            <Field label="Lookback window (days)"
-              value={f.weekly_box_lookback_days} onChange={set('weekly_box_lookback_days')}
-              type="number" min="1" max="60" />
-          )}
-        </div>
-      </div>
-
-      {/* ---- Everything that tested neutral-or-worse, tucked away ---- */}
-      <details className="pt-2 border-t border-slate-800">
-        <summary className="cursor-pointer text-xs font-semibold text-slate-400 uppercase tracking-wide py-2 hover:text-slate-200">
-          Advanced / experimental — tested neutral or worse
-        </summary>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-          <div className="space-y-2">
-            <div className="text-[11px] text-slate-500">Alternative trails (EMA21 above outperformed these)</div>
-            <Toggle label="EMA10 trail" checked={f.ema10_trail} onChange={set('ema10_trail')} />
-            <Toggle label="EMA50 trail" checked={f.ema50_trail} onChange={set('ema50_trail')} />
-            <Toggle label="Chandelier trail (ATR)" checked={f.chandelier_trail} onChange={set('chandelier_trail')}
-              hint="Tested identical to EMA21 — no measurable gain." />
-            {f.chandelier_trail && (
-              <label className="text-xs text-slate-400 flex items-center gap-2 ml-6">
-                ATR multiple
-                <input type="number" min="1" max="8" step="0.5" value={f.chandelier_atr_mult}
-                  onChange={(e) => set('chandelier_atr_mult')(e.target.value)}
-                  className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
-              </label>
-            )}
-            <Toggle label="Swing-low trail" checked={f.swing_trail} onChange={set('swing_trail')} />
-            <Toggle label="Failed-breakout exit" checked={f.failed_breakout_exit} onChange={set('failed_breakout_exit')}
-              hint="Helps a bad regime, but gave up ~65% of the good regime's gains." />
-            <Toggle label="Swing-low break exit" checked={f.swing_break_exit} onChange={set('swing_break_exit')} />
-          </div>
-          <div className="space-y-2">
-            <div className="text-[11px] text-slate-500">Entry gate — REJECTED, kept for A/B reference only</div>
-            <Toggle label="Buy-point gate (pullback/H&S/breakout/retest)" checked={f.entry_v2_buy_points}
-              onChange={set('entry_v2_buy_points')}
-              hint="Tested and rejected: daily ₹194k→₹102k, weekly ₹99k→₹37k, worse win rate and drawdown both times. The gate selects stocks already at breakout points, which fills MORE trades at worse prices." />
-            <label className="text-xs text-slate-400 flex items-center gap-2">
-              Base-stage sizing ladder
-              <select value={f.base_stage_ladder} onChange={(e) => set('base_stage_ladder')(e.target.value)}
-                className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm">
-                <option value="prod">Production (base-stage multiplier only)</option>
-                <option value="v2">v2 ladder (1.00/0.75/0.50/0.25×)</option>
-              </select>
-              <span className="text-[11px] text-slate-500 leading-snug ml-1">Cost 18% of return for 9% less drawdown — worse than proportional.</span>
-            </label>
-          </div>
-          <div className="space-y-2">
-            <div className="text-[11px] text-slate-500">Sizing &amp; cost realism</div>
-            <Field label="Max capital per trade %" hint="Production 10%."
-              value={f.max_capital_per_trade_pct} onChange={set('max_capital_per_trade_pct')}
-              type="number" min="1" max="50" step="1" placeholder="blank = production (10)" />
-            <Field label="Min position value ₹" hint="Skip positions too small to absorb flat costs. Tested: hurt returns."
-              value={f.min_position_value} onChange={set('min_position_value')}
-              type="number" min="0" step="1000" placeholder="0 = off" />
-            <label className="text-xs text-slate-400 flex items-center gap-2">
-              Slippage
-              <input type="number" min="0" max="2" step="0.01" value={f.slippage_pct}
-                onChange={(e) => set('slippage_pct')(e.target.value)}
-                className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
-              % per fill
-            </label>
-            <label className="text-xs text-slate-400 flex items-center gap-2">
-              Brokerage override
-              <input type="number" min="0" step="1" value={f.brokerage_per_order}
-                onChange={(e) => set('brokerage_per_order')(e.target.value)}
-                className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-sm" />
-              ₹/order
-            </label>
-            <div className="text-[11px] text-slate-500">
-              STT, stamp duty, exchange/SEBI charges and the ₹14.75 DP charge are always
-              applied automatically (Dhan delivery: ₹0 brokerage).
-            </div>
-          </div>
-        </div>
-      </details>
-
-      </>)}
-      </>)}
-
-      {/* Notes and the error/blocked banners sit OUTSIDE the advanced block on
-          purpose: a validation error hidden inside a collapsed section is an
-          error the user never sees. */}
-      <label className="text-xs text-slate-400 flex flex-col gap-1">
-        Notes (optional)
-        <input type="text" value={f.notes} onChange={(e) => set('notes')(e.target.value)}
-          placeholder="e.g. frozen config, full window"
-          className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" />
-      </label>
-
-      {error && <div className="bg-red-900/40 border border-red-700 text-red-200 text-sm rounded px-3 py-2">{error}</div>}
-      {blocked && !error && (
-        <div className="bg-amber-900/30 border border-amber-700 text-amber-200 text-sm rounded px-3 py-2">{blockedReason}</div>
-      )}
-
-      <button type="submit" disabled={submitting || blocked}
-        className="px-4 py-2 text-sm rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold">
-        {submitting ? 'Starting…' : blocked ? 'Run in progress…' : 'Run backtest'}
-      </button>
-    </form>
-  );
-}
-
-// ---------------- Run list ----------------
-
-// Run-list window column. Keeps the year (runs now span 2024/2025/2026, so
-// dropping it made rows ambiguous) but trims the century: "2026-01-01" ->
-// "26-01-01".
-const fmtWindowShort = (s, e) => `${s?.slice(2) ?? ''} → ${e?.slice(2) ?? ''}`;
-
-/** One label/value pair inside a mobile run card. */
-function MobileStat({ label, value, tone }) {
-  const cls = tone == null ? 'text-slate-200'
-    : tone > 0 ? 'text-emerald-300' : tone < 0 ? 'text-rose-300' : 'text-slate-200';
-  return (
-    <div>
-      <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
-      <div className={`text-sm font-semibold tabular-nums ${cls}`}>{value}</div>
-    </div>
-  );
-}
-
-// Compact signed rupee for the P&L columns: 38856.71 -> "+38.9k", -3200 -> "-3.2k"
-const fmtPnl = (v) => {
-  if (v == null) return '—';
-  const a = Math.abs(v);
-  const s0 = v < 0 ? '-' : '+';
-  if (a >= 1e5) return `${s0}${(a / 1e5).toFixed(2)}L`;
-  if (a >= 1e3) return `${s0}${(a / 1e3).toFixed(1)}k`;
-  return `${s0}${Math.round(a)}`;
-};
-
-function RunRow({ run, selected, onSelect, onCancel, cancelling, rowRef, onKeyDown }) {
-  const pct = run.progressTotalDays ? Math.round((run.progressDay / run.progressTotalDays) * 100) : null;
-  const isRunning = run.status === 'RUNNING';
-  const progressText = isRunning
-    ? (pct != null
-        ? `${pct}% (day ${run.progressDay}/${run.progressTotalDays})`
-        : '🔄 Starting...')
-    : null;
-
-  const executedAt = run.startedAt ? new Date(run.startedAt).toLocaleString() : '—';
-  const execTime = run.execSeconds ? `${(run.execSeconds / 60).toFixed(1)}m` : '—';
-
-  return (
-    <tr ref={rowRef} tabIndex={0} onKeyDown={onKeyDown} onClick={() => onSelect(run.id)}
-      className={`cursor-pointer border-t border-slate-800 hover:bg-slate-800/40 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-emerald-500 ${selected ? 'bg-slate-800/60' : ''}`}>
-      <td className="py-1.5 px-2 text-xs text-slate-200 whitespace-nowrap">#{run.id}<AuditBadges run={run} /></td>
-      <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap" title={`Executed: ${executedAt}`}>
-        {executedAt}
-      </td>
-      <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap" title={`Time taken: ${execTime}`}>
-        {execTime}
-      </td>
-      <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap" title={`${run.startDate} → ${run.endDate}`}>
-        {fmtWindowShort(run.startDate, run.endDate)}
-      </td>
-      <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap">{run.trackMode}</td>
-      <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap">{fmtInrCompact(run.capital)}</td>
-      <td className={`py-1.5 px-2 text-xs font-semibold whitespace-nowrap ${STATUS_COLOR[run.status] || 'text-slate-300'}`}
-        title={progressText || undefined}>
-        {run.status}
-        {isRunning && progressText && <span className={`font-normal ${pct != null ? 'text-emerald-400' : 'text-amber-400 animate-pulse'}`}> · {progressText}</span>}
-      </td>
-      <td className="py-1.5 px-2 text-xs text-slate-300 whitespace-nowrap">{run.tradeCount ?? '—'}</td>
-      {/* Realized / unrealized / total apply to EVERY strategy — a portfolio run
-          still has banked P&L and open positions, and hiding them (as an earlier
-          version did, substituting the path metrics in their place) meant the
-          rupee outcome of a portfolio run could not be seen at all. */}
-      <td className={`py-1.5 px-2 text-xs font-medium whitespace-nowrap tabular-nums ${pnlColor(run.realizedPnl)}`}
-        title={run.realizedPnl != null ? `Realized ₹${run.realizedPnl.toLocaleString('en-IN')}` : undefined}>
-        {fmtPnl(run.realizedPnl)}
-      </td>
-      <td className={`py-1.5 px-2 text-xs whitespace-nowrap tabular-nums ${pnlColor(run.unrealizedPnl)}`}
-        title={run.unrealizedPnl != null ? `Unrealized (open positions marked to run end) ₹${run.unrealizedPnl.toLocaleString('en-IN')}` : undefined}>
-        {fmtPnl(run.unrealizedPnl)}
-      </td>
-      <td className={`py-1.5 px-2 text-xs font-semibold whitespace-nowrap tabular-nums ${pnlColor(run.totalPnl)}`}
-        title={run.totalPnl != null ? `Total ₹${run.totalPnl.toLocaleString('en-IN')}` : undefined}>
-        {fmtPnl(run.totalPnl)}
-      </td>
-      {/* Path metrics — extracted via runMetrics.js fallback chains (generic
-          MtM columns first, pf* second). An em-dash now means "genuinely not
-          computed" (and logs a console warning), not "wrong field name". */}
-      <td className={`py-1.5 px-2 text-xs font-medium whitespace-nowrap tabular-nums ${
-            isShortWindow(run) ? 'text-slate-500 italic' : 'text-emerald-300'}`}
-        title={isShortWindow(run)
-          ? 'Annualised from a window under 2 years — not comparable with a continuous run'
-          : 'Compound annual growth rate (mark-to-market weekly)'}>
-        {fmtCagr(getCagr(run), isShortWindow(run))}
-      </td>
-      <td className="py-1.5 px-2 text-xs whitespace-nowrap tabular-nums text-rose-300"
-        title="Peak-to-trough drawdown, open positions marked to market weekly">
-        {fmtMaxDD(getMaxDD(run))}
-      </td>
-      <td className="py-1.5 px-2 text-xs whitespace-nowrap tabular-nums text-amber-300/90"
-        title="Worst return over any rolling 12-month window (MtM)">
-        {fmtW12m(getWorst12m(run))}
-      </td>
-      <td className="py-1.5 px-2 text-xs font-semibold whitespace-nowrap tabular-nums text-slate-200"
-        title="Martin ratio = CAGR / ulcer index. Return per unit of time-weighted pain.">
-        {fmtRatio(getMartin(run))}
-      </td>
-      <SettingsCell run={run} />
-      <td className="py-1.5 px-2 text-xs">
-        {run.status === 'RUNNING' && (
-          <button onClick={(e) => { e.stopPropagation(); onCancel(run.id); }} disabled={cancelling}
-            className="px-1.5 py-0.5 text-[11px] rounded bg-red-900/60 border border-red-700 text-red-200 hover:bg-red-900 disabled:opacity-50">
-            {cancelling ? '…' : 'Stop'}
-          </button>
-        )}
-      </td>
-    </tr>
-  );
-}
-
+/* ═══════════════════════════════════════════════════════════════════════
+   Run rail
+   ═══════════════════════════════════════════════════════════════════ */
 const SORTS = {
-  newest:    { label: 'Newest first',   fn: (a, b) => b.id - a.id },
-  oldest:    { label: 'Oldest first',   fn: (a, b) => a.id - b.id },
-  totalDesc: { label: 'Total P&L ↓',    fn: (a, b) => (b.totalPnl ?? -Infinity) - (a.totalPnl ?? -Infinity) },
-  totalAsc:  { label: 'Total P&L ↑',    fn: (a, b) => (a.totalPnl ?? Infinity) - (b.totalPnl ?? Infinity) },
-  realDesc:  { label: 'Realized P&L ↓', fn: (a, b) => (b.realizedPnl ?? -Infinity) - (a.realizedPnl ?? -Infinity) },
-  tradesDesc:{ label: 'Trades ↓',       fn: (a, b) => (b.tradeCount ?? 0) - (a.tradeCount ?? 0) },
+  newest:     { label: 'Newest first',    fn: (a, b) => b.id - a.id },
+  oldest:     { label: 'Oldest first',    fn: (a, b) => a.id - b.id },
+  calmarDesc: { label: 'Calmar ↓',        fn: (a, b) => calmar(b) - calmar(a) },
+  cagrDesc:   { label: 'CAGR ↓',          fn: (a, b) => (getCagr(b) ?? -99) - (getCagr(a) ?? -99) },
+  ddAsc:      { label: 'Max DD ↑',        fn: (a, b) => Math.abs(getMaxDD(a) ?? 99) - Math.abs(getMaxDD(b) ?? 99) },
+  totalDesc:  { label: 'Total P&L ↓',     fn: (a, b) => (b.totalPnl ?? -Infinity) - (a.totalPnl ?? -Infinity) },
+  totalAsc:   { label: 'Total P&L ↑',     fn: (a, b) => (a.totalPnl ?? Infinity) - (b.totalPnl ?? Infinity) },
+  totalPctD:  { label: 'Total P&L % ↓',   fn: (a, b) => pctOf(b, 'totalPnl') - pctOf(a, 'totalPnl') },
+  realDesc:   { label: 'Realized P&L ↓',  fn: (a, b) => (b.realizedPnl ?? -Infinity) - (a.realizedPnl ?? -Infinity) },
+  tradesDesc: { label: 'Trades ↓',        fn: (a, b) => (b.tradeCount ?? 0) - (a.tradeCount ?? 0) },
 };
+const calmar = (r) => {
+  const c = getCagr(r), d = getMaxDD(r);
+  return (c != null && d) ? c / Math.abs(d) : -Infinity;
+};
+const pctOf = (r, key) => (r.capital ? (100 * (r[key] ?? 0)) / r.capital : -Infinity);
+const pctVal = (r, key) => (r.capital && r[key] != null ? (100 * r[key]) / r.capital : null);
 
-// Rows rendered before the infinite-scroll sentinel asks for more. 40 rows
-// paints instantly; the sentinel adds PAGE more each time it becomes visible,
-// so "smooth pagination" without a page-picker widget for a 250-row list.
 const PAGE = 40;
 
+function RunCard({ run, selected, onSelect, onCancel, cancelling, rowRef, onKeyDown }) {
+  const [cls, txt] = runBadgeFor(run.status);
+  const pct = run.progressTotalDays ? Math.round((run.progressDay / run.progressTotalDays) * 100) : null;
+  const tags = summarizeRunSettings(run);
+  const cagr = getCagr(run), dd = getMaxDD(run);
+  const executed = run.startedAt ? new Date(run.startedAt).toLocaleString() : '—';
+  return (
+    <button type="button" className="run" aria-current={selected} ref={rowRef} onKeyDown={onKeyDown}
+      onClick={() => onSelect(run.id)} title={run.params?.notes || undefined}>
+      <span className="run-id">
+        #{run.id}
+        <span className={`badge ${cls}`}>{txt}</span>
+        <AuditBadges run={run} />
+      </span>
+      <span className="run-when">{executed}</span>
+      <span className="run-sub">{run.params?.notes || 'defaults'}</span>
+      <span className="run-sub tert">
+        {run.strategy} · {run.trackMode} · {fmtInrCompact(run.capital)}
+        {run.posTranches > 1 ? ` · ${run.posTranches} tranches` : ''}
+        {run.execSeconds ? ` · ${(run.execSeconds / 60).toFixed(1)}m` : ''}
+        {' · '}{fmtWindowShort(run.startDate, run.endDate)}
+      </span>
+      {pct != null && run.status === 'RUNNING' && (
+        <>
+          <span className="prog"><i style={{ width: `${pct}%` }} /></span>
+          <span className="run-nums"><span>day {run.progressDay}/{run.progressTotalDays} · {pct}%</span></span>
+        </>
+      )}
+      {cagr != null && (
+        <span className="run-nums">
+          <span>CAGR <b className={cagr >= 0 ? 'g' : 'l'}>{fmtCagr(cagr, isShortWindow(run))}</b></span>
+          <span>DD <b className="l">{fmtMaxDD(dd)}</b></span>
+          <span>w12m <b className="w">{fmtW12m(getWorst12m(run))}</b></span>
+          <span>Calmar <b className="muted">{calmar(run) === -Infinity ? '—' : calmar(run).toFixed(2)}</b></span>
+          <span>Total <b className={pnlCls(run.totalPnl)}>{fmtInrCompact(run.totalPnl)}</b>{' '}
+            <b className={pnlCls(run.totalPnl)}>{fmtPctS(pctVal(run, 'totalPnl'))}</b></span>
+          <span>{(run.tradeCount ?? 0).toLocaleString('en-IN')} trades</span>
+        </span>
+      )}
+      {run.error && <span className="run-nums"><span className="l">{run.error}</span></span>}
+      {!!tags.length && (
+        <span className="run-tags">
+          {tags.slice(0, 6).map((t, i) => (
+            <span key={i} className={`tag${t.startsWith('⚠') ? ' warnt' : ''}`}>{t}</span>
+          ))}
+        </span>
+      )}
+      {run.status === 'RUNNING' && (
+        <span style={{ gridColumn: '1/-1', marginTop: 6 }}>
+          <button type="button" className="btn btn-sm btn-danger" disabled={cancelling}
+            onClick={(e) => { e.stopPropagation(); onCancel(run.id); }}>
+            {cancelling ? 'Stopping…' : 'Stop'}
+          </button>
+        </span>
+      )}
+    </button>
+  );
+}
+
+const TABLE_COLS = [
+  { label: 'Run' },
+  { label: 'Executed' },
+  { label: 'Time' },
+  { label: 'Window', help: HELP.window },
+  { label: 'Track' },
+  { label: 'Capital', help: HELP.capital, right: true },
+  { label: 'Status', help: HELP.status },
+  { label: 'Trades', help: HELP.trades, right: true },
+  { label: 'Realized', help: HELP.realized, right: true, sort: 'realDesc' },
+  { label: 'Real %', help: 'Realized P&L as a share of starting capital', right: true },
+  { label: 'Unreal.', help: HELP.unrealized, right: true },
+  { label: 'Unreal %', help: 'Unrealized as a share of starting capital', right: true },
+  { label: 'Total', help: HELP.total, right: true, sort: 'totalDesc' },
+  { label: 'Total %', help: 'Total P&L as a share of starting capital', right: true, sort: 'totalPctD' },
+  { label: 'CAGR', help: HELP.cagr, right: true, sort: 'cagrDesc' },
+  { label: 'maxDD', help: HELP.maxDD, right: true, sort: 'ddAsc' },
+  { label: 'w12m', help: HELP.worst12m, right: true },
+  { label: 'Calmar', help: 'CAGR divided by max drawdown', right: true, sort: 'calmarDesc' },
+  { label: 'Martin', help: HELP.martin, right: true },
+  { label: 'Settings', help: HELP.settings },
+  { label: '' },
+];
+
+function RunTable({ runs, selectedId, onSelect, onCancel, cancellingId, sortKey, setSortKey }) {
+  return (
+    <table style={{ minWidth: 1500 }}>
+      <thead>
+        <tr>
+          {TABLE_COLS.map((c, i) => (
+            <th key={i} className={`${c.sort ? 'sortable ' : ''}${c.right ? 'right' : ''}`}
+              title={c.help} onClick={c.sort ? () => setSortKey(c.sort) : undefined}>
+              {c.label}{c.sort && sortKey === c.sort ? ' ▼' : ''}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {runs.map((r) => {
+          const [cls, txt] = runBadgeFor(r.status);
+          const pct = r.progressTotalDays ? Math.round((r.progressDay / r.progressTotalDays) * 100) : null;
+          const cagr = getCagr(r);
+          const tags = summarizeRunSettings(r);
+          return (
+            <tr key={r.id} className={r.id === selectedId ? 'sel' : ''} onClick={() => onSelect(r.id)}
+              style={{ cursor: 'pointer' }}>
+              <td className="n" style={{ color: 'var(--ink)' }}>#{r.id} <AuditBadges run={r} /></td>
+              <td className="n tert">{r.startedAt ? new Date(r.startedAt).toLocaleString() : '—'}</td>
+              <td className="n tert">{r.execSeconds ? `${(r.execSeconds / 60).toFixed(1)}m` : '—'}</td>
+              <td className="n">{fmtWindowShort(r.startDate, r.endDate)}</td>
+              <td>{r.trackMode}</td>
+              <td className="n right">{fmtInrCompact(r.capital)}
+                {r.posTranches > 1 ? <span className="tert"> ×{r.posTranches}T</span> : null}</td>
+              <td className={r.status === 'COMPLETED' ? 'g' : r.status === 'RUNNING' ? 'w' : r.status === 'FAILED' ? 'l' : 'tert'}>
+                {r.status}{pct != null && r.status === 'RUNNING' ? <span className="tert"> · {pct}%</span> : null}
+              </td>
+              <td className="n right">{r.tradeCount ?? '—'}</td>
+              <td className={`n right ${pnlCls(r.realizedPnl)}`}>{fmtInrCompact(r.realizedPnl)}</td>
+              <td className={`n right ${pnlCls(r.realizedPnl)}`}>{fmtPctS(pctVal(r, 'realizedPnl'))}</td>
+              <td className={`n right ${pnlCls(r.unrealizedPnl)}`}>{fmtInrCompact(r.unrealizedPnl)}</td>
+              <td className={`n right ${pnlCls(r.unrealizedPnl)}`}>{fmtPctS(pctVal(r, 'unrealizedPnl'))}</td>
+              <td className={`n right ${pnlCls(r.totalPnl)}`} style={{ fontWeight: 500 }}>{fmtInrCompact(r.totalPnl)}</td>
+              <td className={`n right ${pnlCls(r.totalPnl)}`} style={{ fontWeight: 500 }}>{fmtPctS(pctVal(r, 'totalPnl'))}</td>
+              <td className={`n right ${cagr == null ? 'tert' : cagr >= 0 ? 'g' : 'l'}`}>{fmtCagr(cagr, isShortWindow(r))}</td>
+              <td className="n right l">{fmtMaxDD(getMaxDD(r))}</td>
+              <td className="n right w">{fmtW12m(getWorst12m(r))}</td>
+              <td className="n right">{calmar(r) === -Infinity ? '—' : calmar(r).toFixed(2)}</td>
+              <td className="n right">{fmtRatio(getMartin(r))}</td>
+              <td style={{ whiteSpace: 'normal', minWidth: 210 }}>
+                <div style={{ color: 'var(--ink-muted)' }}>{r.params?.notes || 'defaults'}</div>
+                <div className="run-tags" style={{ marginTop: 3 }}>
+                  {tags.slice(0, 6).map((t, i) => (
+                    <span key={i} className={`tag${t.startsWith('⚠') ? ' warnt' : ''}`}>{t}</span>
+                  ))}
+                </div>
+              </td>
+              <td>
+                {r.status === 'RUNNING' && (
+                  <button type="button" className="btn btn-sm btn-danger" disabled={cancellingId === r.id}
+                    onClick={(e) => { e.stopPropagation(); onCancel(r.id); }}>
+                    {cancellingId === r.id ? '…' : 'Stop'}
+                  </button>
+                )}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
 function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
-  const isMobile = useIsMobile();
+  const isMobile = useIsMobile(1200);
   const rowRefs = useRef({});
   const sentinelRef = useRef(null);
+  const [view, setView] = useState('list');
   const [sortKey, setSortKey] = useState('newest');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [trackFilter, setTrackFilter] = useState('ALL');
   const [strategyFilter, setStrategyFilter] = useState('ALL');
   const [idFilter, setIdFilter] = useState('');
-  const [dateFilter, setDateFilter] = useState('');   // executed on/after
+  const [dateFilter, setDateFilter] = useState('');
   const [query, setQuery] = useState('');
   const [winnersOnly, setWinnersOnly] = useState(false);
   const [limit, setLimit] = useState(PAGE);
@@ -1572,8 +377,6 @@ function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
   const strategies = useMemo(
     () => Array.from(new Set(runs.map((r) => r.strategy).filter(Boolean))).sort(), [runs]);
 
-  // Filter first, then sort — so the arrow-key index below always refers to
-  // the list actually rendered.
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const idQ = idFilter.trim().replace(/^#/, '');
@@ -1593,23 +396,20 @@ function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
       .sort(SORTS[sortKey].fn);
   }, [runs, sortKey, statusFilter, trackFilter, strategyFilter, idFilter, dateFilter, query, winnersOnly]);
 
-  // Reset the window when the filter set changes, so a new filter never
-  // starts scrolled into the middle of the previous result set.
   useEffect(() => { setLimit(PAGE); },
-    [sortKey, statusFilter, trackFilter, strategyFilter, idFilter, dateFilter, query, winnersOnly]);
+    [sortKey, statusFilter, trackFilter, strategyFilter, idFilter, dateFilter, query, winnersOnly, view]);
 
   const visible = useMemo(() => filtered.slice(0, limit), [filtered, limit]);
 
-  // Infinite scroll: grow the window when the sentinel row scrolls into view.
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el || limit >= filtered.length) return;
     const obs = new IntersectionObserver(
       (entries) => entries[0].isIntersecting && setLimit((l) => l + PAGE),
-      { root: el.closest('[data-runlist-scroll]') || null, rootMargin: '120px' });
+      { root: el.closest('[data-runscroll]') || null, rootMargin: '120px' });
     obs.observe(el);
     return () => obs.disconnect();
-  }, [limit, filtered.length]);
+  }, [limit, filtered.length, view]);
 
   const move = (idx, delta) => {
     const target = visible[idx + delta];
@@ -1622,721 +422,431 @@ function RunList({ runs, selectedId, onSelect, onCancel, cancellingId }) {
     else if (e.key === 'ArrowUp') { e.preventDefault(); move(idx, -1); }
   };
 
-  const selCls = 'bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-200 text-xs';
+  const more = filtered.length - visible.length;
+  const showTable = view === 'table' && !isMobile;
 
   return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <input type="search" value={query} onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search notes / settings…"
-          className="flex-1 min-w-[140px] bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-xs" />
-        <input type="search" value={idFilter} onChange={(e) => setIdFilter(e.target.value)}
-          placeholder="#id" title="Filter by run id"
-          className="w-16 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-xs" />
-        <select value={strategyFilter} onChange={(e) => setStrategyFilter(e.target.value)} className={selCls} title="Strategy">
+    <section className="panel">
+      <div className="panel-head">
+        <h2>Runs</h2>
+        <span className="eyebrow" style={{ marginLeft: 'auto' }}>
+          {filtered.length === runs.length ? `${runs.length} total` : `${filtered.length}/${runs.length}`}
+        </span>
+        {!isMobile && (
+          <div className="seg" role="group" aria-label="Run list density">
+            <button type="button" aria-pressed={view === 'list'} onClick={() => setView('list')}>List</button>
+            <button type="button" aria-pressed={view === 'table'} onClick={() => setView('table')}>Table</button>
+          </div>
+        )}
+      </div>
+
+      <div className="filters">
+        <input className="ctl" type="search" value={query} onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search notes / settings…" aria-label="Search runs" style={{ flex: 1, minWidth: 130 }} />
+        <input className="ctl" type="search" value={idFilter} onChange={(e) => setIdFilter(e.target.value)}
+          placeholder="#id" aria-label="Filter by run id" style={{ width: 62 }} />
+        <select className="ctl" value={strategyFilter} onChange={(e) => setStrategyFilter(e.target.value)} aria-label="Strategy">
           <option value="ALL">All strategies</option>
           {strategies.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
-        <input type="date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)}
-          title="Executed on/after" className={selCls} />
-        <select value={sortKey} onChange={(e) => setSortKey(e.target.value)} className={selCls} title="Sort">
+        <input className="ctl" type="date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)}
+          title="Executed on/after" aria-label="Executed on or after" />
+        <select className="ctl" value={sortKey} onChange={(e) => setSortKey(e.target.value)} aria-label="Sort runs">
           {Object.entries(SORTS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
         </select>
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className={selCls} title="Status">
+        <select className="ctl" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Status">
           <option value="ALL">All status</option>
           <option value="COMPLETED">Completed</option>
           <option value="RUNNING">Running</option>
           <option value="FAILED">Failed</option>
         </select>
-        <select value={trackFilter} onChange={(e) => setTrackFilter(e.target.value)} className={selCls} title="Track">
+        <select className="ctl" value={trackFilter} onChange={(e) => setTrackFilter(e.target.value)} aria-label="Track">
           <option value="ALL">All tracks</option>
           <option value="QUANT">Quant</option>
           <option value="AI">AI</option>
           <option value="BOTH">Both</option>
         </select>
-        <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none">
-          <input type="checkbox" checked={winnersOnly} onChange={(e) => setWinnersOnly(e.target.checked)}
-            className="accent-emerald-500" />
+        <label className="check">
+          <input type="checkbox" checked={winnersOnly} onChange={(e) => setWinnersOnly(e.target.checked)} />
           Profitable only
         </label>
-        {filtered.length !== runs.length && (
-          <span className="text-[11px] text-slate-500">{filtered.length}/{runs.length}</span>
-        )}
       </div>
 
       {!runs.length ? (
-        <div className="text-sm text-slate-400 px-1">No backtest runs yet — configure one above.</div>
+        <div className="empty">No backtest runs yet — configure one above.</div>
       ) : !filtered.length ? (
-        <div className="text-sm text-slate-400 px-1">No runs match these filters.</div>
-      ) : isMobile ? (
-        /* A 15-column table does not become usable on a phone by scrolling
-           sideways — the columns you need are always the ones off-screen. Each
-           run becomes a card with the four numbers that decide whether to open
-           it, and the rest lives in the detail view. */
-        <div className="space-y-2 max-h-[70vh] overflow-y-auto pr-0.5">
-          {visible.map((r) => {
-            const sel = r.id === selectedId;
-            const isPf = r.strategy === 'PORTFOLIO';
-            return (
-              <button key={r.id} type="button" onClick={() => onSelect(r.id)}
-                className={`w-full text-left rounded-lg border p-3 transition-colors
-                  ${sel ? 'border-sky-500 bg-sky-950/30' : 'border-slate-700 bg-slate-900/60 active:bg-slate-800'}`}>
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold text-slate-100">
-                      #{r.id}
-                      <span className="ml-2 text-[11px] font-normal text-slate-400">
-                        {fmtWindowShort(r.startDate, r.endDate)}
-                      </span>
-                    </div>
-                    {r.params?.notes && (
-                      <div className="text-[11px] text-slate-400 truncate mt-0.5">{r.params.notes}</div>
-                    )}
-                  </div>
-                  <Pill tone={r.status === 'COMPLETED' ? 'good' : r.status === 'FAILED' ? 'bad'
-                    : r.status === 'RUNNING' ? 'info' : 'slate'}>
-                    {r.status}
-                  </Pill>
-                </div>
-
-                <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 mt-2.5">
-                  <MobileStat label="Total P&L" value={fmtPnl(r.totalPnl)} tone={r.totalPnl} />
-                  <MobileStat label="Trades" value={r.tradeCount ?? '—'} />
-                  {isPf ? (<>
-                    <MobileStat label="CAGR"
-                      value={r.pfCagrPct != null ? `${r.pfCagrPct.toFixed(1)}%${isShortWindow(r) ? '*' : ''}` : '—'}
-                      tone={r.pfCagrPct} />
-                    <MobileStat label="Max drawdown"
-                      value={r.pfMaxDDPct != null ? `−${r.pfMaxDDPct.toFixed(1)}%` : '—'} tone={-1} />
-                  </>) : (<>
-                    <MobileStat label="Realized" value={fmtPnl(r.realizedPnl)} tone={r.realizedPnl} />
-                    <MobileStat label="Unrealized" value={fmtPnl(r.unrealizedPnl)} tone={r.unrealizedPnl} />
-                  </>)}
-                </div>
-
-                <div className="flex flex-wrap gap-1 mt-2">
-                  {summarizeRunSettings(r).slice(0, 4).map((t, i) => (
-                    <Pill key={i} tone={t.startsWith('⚠') ? 'warn' : 'slate'}>{t}</Pill>
-                  ))}
-                </div>
-              </button>
-            );
-          })}
+        <div className="empty">No runs match these filters.</div>
+      ) : showTable ? (
+        <div className="tablewrap" data-runscroll style={{ maxHeight: 600 }}>
+          <RunTable runs={visible} selectedId={selectedId} onSelect={onSelect} onCancel={onCancel}
+            cancellingId={cancellingId} sortKey={sortKey} setSortKey={setSortKey} />
+          {more > 0 && (
+            <div className="sentinel" ref={sentinelRef}>loading {Math.min(PAGE, more)} more of {more}…</div>
+          )}
         </div>
       ) : (
-    <div data-runlist-scroll
-      className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto max-h-[480px] overflow-y-auto">
-      {/* min-w keeps 17 columns from clipping into each other on smaller
-          displays — the container scrolls horizontally instead. */}
-      <table className="w-full table-auto min-w-[1180px]">
-        <thead className="sticky top-0 bg-slate-900 z-10">
-          <tr className="text-left text-[10px] text-slate-500 uppercase tracking-wide">
-            <th className="py-2 px-2">Run</th>
-            <th className="py-2 px-2">Executed</th>
-            <th className="py-2 px-2">Time</th>
-            <th className="py-2 px-2"><LabelWithInfo help={HELP.window}>Window</LabelWithInfo></th>
-            <th className="py-2 px-2">Track</th>
-            <th className="py-2 px-2"><LabelWithInfo help={HELP.capital}>Capital</LabelWithInfo></th>
-            <th className="py-2 px-2"><LabelWithInfo help={HELP.status}>Status</LabelWithInfo></th>
-            <th className="py-2 px-2"><LabelWithInfo help={HELP.trades}>Trades</LabelWithInfo></th>
-            <th className="py-2 px-2"><LabelWithInfo help={HELP.realized}>Realized</LabelWithInfo></th>
-            <th className="py-2 px-2"><LabelWithInfo help={HELP.unrealized}>Unreal.</LabelWithInfo></th>
-            <th className="py-2 px-2"><LabelWithInfo help={HELP.total}>Total</LabelWithInfo></th>
-            <th className="py-2 px-2 text-emerald-400/80"><LabelWithInfo help={HELP.cagr}>CAGR</LabelWithInfo></th>
-            <th className="py-2 px-2 text-rose-400/80"><LabelWithInfo help={HELP.maxDD}>maxDD</LabelWithInfo></th>
-            <th className="py-2 px-2 text-amber-400/80"><LabelWithInfo help={HELP.worst12m}>w12m</LabelWithInfo></th>
-            <th className="py-2 px-2"><LabelWithInfo help={HELP.martin} align="right">Martin</LabelWithInfo></th>
-            <th className="py-2 px-2"><LabelWithInfo help={HELP.settings} align="right">Settings</LabelWithInfo></th>
-            <th className="py-2 px-2"></th>
-          </tr>
-        </thead>
-        <tbody>
+        <div className="runs" data-runscroll>
           {visible.map((r, idx) => (
-            <RunRow key={r.id} run={r} selected={r.id === selectedId} onSelect={onSelect}
+            <RunCard key={r.id} run={r} selected={r.id === selectedId} onSelect={onSelect}
               onCancel={onCancel} cancelling={cancellingId === r.id}
               rowRef={(el) => { rowRefs.current[r.id] = el; }}
               onKeyDown={(e) => handleKeyDown(e, idx)} />
           ))}
-          {limit < filtered.length && (
-            <tr ref={sentinelRef}>
-              <td colSpan={17} className="py-2 px-2 text-center text-[11px] text-slate-500">
-                loading {Math.min(PAGE, filtered.length - limit)} more of {filtered.length - limit}…
-              </td>
-            </tr>
+          {more > 0 && (
+            <div className="sentinel" ref={sentinelRef}>loading {Math.min(PAGE, more)} more of {more}…</div>
           )}
-        </tbody>
-      </table>
-    </div>
+        </div>
       )}
-    </div>
+    </section>
   );
 }
 
-// ---------------- Equity curve (lightweight inline SVG, no chart lib) ----------------
+/* ═══════════════════════════════════════════════════════════════════════
+   Equity chart — account level on top, drawdown as its own underwater
+   panel beneath, sharing one time axis.
+   ═══════════════════════════════════════════════════════════════════ */
+const EQ_MODES = [['mtm', 'MtM total equity'], ['realized', 'Realized-only']];
 
-// Compact ₹ formatting for axis ticks — e.g. ₹1.2L, ₹45k, -₹2.1L.
-const fmtInrCompact = (n) => {
-  const sign = n < 0 ? '-' : '';
-  const abs = Math.abs(n);
-  if (abs >= 100000) return `${sign}₹${(abs / 100000).toFixed(abs >= 1000000 ? 0 : 1)}L`;
-  if (abs >= 1000) return `${sign}₹${(abs / 1000).toFixed(1)}k`;
-  return `${sign}₹${Math.round(abs)}`;
-};
-const fmtAxisDate = (d) => (d ? `${d.slice(2, 4)}-${d.slice(5, 7)}-${d.slice(8, 10)}` : ''); // YY-MM-DD
+function EquityChart({ points, capital, levelOf, footNote }) {
+  const [showDD, setShowDD] = useState(true);
+  const [tip, setTip] = useState(null);
+  const boxRef = useRef(null);
 
-// "Nice numbers for graph labels" (Heckbert) — picks a round step (1/2/5 x
-// 10^n) instead of naively interpolating min..max, so ticks read as e.g.
-// ₹0 / ₹20k / ₹40k rather than arbitrary fractions of whatever the data's
-// min/max happened to be.
-function _niceNum(range, round) {
-  if (range <= 0) return 1;
-  const exp = Math.floor(Math.log10(range));
-  const frac = range / 10 ** exp;
-  let niceFrac;
-  if (round) {
-    niceFrac = frac < 1.5 ? 1 : frac < 3 ? 2 : frac < 7 ? 5 : 10;
-  } else {
-    niceFrac = frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 5 ? 5 : 10;
-  }
-  return niceFrac * 10 ** exp;
-}
-function niceTicks(dataMin, dataMax, maxTicks = 5) {
-  if (dataMin === dataMax) { dataMin -= 1; dataMax += 1; }
-  const range = _niceNum(dataMax - dataMin, false);
-  const step = _niceNum(range / (maxTicks - 1), true);
-  const niceMin = Math.floor(dataMin / step) * step;
-  const niceMax = Math.ceil(dataMax / step) * step;
-  const ticks = [];
-  for (let v = niceMin; v <= niceMax + step / 2; v += step) ticks.push(Math.round(v * 100) / 100);
-  return { ticks, min: niceMin, max: niceMax };
-}
+  if (!points?.length) return <div className="empty">No equity data for this run.</div>;
 
-const SERIES = [
-  { key: 'quantRealizedCumPnl', label: 'Quant realized', color: '#38bdf8', dash: '0', group: 'realized' },
-  { key: 'aiRealizedCumPnl', label: 'AI realized', color: '#c084fc', dash: '0', group: 'realized' },
-  { key: 'quantUnrealizedPnl', label: 'Quant unrealized', color: '#38bdf8', dash: '4,3', group: 'unrealized' },
-  { key: 'aiUnrealizedPnl', label: 'AI unrealized', color: '#c084fc', dash: '4,3', group: 'unrealized' },
-];
+  const vals = points.map(levelOf);
+  const W = 900, M = { t: 16, r: 56, b: 34, l: 78 };
+  const eqH = 216, GAP = showDD ? 20 : 0, DDH = showDD ? 68 : 0;
+  const H = M.t + eqH + GAP + DDH + M.b;
+  const pw = W - M.l - M.r;
+  const xi = (i) => M.l + (i / Math.max(points.length - 1, 1)) * pw;
 
-// The account LEVEL over time, for continuous compounding runs, drawn from the
-// engine's own daily mark-to-market rather than reconstructed from trade rows.
-//
-// This is a different quantity from the chart below it. EquityCurve plots
-// cumulative realized P&L and unrealized as separate series against zero —
-// flows. For a compounding book what matters is the level of the account and how
-// far below its own high-water mark it goes, so this shades the drawdown.
-function PortfolioEquity({ points, capital }) {
-  if (!points?.length) {
-    return <div className="text-sm text-slate-500 py-8 text-center">No equity data for this run.</div>;
-  }
-  const W = 760, H = 260;
-  const M = { top: 28, right: 16, bottom: 30, left: 74 };
-  const plotW = W - M.left - M.right, plotH = H - M.top - M.bottom;
+  let pk = -Infinity;
+  const peaks = vals.map((v) => (pk = Math.max(pk, v)));
+  const dds = vals.map((v, i) => (peaks[i] > 0 ? ((peaks[i] - v) / peaks[i]) * 100 : 0));
+  const maxDD = Math.max(...dds, 0);
+  const final = vals[vals.length - 1];
+  const peak = Math.max(...vals);
 
-  const vals = points.map((p) => p.equity);
-  const { ticks: yTicks, min: yMin, max: yMax } =
-    niceTicks(Math.min(capital, ...vals), Math.max(capital, ...vals), 5);
-  const yRange = yMax - yMin || 1;
-  const x = (i) => M.left + (i / Math.max(points.length - 1, 1)) * plotW;
-  const y = (v) => M.top + plotH - ((v - yMin) / yRange) * plotH;
+  const lo = Math.min(capital, ...vals) * 0.97;
+  const hi = Math.max(capital, ...vals) * 1.04;
+  const y = (v) => M.t + eqH - ((v - lo) / (hi - lo || 1)) * eqH;
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => lo + (hi - lo) * f);
+  const line = vals.map((v, i) => `${i ? 'L' : 'M'}${xi(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
+  const peakLine = peaks.map((v, i) => `${i ? 'L' : 'M'}${xi(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
 
-  // Running high-water mark, so the shaded band is the actual underwater period
-  // rather than a guess from the single worst point.
-  let peak = -Infinity;
-  const peaks = vals.map((v) => (peak = Math.max(peak, v)));
-  const line = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(p.equity)}`).join(' ');
-  const peakLine = peaks.map((v, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(v)}`).join(' ');
-  const band = `${peakLine} L ${x(points.length - 1)} ${y(vals[vals.length - 1])} `
-    + points.map((p, i) => `L ${x(points.length - 1 - i)} ${y(vals[points.length - 1 - i])}`).join(' ') + ' Z';
+  const ddTop = M.t + eqH + GAP;
+  const yd = (d) => ddTop + (d / Math.max(maxDD, 1)) * DDH;
+  const ddLine = dds.map((d, i) => `${i ? 'L' : 'M'}${xi(i).toFixed(1)},${yd(d).toFixed(1)}`).join('');
+  const trough = dds.indexOf(maxDD);
 
   const nTicks = Math.min(7, points.length);
   const tickIdx = Array.from({ length: nTicks }, (_, i) =>
     Math.round((i / Math.max(nTicks - 1, 1)) * (points.length - 1)));
 
-  const final = vals[vals.length - 1];
-  const maxDD = Math.max(...vals.map((v, i) => (peaks[i] - v) / peaks[i])) * 100;
-
-  return (
-    <div>
-      <div className="flex flex-wrap gap-4 text-xs mb-2">
-        <span className="text-slate-400">Start <b className="text-slate-200">{fmtInrCompact(capital)}</b></span>
-        <span className="text-slate-400">End <b className="text-emerald-300">{fmtInrCompact(final)}</b></span>
-        <span className="text-slate-400">Peak <b className="text-slate-200">{fmtInrCompact(Math.max(...vals))}</b></span>
-        <span className="text-slate-400">Max drawdown <b className="text-rose-300">−{maxDD.toFixed(1)}%</b></span>
-      </div>
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="w-full h-64">
-        {yTicks.map((v, i) => (
-          <g key={i}>
-            <line x1={M.left} y1={y(v)} x2={W - M.right} y2={y(v)} stroke="#334155" strokeWidth="1" strokeDasharray="3,3" />
-            <text x={M.left - 8} y={y(v) + 3} fontSize="10" fill="#94a3b8" textAnchor="end">{fmtInrCompact(v)}</text>
-          </g>
-        ))}
-        {/* starting capital — the line the book must stay above to have made money */}
-        <line x1={M.left} y1={y(capital)} x2={W - M.right} y2={y(capital)} stroke="#64748b" strokeWidth="1.5" />
-        <text x={M.left + 4} y={y(capital) - 4} fontSize="9" fill="#94a3b8">start</text>
-        <path d={band} fill="#f43f5e" opacity="0.13" />
-        <path d={peakLine} fill="none" stroke="#475569" strokeWidth="1" strokeDasharray="4,3" />
-        <path d={line} fill="none" stroke="#34d399" strokeWidth="1.8" />
-        {tickIdx.map((idx, i) => (
-          <text key={i} x={x(idx)} y={H - 10} fontSize="9" fill="#94a3b8" textAnchor="middle">
-            {String(points[idx].date).slice(0, 7)}
-          </text>
-        ))}
-      </svg>
-      <div className="text-[11px] text-slate-500 mt-1">
-        Green = account equity. Dashed = running high-water mark. Shaded = drawdown.
-        Sampled weekly.
-      </div>
-    </div>
-  );
-}
-
-// View modes for the equity chart (2026-08-17 refactor). The audit showed
-// realized-only equity hides ~half the true drawdown, so the chart must be
-// able to show the LEVEL including open-position marks, not just flows.
-//   mtm      — capital + cumulative realized + unrealized (account level)
-//   realized — capital + cumulative realized only (cash view)
-//   flows    — the original 4-series flow chart (realized/unrealized as flows)
-// Drawdown overlay: % below running peak of the active level series.
-const EQ_MODES = [
-  { id: 'mtm', label: 'MtM total equity' },
-  { id: 'realized', label: 'Realized-only' },
-  { id: 'flows', label: 'Flows (legacy)' },
-];
-
-function LevelEquityChart({ points, capital, mode, showDD }) {
-  const [tip, setTip] = useState(null);
-  // The quant track IS the whole book for single-track strategies
-  // (WEEKLY_BREAKOUT/INDEX_TF write quant_rank=1 on every trade). Summing
-  // quant+AI would double-count symbols picked by both tracks on BREAKOUT
-  // runs, so the level view is defined on the quant series alone.
-  const vals = points.map((p) => capital + (p.quantRealizedCumPnl ?? 0)
-    + (mode === 'mtm' ? (p.quantUnrealizedPnl ?? 0) : 0));
-  const W = 760, H = 260;
-  const M = { top: 24, right: 46, bottom: 30, left: 74 };
-  const plotW = W - M.left - M.right, plotH = H - M.top - M.bottom;
-  const { ticks: yTicks, min: yMin, max: yMax } =
-    niceTicks(Math.min(capital, ...vals), Math.max(capital, ...vals), 5);
-  const yRange = yMax - yMin || 1;
-  const x = (i) => M.left + (i / Math.max(points.length - 1, 1)) * plotW;
-  const y = (v) => M.top + plotH - ((v - yMin) / yRange) * plotH;
-
-  let peak = -Infinity;
-  const peaks = vals.map((v) => (peak = Math.max(peak, v)));
-  const dds = vals.map((v, i) => (peaks[i] > 0 ? (peaks[i] - v) / peaks[i] * 100 : 0));
-  const maxDD = Math.max(...dds);
-  const yDD = (d) => M.top + (d / Math.max(maxDD, 1)) * plotH * 0.85; // 0 at top
-
-  const line = vals.map((v, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(v)}`).join(' ');
-  const ddLine = dds.map((d, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${yDD(d)}`).join(' ');
-  const nT = Math.min(6, points.length);
-  const tIdx = Array.from({ length: nT }, (_, i) => Math.round((i / Math.max(nT - 1, 1)) * (points.length - 1)));
-
-  const onMove = (e) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const fx = ((e.clientX - rect.left) / rect.width) * W;
-    let i = Math.round(((fx - M.left) / plotW) * (points.length - 1));
-    i = Math.max(0, Math.min(points.length - 1, i));
-    setTip({ i,
-      leftPx: (x(i) / W) * rect.width,
-      flip: x(i) > W * 0.72,
-      wrapW: rect.width });
+  const onMove = (ev) => {
+    const r = boxRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const fx = (ev.clientX - r.left) / r.width;
+    const i = Math.max(0, Math.min(points.length - 1,
+      Math.round((((fx * W) - M.l) / pw) * (points.length - 1))));
+    setTip({ i, left: Math.min(ev.clientX - r.left + 12, r.width - 175),
+      top: Math.max(6, ev.clientY - r.top - 56) });
   };
 
   return (
-    <div className="relative">
-      <div className="flex flex-wrap gap-4 text-xs mb-2">
-        <span className="text-slate-400">End <b className="text-emerald-300">{fmtInrCompact(vals[vals.length - 1])}</b></span>
-        <span className="text-slate-400">Peak <b className="text-slate-200">{fmtInrCompact(Math.max(...vals))}</b></span>
-        <span className="text-slate-400">Max DD (daily curve est.) <b className="text-rose-300">−{maxDD.toFixed(1)}%</b>
-          {mode === 'realized' && <i className="text-slate-500"> (realized-only — understates true DD)</i>}
-          {mode === 'mtm' && <i className="text-slate-500"> — official figure is the weekly-MtM number in the KPI bar / run list</i>}
-        </span>
-      </div>
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="w-full h-64 cursor-crosshair"
-        onMouseMove={onMove} onMouseLeave={() => setTip(null)}>
-        {yTicks.map((v, i) => (
-          <g key={i}>
-            <line x1={M.left} y1={y(v)} x2={W - M.right} y2={y(v)} stroke="#334155" strokeWidth="1" strokeDasharray="3,3" />
-            <text x={M.left - 8} y={y(v) + 3} fontSize="10" fill="#94a3b8" textAnchor="end">{fmtInrCompact(v)}</text>
-          </g>
-        ))}
-        <line x1={M.left} y1={y(capital)} x2={W - M.right} y2={y(capital)} stroke="#64748b" strokeWidth="1.5" />
-        <text x={M.left + 4} y={y(capital) - 4} fontSize="9" fill="#94a3b8">start</text>
-        {showDD && <path d={ddLine} fill="none" stroke="#f43f5e" strokeWidth="1.4" opacity="0.75" />}
-        <path d={line} fill="none" stroke={mode === 'mtm' ? '#34d399' : '#38bdf8'} strokeWidth="1.8" />
-        {tip && (
-          <g>
-            <line x1={x(tip.i)} y1={M.top} x2={x(tip.i)} y2={H - M.bottom} stroke="#94a3b8" strokeWidth="1" strokeDasharray="3,2" />
-            <circle cx={x(tip.i)} cy={y(vals[tip.i])} r="3.5" fill={mode === 'mtm' ? '#34d399' : '#38bdf8'} stroke="#0f172a" strokeWidth="1.5" />
-          </g>
-        )}
-        {showDD && (
-          <text x={W - M.right + 4} y={M.top + 8} fontSize="9" fill="#f43f5e">DD%</text>
-        )}
-        {tIdx.map((idx, i) => (
-          <text key={i} x={x(idx)} y={H - 10} fontSize="9" fill="#94a3b8" textAnchor="middle">
-            {String(points[idx].date).slice(0, 7)}
-          </text>
-        ))}
-      </svg>
-      {tip && (() => {
-        const pnt = points[tip.i];
-        const eq = vals[tip.i];
-        return (
-          <div className="absolute z-10 pointer-events-none bg-slate-800 border border-slate-600 rounded px-2.5 py-1.5 text-[11px] leading-4 text-slate-200 shadow-lg whitespace-nowrap"
-            style={{ left: tip.flip ? tip.leftPx - 190 : tip.leftPx + 12, top: 42 }}>
-            <div className="font-semibold text-slate-100">{pnt.date}</div>
-            <div>equity: <span className="text-emerald-300">{fmtInrCompact(eq)}</span></div>
-            <div>realized cum: {fmtInrCompact((pnt.quantRealizedCumPnl ?? 0))}</div>
-            <div>unrealized: {fmtInrCompact((pnt.quantUnrealizedPnl ?? 0))}</div>
-            <div>drawdown: <span className="text-rose-300">−{dds[tip.i].toFixed(1)}%</span> <span className="text-slate-400">(peak {fmtInrCompact(peaks[tip.i])})</span></div>
-          </div>
-        );
-      })()}
-      <div className="text-[11px] text-slate-500 mt-1">
-        {mode === 'mtm'
-          ? 'Green = account level incl. open positions marked to market.'
-          : 'Blue = cash equity from closed trades only.'}
-        {showDD && ' Red = % below running peak (own scale, 0 at top).'}
-        {' Hover the chart for day-level detail.'}
-      </div>
-    </div>
-  );
-}
-
-function EquityCurve({ points, capital }) {
-  const [mode, setMode] = useState('mtm');
-  const [showDD, setShowDD] = useState(false);
-  const [showRealized, setShowRealized] = useState(true);
-  const [showUnrealized, setShowUnrealized] = useState(true);
-  const [tooltip, setTooltip] = useState(null);
-
-  if (!points.length) return <div className="text-sm text-slate-500 py-8 text-center">No trade activity yet.</div>;
-
-  const modeBar = (
-    <div className="flex flex-wrap items-center gap-2 mb-2">
-      {EQ_MODES.map((m) => (
-        <button key={m.id} type="button" onClick={() => setMode(m.id)}
-          className={`px-2 py-1 text-[11px] rounded border ${mode === m.id
-            ? 'bg-emerald-700/60 border-emerald-500 text-white'
-            : 'bg-slate-800 border-slate-600 text-slate-300 hover:text-white'}`}>
-          {m.label}
-        </button>
-      ))}
-      {mode !== 'flows' && (
-        <label className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer select-none ml-2">
-          <input type="checkbox" checked={showDD} onChange={(e) => setShowDD(e.target.checked)}
-            className="accent-rose-500" />
+    <div>
+      <div className="chart-head">
+        <label className="check">
+          <input type="checkbox" checked={showDD} onChange={(e) => setShowDD(e.target.checked)} />
           Drawdown % overlay
         </label>
-      )}
-    </div>
-  );
-
-  if (mode !== 'flows') {
-    return (
-      <div>
-        {modeBar}
-        <LevelEquityChart points={points} capital={capital} mode={mode} showDD={showDD} />
       </div>
-    );
-  }
-
-  const visible = SERIES.filter((s) =>
-    (s.group === 'realized' && showRealized) || (s.group === 'unrealized' && showUnrealized));
-
-  const W = 760, H = 260;
-  const M = { top: 28, right: 16, bottom: 30, left: 68 };
-  const plotW = W - M.left - M.right, plotH = H - M.top - M.bottom;
-
-  const all = points.flatMap((p) => visible.map((s) => p[s.key])).filter((v) => v != null);
-  const dataMin = Math.min(0, ...all, 0), dataMax = Math.max(0, ...all, 0);
-  const { ticks: yTicks, min: yMin, max: yMax } = niceTicks(dataMin, dataMax, 5);
-  const yRange = yMax - yMin || 1;
-
-  const x = (i) => M.left + (i / Math.max(points.length - 1, 1)) * plotW;
-  const y = (v) => M.top + plotH - ((v - yMin) / yRange) * plotH;
-  const path = (key) => points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i)} ${y(p[key] ?? 0)}`).join(' ');
-
-  const xTickCount = Math.min(6, points.length);
-  const xTickIdx = Array.from({ length: xTickCount }, (_, i) =>
-    Math.round((i / Math.max(xTickCount - 1, 1)) * (points.length - 1)));
-
-  const handleMouseMove = (e) => {
-    const svg = e.currentTarget;
-    const rect = svg.getBoundingClientRect();
-    const px = (e.clientX - rect.left) / rect.width * W;
-    const idx = Math.round((px - M.left) / plotW * (points.length - 1));
-    if (idx >= 0 && idx < points.length) {
-      const p = points[idx];
-      const values = visible.map((s) => ({ label: s.label, value: p[s.key] })).filter((v) => v.value != null);
-      setTooltip({ idx, x: px, y: e.clientY - rect.top, ...p, values });
-    }
-  };
-
-  return (
-    <div>
-      {modeBar}
-      <div className="flex flex-wrap items-center gap-4 mb-2">
-        <label className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer select-none">
-          <input type="checkbox" checked={showRealized} onChange={(e) => setShowRealized(e.target.checked)}
-            className="accent-emerald-500" />
-          Realized
-        </label>
-        <label className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer select-none">
-          <input type="checkbox" checked={showUnrealized} onChange={(e) => setShowUnrealized(e.target.checked)}
-            className="accent-emerald-500" />
-          Unrealized
-        </label>
+      <div className="chart-legend" style={{ marginBottom: 6 }}>
+        <span><i style={{ background: 'var(--c-line)' }} />Account equity</span>
+        <span><i style={{ background: 'var(--c-hwm)' }} />High-water mark</span>
+        {showDD && <span><i style={{ background: 'var(--loss)', opacity: 0.6 }} />Underwater</span>}
+        <span className="tert">Start <b className="mono" style={{ color: 'var(--ink-muted)' }}>{fmtInrCompact(capital)}</b></span>
+        <span className="tert">Peak <b className="mono" style={{ color: 'var(--ink-muted)' }}>{fmtInrCompact(peak)}</b></span>
+        <span className="tert">End <b className="mono g">{fmtInrCompact(final)}</b></span>
+        <span className="tert">Max DD <b className="mono l">−{maxDD.toFixed(1)}%</b></span>
       </div>
+      <div className="chartbox" ref={boxRef}>
+        <svg viewBox={`0 0 ${W} ${H}`} role="img"
+          aria-label={`Account equity from ${fmtInrCompact(capital)} to ${fmtInrCompact(final)}, maximum drawdown ${maxDD.toFixed(1)} percent`}
+          onMouseMove={onMove} onMouseLeave={() => setTip(null)}>
+          <defs>
+            <linearGradient id="btx-eqf" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--c-line)" stopOpacity="var(--c-fill)" />
+              <stop offset="100%" stopColor="var(--c-line)" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          {ticks.map((v, i) => (
+            <g key={i}>
+              <line x1={M.l} y1={y(v)} x2={W - M.r} y2={y(v)} stroke="var(--c-grid)" strokeDasharray="3,3" />
+              <text x={M.l - 8} y={y(v) + 3.5} fill="var(--c-axis)" fontSize="10"
+                fontFamily="JetBrains Mono, monospace" textAnchor="end">{fmtInrCompact(v)}</text>
+            </g>
+          ))}
+          <line x1={M.l} y1={y(capital)} x2={W - M.r} y2={y(capital)} stroke="var(--c-hwm)" strokeWidth="1.4" />
+          <text x={M.l + 5} y={y(capital) - 5} fill="var(--c-axis)" fontSize="9"
+            fontFamily="JetBrains Mono, monospace">start {fmtInrCompact(capital)}</text>
+          <path d={`${line} L${xi(points.length - 1).toFixed(1)},${(M.t + eqH).toFixed(1)} L${M.l},${(M.t + eqH).toFixed(1)} Z`} fill="url(#btx-eqf)" />
+          <path d={peakLine} fill="none" stroke="var(--c-hwm)" strokeWidth="1" strokeDasharray="4,3" />
+          <path d={line} fill="none" stroke="var(--c-line)" strokeWidth="1.8" strokeLinejoin="round" />
+          <circle cx={xi(points.length - 1)} cy={y(final)} r="3.4" fill="var(--c-line)" />
+          <text x={xi(points.length - 1) - 8} y={y(final) - 9} fill="var(--ink)" fontSize="11"
+            fontFamily="JetBrains Mono, monospace" textAnchor="end">{fmtInrCompact(final)}</text>
 
-      {!visible.length ? (
-        <div className="text-sm text-slate-500 py-8 text-center">Toggle Realized or Unrealized to see the curve.</div>
-      ) : (
-        <div className="relative">
-          <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="w-full h-64 cursor-crosshair"
-            onMouseMove={handleMouseMove} onMouseLeave={() => setTooltip(null)}>
-            {/* Y gridlines + ₹ / % labels — values are "nice" round steps, not raw min/max fractions */}
-            {yTicks.map((v, i) => (
-              <g key={i}>
-                <line x1={M.left} y1={y(v)} x2={W - M.right} y2={y(v)}
-                  stroke="#334155" strokeWidth="1" strokeDasharray={Math.abs(v) < 1e-6 ? '0' : '3,3'} />
-                <text x={M.left - 8} y={y(v) + 3} fontSize="10" fill="#94a3b8" textAnchor="end">
-                  {fmtInrCompact(v)}
-                </text>
-                {capital ? (
-                  <text x={W - M.right + 4} y={y(v) + 3} fontSize="9" fill="#64748b" textAnchor="start">
-                    {((v / capital) * 100).toFixed(1)}%
-                  </text>
-                ) : null}
-              </g>
-            ))}
-            {/* X date labels */}
-            {xTickIdx.map((idx) => (
-              <text key={idx} x={x(idx)} y={H - M.bottom + 16} fontSize="10" fill="#94a3b8" textAnchor="middle">
-                {fmtAxisDate(points[idx].date)}
-              </text>
-            ))}
-            {visible.map((s) => (
-              <path key={s.key} d={path(s.key)} fill="none" stroke={s.color} strokeWidth="2"
-                strokeDasharray={s.dash} />
-            ))}
-            {visible.map((s, i) => (
-              <text key={s.key} x={M.left + i * 110} y={16} fontSize="10" fill={s.color}>
-                {s.dash === '0' ? '●' : '- -'} {s.label}
-              </text>
-            ))}
-          </svg>
-          {tooltip && (
-            <div className="absolute bg-slate-950 border border-slate-600 rounded px-3 py-2 text-xs text-slate-200 pointer-events-none z-10"
-              style={{ left: `${Math.min(tooltip.x + 10, W - 150)}px`, top: `${tooltip.y - 40}px` }}>
-              <div className="font-semibold text-slate-100">{tooltip.date}</div>
-              {tooltip.values.map((v, i) => (
-                <div key={i} className="text-slate-300">
-                  {v.label}: <span className={v.value > 0 ? 'text-emerald-400' : 'text-red-400'}>{fmtInr(v.value)}</span>
-                </div>
-              ))}
-            </div>
+          {showDD && (
+            <>
+              <line x1={M.l} y1={ddTop} x2={W - M.r} y2={ddTop} stroke="var(--hair-strong)" />
+              <path d={`${ddLine} L${xi(points.length - 1).toFixed(1)},${ddTop} L${M.l},${ddTop} Z`}
+                fill="var(--loss)" fillOpacity="0.2" />
+              <path d={ddLine} fill="none" stroke="var(--loss)" strokeWidth="1.1" />
+              <circle cx={xi(trough)} cy={yd(maxDD)} r="3" fill="var(--loss)" />
+              <text x={M.l - 8} y={ddTop + 4} fill="var(--c-axis)" fontSize="10"
+                fontFamily="JetBrains Mono, monospace" textAnchor="end">0%</text>
+              <text x={M.l - 8} y={ddTop + DDH + 4} fill="var(--c-axis)" fontSize="10"
+                fontFamily="JetBrains Mono, monospace" textAnchor="end">−{maxDD.toFixed(1)}%</text>
+              <text x={xi(trough) + 7} y={yd(maxDD) - 4} fill="var(--loss)" fontSize="10"
+                fontFamily="JetBrains Mono, monospace">{String(points[trough]?.date ?? '').slice(0, 7)}</text>
+            </>
           )}
-        </div>
-      )}
+
+          {tickIdx.map((idx) => (
+            <text key={idx} x={xi(idx)} y={H - 10} fill="var(--c-axis)" fontSize="10"
+              fontFamily="JetBrains Mono, monospace" textAnchor="middle">
+              {String(points[idx]?.date ?? '').slice(0, 7)}
+            </text>
+          ))}
+        </svg>
+        {tip && (
+          <div className="tip" style={{ left: tip.left, top: tip.top }}>
+            <b>{points[tip.i]?.date}</b><br />
+            equity <b>{fmtInrCompact(vals[tip.i])}</b><br />
+            underwater <span className="l">−{dds[tip.i].toFixed(1)}%</span>
+          </div>
+        )}
+      </div>
+      <p className="tert" style={{ fontSize: 11, margin: '6px 2px 4px' }}>{footNote}</p>
     </div>
   );
 }
 
-const fmtPct = (n) => (n == null ? '' : ` (${n > 0 ? '+' : ''}${n.toFixed(1)}%)`);
-const round1 = (n) => Math.round(n * 10) / 10;
-
-function KpiCard({ title, stats, color, capital }) {
-  const totalWithOpen = (stats.totalPnl || 0) + (stats.unrealizedPnl || 0);
-  const totalPct = capital ? round1((totalWithOpen / capital) * 100) : null;
+/* ═══════════════════════════════════════════════════════════════════════
+   Summary
+   ═══════════════════════════════════════════════════════════════════ */
+function Kpi({ label, value, tone, hint }) {
   return (
-    <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-4">
-      <div className={`text-sm font-semibold mb-2 ${color}`}>{title}</div>
-      <div className="grid grid-cols-2 gap-3">
-        <div><div className="text-lg font-bold text-slate-100">{stats.count}</div><div className="text-[10px] text-slate-400 uppercase">Closed trades</div></div>
-        <div><div className="text-lg font-bold text-slate-100">{stats.winRate}%</div><div className="text-[10px] text-slate-400 uppercase">Win rate</div></div>
+    <div className="kpi">
+      <div className={`v ${tone || ''}`}>{value}</div>
+      <div className="k">{label}</div>
+      {hint ? <div className="h">{hint}</div> : null}
+    </div>
+  );
+}
+function Stat({ label, value, tone, hint, help }) {
+  return (
+    <div className="stat" title={help}>
+      <div className={`v ${tone || ''}`}>{value}</div>
+      <div className="k">{label}</div>
+      {hint ? <div className="h">{hint}</div> : null}
+    </div>
+  );
+}
+
+function KpiBar({ run, summary }) {
+  const cagr = getCagr(run), dd = getMaxDD(run);
+  const winRate = summary?.quant?.count ? summary.quant.winRate : null;
+  return (
+    <div className="kpis">
+      <Kpi label="CAGR" value={fmtCagr(cagr, isShortWindow(run))} hint="mark-to-market weekly"
+        tone={(cagr ?? 0) >= 0 ? 'g' : 'l'} />
+      <Kpi label="True MtM MaxDD" value={fmtMaxDD(dd)} tone="l" hint="what you sit through" />
+      <Kpi label="Max underwater" value={fmtUwMonths(getMaxUwDays(run))} tone="w" hint="longest time below a prior peak" />
+      <Kpi label="Calmar" value={calmar(run) === -Infinity ? '—' : calmar(run).toFixed(2)} hint="CAGR ÷ MaxDD" />
+      <Kpi label="Win rate" value={winRate != null ? `${winRate}%` : '—'} tone="i"
+        hint={summary?.quant?.count ? `${summary.quant.count.toLocaleString('en-IN')} closed` : undefined} />
+    </div>
+  );
+}
+
+function TrackStats({ title, stats, tone, capital }) {
+  const totalWithOpen = (stats.totalPnl || 0) + (stats.unrealizedPnl || 0);
+  const totalPct = capital ? (totalWithOpen / capital) * 100 : null;
+  return (
+    <section className="panel" style={{ padding: '12px 14px' }}>
+      <div className={`eyebrow ${tone}`} style={{ marginBottom: 8 }}>{title}</div>
+      <div className="stats" style={{ border: 'none', background: 'transparent', gap: 10 }}>
+        <div><div className="v">{stats.count}</div><div className="k">Closed trades</div></div>
+        <div><div className="v">{stats.winRate}%</div><div className="k">Win rate</div></div>
         <div>
-          <div className={`text-lg font-bold ${pnlColor(stats.totalPnl)}`}>{fmtInr(stats.totalPnl)}<span className="text-sm">{fmtPct(stats.totalPnlPct)}</span></div>
-          <div className="text-[10px] text-slate-400 uppercase">Realized P&amp;L (net)</div>
+          <div className={`v ${pnlCls(stats.totalPnl)}`}>{fmtInr(stats.totalPnl)}</div>
+          <div className="k">Realized P&amp;L (net)</div>
           {!!stats.costDrag && (
-            <div className="text-[10px] text-slate-500">gross {fmtInr(stats.totalGrossPnl)} · costs −{fmtInr(stats.costDrag)}</div>
+            <div className="h">gross {fmtInrCompact(stats.totalGrossPnl)} · costs −{fmtInrCompact(stats.costDrag)}</div>
           )}
         </div>
-        <div><div className="text-lg font-bold text-slate-100">{fmtR(stats.avgR)}</div><div className="text-[10px] text-slate-400 uppercase">Avg R</div></div>
+        <div><div className="v">{fmtR(stats.avgR)}</div><div className="k">Avg R</div></div>
         <div>
-          <div className={`text-lg font-bold ${pnlColor(stats.unrealizedPnl)}`}>{fmtInr(stats.unrealizedPnl)}<span className="text-sm">{fmtPct(stats.unrealizedPnlPct)}</span></div>
-          <div className="text-[10px] text-slate-400 uppercase">Unrealized ({stats.openPositionCount ?? 0} open)</div>
+          <div className={`v ${pnlCls(stats.unrealizedPnl)}`}>{fmtInr(stats.unrealizedPnl)}</div>
+          <div className="k">Unrealized ({stats.openPositionCount ?? 0} open)</div>
         </div>
         <div>
-          <div className="text-lg font-bold text-amber-300">{fmtInr(stats.maxDrawdown)}</div>
-          <div className="text-[10px] text-slate-400 uppercase">
-            Realized-only DD{stats.maxDrawdownPct != null ? ` (−${stats.maxDrawdownPct.toFixed(1)}%)` : ''} — excl. open-position marks
-          </div>
+          <div className="v w">{fmtInr(stats.maxDrawdown)}</div>
+          <div className="k">Realized-only DD{stats.maxDrawdownPct != null ? ` (−${stats.maxDrawdownPct.toFixed(1)}%)` : ''}</div>
         </div>
         <div>
-          <div className={`text-lg font-bold ${stats.cagrPct == null ? 'text-slate-500' : stats.cagrPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+          <div className={`v ${stats.cagrPct == null ? 'tert' : stats.cagrPct >= 0 ? 'g' : 'l'}`}>
             {stats.cagrPct == null ? '—' : `${stats.cagrPct.toFixed(1)}%`}
           </div>
-          <div className="text-[10px] text-slate-400 uppercase">CAGR</div>
+          <div className="k">CAGR</div>
         </div>
-        <div className="col-span-2">
-          <div className="text-lg font-bold text-slate-100">{fmtInr(stats.deployed)}</div>
-          <div className="text-[10px] text-slate-400 uppercase">Capital deployed (open positions)</div>
-        </div>
-        <div className="col-span-2 pt-1 border-t border-slate-800">
-          <div className={`text-lg font-bold ${pnlColor(totalWithOpen)}`}>{fmtInr(totalWithOpen)}<span className="text-sm">{fmtPct(totalPct)}</span></div>
-          <div className="text-[10px] text-slate-400 uppercase">Total P&amp;L (realized + unrealized)</div>
+        <div><div className="v">{fmtInr(stats.deployed)}</div><div className="k">Capital deployed</div></div>
+        <div>
+          <div className={`v ${pnlCls(totalWithOpen)}`}>{fmtInr(totalWithOpen)} <span className="tert">{fmtPctS(totalPct)}</span></div>
+          <div className="k">Total P&amp;L (realized + unrealized)</div>
         </div>
       </div>
-    </div>
-  );
-}
-
-// Horizontal primary-KPI bar — the five numbers that decide whether a run is
-// worth opening, in one row. Values come from the run row (MtM path stats via
-// runMetrics fallbacks) + the summary (win rate).
-function KpiBar({ run, summary }) {
-  const winRate = summary?.quant?.count ? summary.quant.winRate : null;
-  const items = [
-    { label: 'CAGR', value: fmtCagr(getCagr(run)), tone: (getCagr(run) ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-400' },
-    { label: 'True MtM MaxDD', value: fmtMaxDD(getMaxDD(run)), tone: 'text-rose-300' },
-    { label: 'Max underwater', value: fmtUwMonths(getMaxUwDays(run)), tone: 'text-amber-300' },
-    { label: 'Calmar', value: (getCagr(run) != null && getMaxDD(run)) ? (getCagr(run) / Math.abs(getMaxDD(run))).toFixed(2) : '—', tone: 'text-slate-100' },
-    { label: 'Win rate', value: winRate != null ? `${winRate}%` : '—', tone: 'text-sky-300' },
-  ];
-  return (
-    <div className="flex flex-wrap items-stretch divide-x divide-slate-700 bg-slate-900/70 border border-slate-700 rounded-lg overflow-hidden">
-      {items.map((it) => (
-        <div key={it.label} className="flex-1 min-w-[110px] px-3 py-2 text-center">
-          <div className={`text-base font-bold tabular-nums ${it.tone}`}>{it.value}</div>
-          <div className="text-[9px] text-slate-400 uppercase tracking-wide">{it.label}</div>
-        </div>
-      ))}
-    </div>
+    </section>
   );
 }
 
 function RunSummary({ run, runId, status }) {
   const [summary, setSummary] = useState(null);
   const [error, setError] = useState('');
+  const [mode, setMode] = useState('mtm');
 
   useEffect(() => {
     let alive = true;
-    // Refetch on `status` transitions too (e.g. RUNNING -> COMPLETED), not
-    // just when runId itself changes — otherwise a summary fetched while a
-    // run was still RUNNING (mostly blank/zero) sits stale in state forever
-    // once the run finishes, since the runId prop never changed. Previously
-    // this only refreshed on remount (switching tabs away and back).
+    setSummary(null);
     getBacktestSummary(runId).then((s) => alive && setSummary(s)).catch((e) => alive && setError(e.message));
     return () => { alive = false; };
   }, [runId, status]);
 
-  if (error) return <div className="text-sm text-red-300">{error}</div>;
-  if (!summary) return <div className="text-sm text-slate-400">Loading summary…</div>;
+  if (error) return <div className="errbar">{error}</div>;
+  if (!summary) return <div className="empty">Loading summary…</div>;
 
   const pf = summary.portfolio;
+  const cap = summary.capital;
+  const totalPct = cap && pf ? (pf.totalPnl / cap) * 100 : null;
+
+  // Which series the chart draws. A PORTFOLIO run has the engine's own daily
+  // mark-to-market; everything else is rebuilt from cumulative trade flows.
+  const hasLevel = !!summary.portfolioEquity?.length;
+  const points = hasLevel ? summary.portfolioEquity : (summary.equityCurve || []);
+  const levelOf = hasLevel
+    ? (p) => p.equity
+    : (p) => cap + (p.quantRealizedCumPnl ?? 0) + (p.aiRealizedCumPnl ?? 0)
+             + (mode === 'mtm' ? (p.quantUnrealizedPnl ?? 0) + (p.aiUnrealizedPnl ?? 0) : 0);
+  const foot = hasLevel
+    ? 'Engine mark-to-market. Dashed = running high-water mark; the panel below is percent under it. Sampled weekly.'
+    : mode === 'mtm'
+      ? 'Account level including open-position marks. Dashed = running high-water mark; the panel below is percent under it.'
+      : 'Cash view — capital plus banked P&L only. Hides roughly half the true drawdown; that is why MtM is the default.';
 
   return (
-    <div className="space-y-4">
+    <div className="stack">
       {run && <KpiBar run={run} summary={summary} />}
+
+      <section className="panel chartcard">
+        <div className="chart-head">
+          <h3>{hasLevel ? 'Account equity' : 'Equity curve'}</h3>
+          {!hasLevel && (
+            <div className="seg" role="group" aria-label="Equity view mode">
+              {EQ_MODES.map(([id, label]) => (
+                <button key={id} type="button" aria-pressed={mode === id} onClick={() => setMode(id)}>{label}</button>
+              ))}
+            </div>
+          )}
+        </div>
+        <EquityChart key={`${runId}-${mode}-${hasLevel}`} points={points} capital={cap}
+          levelOf={levelOf} footNote={foot} />
+      </section>
+
       {pf ? (
-        /* A continuous book is judged on the PATH, so lead with CAGR and
-           drawdown. The quant/AI split below does not apply to it — it is one
-           undivided book — and showing an always-empty "AI track" card next to
-           it was pure noise. */
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
-            <Stat label="CAGR" size="lg" tone={pf.cagrPct >= 0 ? 'good' : 'bad'} help={HELP.cagr}
-              value={`${pf.cagrPct.toFixed(1)}%${pf.shortWindow ? '*' : ''}`}
-              hint={pf.shortWindow ? 'annualised from <2 yrs — not comparable' : undefined} />
-            <Stat label="Max drawdown" size="lg" tone="bad" help={HELP.maxDD}
-              value={`−${pf.maxDDPct.toFixed(1)}%`}
-              hint="what you must sit through" />
-            <Stat label="Total P&L" size="lg" tone={pf.totalPnl >= 0 ? 'good' : 'bad'} help={HELP.total}
-              value={fmtInr(pf.totalPnl)}
-              hint={`ends at ${fmtInr(pf.finalEquity)}`} />
-            <Stat label="Martin ratio" size="lg" help={HELP.martin}
-              value={pf.martin.toFixed(2)} hint="return ÷ time-weighted pain" />
-          </div>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
-            <Stat label="Worst 12 months" tone="warn" help={HELP.worst12m}
-              value={`${pf.worst12mPct.toFixed(1)}%`} />
-            <Stat label="Ulcer index" help={HELP.ulcer} value={pf.ulcer.toFixed(2)} />
-            <Stat label="Turnover / yr" help={HELP.turnover} value={`${pf.turnoverPerYr.toFixed(2)}×`} />
-            <Stat label="Closed trades" help={HELP.trades}
-              value={summary.quant?.count ?? '—'}
+          <div className="stats">
+            <Stat label="Worst 12 months" value={`${pf.worst12mPct.toFixed(1)}%`} tone="l" help={HELP.worst12m} />
+            <Stat label="Ulcer index" value={pf.ulcer.toFixed(2)} help={HELP.ulcer} />
+            <Stat label="Martin ratio" value={pf.martin.toFixed(2)} help={HELP.martin} />
+            <Stat label="Turnover / yr" value={`${pf.turnoverPerYr.toFixed(2)}×`} help={HELP.turnover} />
+            <Stat label="Starting capital" value={fmtInrCompact(cap)} help={HELP.capital} />
+            {run?.posTranches > 1 && (
+              <Stat label="Tranches (per book)" value={`${run.posTranches} × ${fmtInrCompact(cap / run.posTranches)}`}
+                hint={run.posPhaseDays ? `base phase ${run.posPhaseDays}` : undefined} />
+            )}
+            <Stat label="Total P&L" value={fmtInrCompact(pf.totalPnl)} tone={pf.totalPnl >= 0 ? 'g' : 'l'}
+              hint={`ends at ${fmtInrCompact(pf.finalEquity)}`} help={HELP.total} />
+            <Stat label="Total P&L % of capital" value={fmtPctS(totalPct)} tone={pf.totalPnl >= 0 ? 'g' : 'l'} />
+            <Stat label="Closed trades" value={summary.quant?.count ?? '—'} help={HELP.trades}
               hint={summary.quant?.winRate != null ? `${summary.quant.winRate}% won` : undefined} />
           </div>
           {pf.shortWindow && (
-            <div className="text-[11px] text-amber-300/90 bg-amber-950/25 border border-amber-800/50 rounded px-3 py-2">
-              ⚠ This run covers under two years and restarts at the initial capital.
-              Its CAGR annualises a single short window, and its P&amp;L cannot be
-              added to — or compared with — the compounded continuous run.
+            <div className="warnbar">
+              ⚠ This run covers under two years and restarts at the initial capital. Its CAGR annualises a
+              single short window, and its P&amp;L cannot be added to — or compared with — the compounded
+              continuous run.
             </div>
           )}
         </>
       ) : (() => {
-        /* AI track auto-hide: WEEKLY_BREAKOUT / INDEX_TF runs never populate
-           the AI track, so its card was a permanently-empty box eating half
-           the row. Hidden when it has zero closed trades AND zero open
-           positions; the quant card then takes the full width. */
         const aiEmpty = !(summary.ai?.count || summary.ai?.openPositionCount);
         return (
-          <div className={`grid grid-cols-1 gap-4 ${aiEmpty ? '' : 'sm:grid-cols-2'}`}>
-            <KpiCard title="📐 Quant track" stats={summary.quant} color="text-sky-300" capital={summary.capital} />
-            {!aiEmpty && (
-              <KpiCard title="🤖 AI track" stats={summary.ai} color="text-purple-300" capital={summary.capital} />
-            )}
+          <div className="daygrid">
+            <TrackStats title="📐 Quant track" stats={summary.quant} tone="q" capital={cap} />
+            {!aiEmpty && <TrackStats title="🤖 AI track" stats={summary.ai} tone="a" capital={cap} />}
           </div>
         );
       })()}
-      <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-3 sm:p-4">
-        <div className="text-sm font-semibold text-slate-200 mb-2">
-          <LabelWithInfo help={summary.portfolioEquity ? HELP.equityChart : undefined}>
-            {summary.portfolioEquity ? 'Account equity' : 'Equity curve'}
-          </LabelWithInfo>
-        </div>
-        {summary.portfolioEquity
-          ? <PortfolioEquity points={summary.portfolioEquity} capital={summary.capital} />
-          : <EquityCurve points={summary.equityCurve} capital={summary.capital} />}
-      </div>
-      {/* Sticky status bar — open-position / deployment numbers stay visible
-          however far the detail panel scrolls, instead of living only at the
-          bottom of a long page. */}
-      <div className="sticky bottom-0 z-20 -mx-1 px-1">
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-300 bg-slate-950/95 backdrop-blur border border-slate-700 rounded-lg px-3 py-2 shadow-lg">
-          <span>Open positions: <b className="text-blue-300">{summary.openCount}</b></span>
-          <span>Pending orders: <b className="text-slate-400">{summary.pendingCount}</b></span>
-          <span>Capital deployed: <b className="text-slate-100">{fmtInr(summary.totalDeployed)}</b> of {fmtInr(summary.capital)}</span>
-        </div>
+
+      <div className="bookbar">
+        <span>Open positions <b className="i">{summary.openCount}</b></span>
+        <span>Pending orders <b className="tert">{summary.pendingCount}</b></span>
+        <span>Capital deployed <b>{fmtInr(summary.totalDeployed)}</b> of <b>{fmtInr(cap)}</b></span>
       </div>
     </div>
   );
 }
 
-// ---------------- Day drill-down ----------------
-
-function TradeMiniRow({ t, extra }) {
+/* ═══════════════════════════════════════════════════════════════════════
+   Day drill-down
+   ═══════════════════════════════════════════════════════════════════ */
+function RankChips({ t }) {
+  if (t.quantRank == null && t.aiRank == null) return <span className="c2">unranked</span>;
   return (
-    <tr className="border-t border-slate-800">
-      <td className="py-1.5 px-3 text-sm text-slate-200">{t.symbol}</td>
-      <td className="py-1.5 px-3 text-xs text-slate-400">
-        {t.quantRank && <span className="text-sky-300 mr-1">Q{t.quantRank}</span>}
-        {t.aiRank && <span className="text-purple-300">AI{t.aiRank}</span>}
-      </td>
-      <td className={`py-1.5 px-3 text-sm ${TRADE_STATUS_COLOR[t.status]}`}>{t.status}</td>
-      <td className="py-1.5 px-3 text-sm text-slate-300">{extra}</td>
-    </tr>
+    <span className="rank">
+      {t.quantRank != null && <span className="rk q">Q{t.quantRank}</span>}
+      {t.aiRank != null && <span className="rk a">AI{t.aiRank}</span>}
+    </span>
   );
 }
 
-const addDays = (dateStr, delta) => {
-  const dt = new Date(`${dateStr}T00:00:00Z`);
-  dt.setUTCDate(dt.getUTCDate() + delta);
-  return dt.toISOString().slice(0, 10);
-};
+function DaySection({ title, rows, extra }) {
+  return (
+    <div className="panel">
+      <div className="panel-head"><h2>{title} <span className="tert">({rows.length})</span></h2></div>
+      {rows.length ? (
+        <table className="minitable">
+          <tbody>
+            {rows.map((t) => {
+              const [dot, cls] = TRADE_DOT[t.status] || TRADE_DOT.CLOSED;
+              return (
+                <tr key={t.id}>
+                  <td style={{ color: 'var(--ink)', fontWeight: 500 }}>{t.symbol}</td>
+                  <td style={{ width: 84 }}><RankChips t={t} /></td>
+                  <td><span className={`st ${cls}`}><i style={{ background: dot }} />{t.status}</span></td>
+                  <td className="right">{extra(t)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      ) : <div className="empty">Nothing here.</div>}
+    </div>
+  );
+}
 
 function DayDrilldown({ runId, minDate, maxDate }) {
   const [d, setD] = useState(minDate || '');
@@ -2345,17 +855,15 @@ function DayDrilldown({ runId, minDate, maxDate }) {
 
   useEffect(() => { setD(minDate || ''); }, [runId, minDate]);
 
-  const load = async (day) => {
-    if (!day) return;
+  useEffect(() => {
+    if (!d) return;
+    let alive = true;
     setError('');
-    try {
-      setData(await getBacktestDay(runId, day));
-    } catch (e) {
-      setData(null);
-      setError(e.message);
-    }
-  };
-  useEffect(() => { load(d); }, [d, runId]);
+    getBacktestDay(runId, d)
+      .then((r) => { if (alive) setData(r); })
+      .catch((e) => { if (alive) { setData(null); setError(e.message); } });
+    return () => { alive = false; };
+  }, [d, runId]);
 
   const step = (delta) => {
     if (!d) return;
@@ -2365,121 +873,84 @@ function DayDrilldown({ runId, minDate, maxDate }) {
     setD(next);
   };
 
+  const pctOfAlloc = (t, v) => (t.allocation ? (100 * v) / t.allocation : null);
+
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-2">
-        <label className="text-xs text-slate-400 flex items-center gap-2">
+    <div className="stack">
+      <div className="panel" style={{ padding: '10px 14px', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <label className="check" style={{ color: 'var(--ink-tert)' }}>
           Date
-          <input type="date" value={d} min={minDate} max={maxDate}
-            onChange={(e) => setD(e.target.value)}
-            className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm" />
+          <input className="ctl" type="date" value={d} min={minDate} max={maxDate}
+            onChange={(e) => setD(e.target.value)} />
         </label>
-        <button onClick={() => step(-1)} disabled={!d || (minDate && d <= minDate)}
-          title="Previous day"
-          className="px-2.5 py-1.5 text-sm rounded bg-slate-800 border border-slate-600 text-slate-300 hover:text-white disabled:opacity-40">
-          ← Prev
-        </button>
-        <button onClick={() => step(1)} disabled={!d || (maxDate && d >= maxDate)}
-          title="Next day"
-          className="px-2.5 py-1.5 text-sm rounded bg-slate-800 border border-slate-600 text-slate-300 hover:text-white disabled:opacity-40">
-          Next →
-        </button>
+        <button type="button" className="btn btn-sm" onClick={() => step(-1)}
+          disabled={!d || (minDate && d <= minDate)}>← Prev</button>
+        <button type="button" className="btn btn-sm" onClick={() => step(1)}
+          disabled={!d || (maxDate && d >= maxDate)}>Next →</button>
+        {data && (
+          <span className="eyebrow" style={{ marginLeft: 'auto' }}>
+            {data.ordersFilled.length} filled · {data.closedToday.length} closed · {data.openPositions.length} held
+          </span>
+        )}
       </div>
 
-      {error && <div className="text-sm text-red-300">{error}</div>}
+      {error && <div className="errbar">{error}</div>}
 
       {data && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          <Section title={`Picks (${data.picks.length})`}>
-            {data.picks.map((t) => <TradeMiniRow key={t.id} t={t} extra={fmtInr(t.entryTriggerPrice)} />)}
-          </Section>
-          <Section title={`Orders filled (${data.ordersFilled.length})`}>
-            {data.ordersFilled.map((t) => <TradeMiniRow key={t.id} t={t} extra={fmtInr(t.entryFillPrice)} />)}
-          </Section>
-          <Section title={`Closed today (${data.closedToday.length})`}>
-            {data.closedToday.map((t) => (
-              <TradeMiniRow key={t.id} t={t} extra={
-                <span className={pnlColor(t.realizedPnl)}>{fmtInr(t.realizedPnl)} · {t.exitReason}</span>
-              } />
-            ))}
-          </Section>
-          <Section title={`Open positions (${data.openPositions.length})`}>
-            {data.openPositions.map((t) => (
-              <TradeMiniRow key={t.id} t={t} extra={
-                t.status === 'OPEN'
-                  ? <span className={pnlColor(t.unrealizedPnl)}>{fmtInr(t.unrealizedPnl)} unrealized</span>
-                  : 'resting'
-              } />
-            ))}
-          </Section>
-          <div className="lg:col-span-2 bg-slate-900/60 border border-slate-700 rounded-lg p-4 flex items-center justify-between">
-            <span className="text-sm text-slate-300">Realized P&amp;L to date</span>
-            <span className={`text-lg font-bold ${pnlColor(data.realizedPnlToDate)}`}>{fmtInr(data.realizedPnlToDate)}</span>
+        <>
+          <div className="daygrid">
+            <DaySection title="Picks" rows={data.picks} extra={(t) => fmtInr(t.entryTriggerPrice)} />
+            <DaySection title="Orders filled" rows={data.ordersFilled} extra={(t) => fmtInr(t.entryFillPrice)} />
+            <DaySection title="Closed today" rows={data.closedToday} extra={(t) => (
+              <>
+                <span className={pnlCls(t.realizedPnl)}>{fmtInr(t.realizedPnl)}</span>{' '}
+                <span className={pnlCls(t.realizedPnl)}>{fmtPctS(pctOfAlloc(t, t.realizedPnl))}</span>{' '}
+                <span className="tert">· {t.exitReason}</span>
+              </>
+            )} />
+            <DaySection title="Open positions" rows={data.openPositions} extra={(t) => (
+              t.status === 'OPEN' ? (
+                <>
+                  <span className={pnlCls(t.unrealizedPnl)}>{fmtInr(t.unrealizedPnl)}</span>{' '}
+                  <span className={pnlCls(t.unrealizedPnl)}>{fmtPctS(pctOfAlloc(t, t.unrealizedPnl))}</span>
+                </>
+              ) : <span className="tert">resting</span>
+            )} />
           </div>
-        </div>
+          <div className="panel" style={{ padding: '13px 15px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span className="muted">Realized P&amp;L to date</span>
+            <span className={`n ${pnlCls(data.realizedPnlToDate)}`} style={{ fontSize: 17, fontWeight: 500 }}>
+              {fmtInr(data.realizedPnlToDate)}
+            </span>
+          </div>
+        </>
       )}
     </div>
   );
 }
 
-function Section({ title, children }) {
-  const empty = React.Children.count(children) === 0;
-  return (
-    <div className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-hidden">
-      <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide px-3 py-2 border-b border-slate-800">{title}</div>
-      {empty ? (
-        <div className="text-sm text-slate-500 px-3 py-3">Nothing here.</div>
-      ) : (
-        <table className="w-full"><tbody>{children}</tbody></table>
-      )}
-    </div>
-  );
-}
-
-// ---------------- Trade chart modal ----------------
-
-function TradeChartModal({ runId, trade, onClose }) {
-  if (!trade) return null;
-  return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
-      onClick={onClose}>
-      <div className="bg-slate-900 border border-slate-700 rounded-lg max-w-[95vw] w-full max-h-[95vh] overflow-auto"
-        onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-4 py-2 border-b border-slate-800">
-          <div className="text-sm font-semibold text-slate-200">
-            {trade.symbol} · trade #{trade.id} · {trade.status}
-          </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-white text-sm px-2">✕</button>
-        </div>
-        <img src={backtestTradeChartUrl(runId, trade.id)} alt={`${trade.symbol} chart`}
-          className="w-full h-auto" />
-      </div>
-    </div>
-  );
-}
-
-// ---------------- Trade log ----------------
-
-// Numeric columns the trade log can be sorted by, plus how to read the
-// value off a trade row. Missing values sort as 0 rather than dropping to
-// the bottom regardless of direction (a PENDING trade's null realizedPnl
-// isn't "worse" than a Rs.1 loss, it's just not applicable yet).
-const TRADE_SORT_KEYS = {
-  realizedPnl: (t) => t.realizedPnl ?? 0,
+/* ═══════════════════════════════════════════════════════════════════════
+   Trade log
+   ═══════════════════════════════════════════════════════════════════ */
+// Return % of capital committed — realized for a closed trade, mark-to-market
+// for an open one. This is what the rupee columns cannot tell you: a ₹1.7L gain
+// on ₹3L committed and on ₹12L committed are not the same trade.
+const retPct = (t) => {
+  if (!t.allocation) return null;
+  if (t.realizedPnl != null) return (100 * t.realizedPnl) / t.allocation;
+  if (t.status === 'OPEN' && t.unrealizedPnl != null) return (100 * t.unrealizedPnl) / t.allocation;
+  return null;
+};
+const TRADE_SORT = {
+  realizedPnl: (t) => t.realizedPnl ?? t.unrealizedPnl ?? 0,
   unrealizedPnl: (t) => t.unrealizedPnl ?? 0,
+  returnPct: (t) => retPct(t) ?? 0,
+  rMultiple: (t) => t.rMultiple ?? 0,
+  holdingDays: (t) => t.holdingDays ?? 0,
+  allocation: (t) => t.allocation ?? 0,
+  entryTs: (t) => (t.entryFillDate ? new Date(t.entryFillDate).getTime() : 0),
 };
 
-function SortableTh({ label, sortKey, active, dir, onClick, className = '' }) {
-  return (
-    <th className={`py-1.5 px-2 cursor-pointer select-none whitespace-nowrap hover:text-slate-300 ${className}`}
-      onClick={() => onClick(sortKey)} title="Click to sort">
-      {label}{active ? (dir === 'desc' ? ' ▼' : ' ▲') : ''}
-    </th>
-  );
-}
-
-
-// ---- Trade-log CSV export + scatter (2026-08-20) -------------------------
 const TRADE_CSV_FIELDS = ['symbol','quantRank','aiRank','signalDate','entryFillDate',
   'entryFillPrice','exitDate','exitPrice','exitReason','quantity','allocation',
   'realizedPnl','grossPnl','unrealizedPnl','rMultiple','holdingDays','status'];
@@ -2494,8 +965,7 @@ function exportTradesCsv(rows, runId) {
       const str = String(v);
       return str.includes(',') ? `"${str}"` : str;
     }),
-    (t.allocation > 0 && t.realizedPnl != null)
-      ? ((100 * t.realizedPnl) / t.allocation).toFixed(2) : '',
+    retPct(t) != null ? retPct(t).toFixed(2) : '',
   ].join(','));
   const blob = new Blob([[header, ...lines].join('\n')], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
@@ -2506,14 +976,12 @@ function exportTradesCsv(rows, runId) {
   URL.revokeObjectURL(url);
 }
 
-// Each dot = one CLOSED trade. Axis pairs selectable; hover any dot for the
-// full trade detail. All values are net of costs.
 const fmtScatterInr = (v) => {
   const a = Math.abs(v);
-  if (a >= 1e7) return `\u20b9${(v / 1e7).toFixed(1)}Cr`;
-  if (a >= 1e5) return `\u20b9${(v / 1e5).toFixed(1)}L`;
-  if (a >= 1e3) return `\u20b9${(v / 1e3).toFixed(0)}k`;
-  return `\u20b9${Math.round(v)}`;
+  if (a >= 1e7) return `₹${(v / 1e7).toFixed(1)}Cr`;
+  if (a >= 1e5) return `₹${(v / 1e5).toFixed(1)}L`;
+  if (a >= 1e3) return `₹${(v / 1e3).toFixed(0)}k`;
+  return `₹${Math.round(v)}`;
 };
 const fmtMonth = (ts) => new Date(ts).toISOString().slice(0, 7);
 
@@ -2522,10 +990,10 @@ const SCATTER_PLOTS = {
     x: { k: 'holdingDays', label: 'holding period (days)', fmt: (v) => `${Math.round(v)}d` },
     y: { k: 'returnPct', label: 'return %', fmt: (v) => `${v.toFixed(1)}%`, zero: true } },
   date_ret:  { label: 'Entry date vs Return %',
-    x: { k: 'entryTs', label: 'entry date', fmt: fmtMonth, date: true },
+    x: { k: 'entryTs', label: 'entry date', fmt: fmtMonth },
     y: { k: 'returnPct', label: 'return %', fmt: (v) => `${v.toFixed(1)}%`, zero: true } },
   date_pnl:  { label: 'Entry date vs Realized P&L',
-    x: { k: 'entryTs', label: 'entry date', fmt: fmtMonth, date: true },
+    x: { k: 'entryTs', label: 'entry date', fmt: fmtMonth },
     y: { k: 'realizedPnl', label: 'realized P&L', fmt: fmtScatterInr, zero: true } },
   rank_ret:  { label: 'Entry rank vs Return %',
     x: { k: 'rank', label: 'quant rank at entry', fmt: (v) => `#${Math.round(v)}` },
@@ -2547,93 +1015,131 @@ function TradeScatter({ trades }) {
   const base = useMemo(() => trades
     .filter((t) => t.status === 'CLOSED' && t.allocation > 0 && t.realizedPnl != null)
     .map((t) => ({
-      sym: t.symbol, exit: t.exitReason || '\u2014', rank: t.quantRank,
+      sym: t.symbol, exit: t.exitReason || '—', rank: t.quantRank,
       entryDate: t.entryFillDate, exitDate: t.exitDate,
-      holdingDays: t.holdingDays, allocation: t.allocation,
-      realizedPnl: t.realizedPnl,
+      holdingDays: t.holdingDays, allocation: t.allocation, realizedPnl: t.realizedPnl,
       returnPct: (100 * t.realizedPnl) / t.allocation,
       entryTs: t.entryFillDate ? new Date(t.entryFillDate).getTime() : null,
     })), [trades]);
 
-  const pts = useMemo(() => base.filter(
-    (d) => d[plot.x.k] != null && d[plot.y.k] != null,
-  ), [base, plot]);
-
+  const pts = useMemo(() => base.filter((d) => d[plot.x.k] != null && d[plot.y.k] != null), [base, plot]);
   if (base.length < 3) return null;
 
-  const W = 860, H = 300, L = 56, R = 14, T = 14, B = 36;
+  const W = 900, H = 300, L = 66, R = 16, T = 14, B = 40;
+  const pw = W - L - R, ph = H - T - B;
   const xs = pts.map((d) => d[plot.x.k]), ys = pts.map((d) => d[plot.y.k]);
   let x0 = Math.min(...xs), x1 = Math.max(...xs);
   let y0 = Math.min(...ys), y1 = Math.max(...ys);
   if (plot.y.zero) { y0 = Math.min(y0, 0); y1 = Math.max(y1, 0); }
   if (x1 === x0) x1 = x0 + 1;
   if (y1 === y0) y1 = y0 + 1;
-  const xp = (x1 - x0) * 0.04, yp = (y1 - y0) * 0.06;
-  x0 -= xp; x1 += xp; y0 -= yp; y1 += yp;
-  const sx = (v) => L + ((W - L - R) * (v - x0)) / (x1 - x0);
-  const sy = (v) => T + (H - T - B) * (1 - (v - y0) / (y1 - y0));
-  const xTicks = [0.08, 0.32, 0.56, 0.8].map((f) => x0 + (x1 - x0) * f);
-  const yTicks = [0.15, 0.4, 0.65, 0.9].map((f) => y0 + (y1 - y0) * f);
-  const winKey = plot.y.zero ? plot.y.k : 'returnPct';
-  const wins = pts.filter((d) => d[winKey] > 0).length;
+  const px = (x1 - x0) * 0.04, py = (y1 - y0) * 0.07;
+  x0 -= px; x1 += px; y0 -= py; y1 += py;
+  const sx = (v) => L + (pw * (v - x0)) / (x1 - x0);
+  const sy = (v) => T + ph * (1 - (v - y0) / (y1 - y0));
+  const wins = pts.filter((d) => d.returnPct > 0).length;
 
-  const showTip = (e, d) => {
+  const show = (e, d) => {
     const rect = boxRef.current?.getBoundingClientRect();
     if (!rect) return;
     let left = e.clientX - rect.left + 14;
-    if (left > rect.width - 200) left -= 224;
-    setTip({ left, top: e.clientY - rect.top - 12, d });
+    if (left > rect.width - 210) left -= 232;
+    setTip({ left, top: Math.max(4, e.clientY - rect.top - 20), d });
   };
 
   return (
-    <div ref={boxRef} className="relative bg-slate-900/60 border border-slate-700 rounded-lg p-3 overflow-x-auto">
-      <div className="flex flex-wrap items-center gap-3 mb-1 px-1">
-        <select value={plotKey} onChange={(e) => { setPlotKey(e.target.value); setTip(null); }}
-          className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100 text-xs">
+    <section className="panel chartcard">
+      <div className="chart-head">
+        <h3>Closed-trade scatter</h3>
+        <select className="ctl" value={plotKey} aria-label="Scatter axes"
+          onChange={(e) => { setPlotKey(e.target.value); setTip(null); }}>
           {Object.entries(SCATTER_PLOTS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
         </select>
-        <span className="text-[11px] text-slate-500">{pts.length} closed trades · {((100 * wins) / (pts.length || 1)).toFixed(1)}% winners · hover a dot for details</span>
+        <span className="tert" style={{ fontSize: 11 }}>
+          {pts.length} closed trades · {((100 * wins) / (pts.length || 1)).toFixed(1)}% winners · hover a dot for details
+        </span>
       </div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[700px]" role="img"
-        aria-label={`Scatter of closed trades: ${plot.label}`}
-        onMouseLeave={() => setTip(null)}>
-        {yTicks.map((y, i) => (
-          <g key={`y${i}`}>
-            <line x1={L} y1={sy(y)} x2={W - R} y2={sy(y)} stroke="#334155" strokeWidth="0.6" />
-            <text x={L - 6} y={sy(y) + 3} textAnchor="end" fontSize="10" fill="#64748b">{plot.y.fmt(y)}</text>
-          </g>
-        ))}
-        {plot.y.zero && y0 < 0 && (
-          <g>
-            <line x1={L} y1={sy(0)} x2={W - R} y2={sy(0)} stroke="#94a3b8" strokeWidth="1" strokeDasharray="4 3" />
-            <text x={L - 6} y={sy(0) + 3} textAnchor="end" fontSize="10" fill="#94a3b8">0</text>
-          </g>
+      <div className="chartbox" ref={boxRef}>
+        <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`Scatter of closed trades: ${plot.label}`}
+          onMouseLeave={() => setTip(null)}>
+          {[0.15, 0.4, 0.65, 0.9].map((f, i) => {
+            const v = y0 + (y1 - y0) * f;
+            return (
+              <g key={`y${i}`}>
+                <line x1={L} y1={sy(v)} x2={W - R} y2={sy(v)} stroke="var(--c-grid)" />
+                <text x={L - 7} y={sy(v) + 3.5} fill="var(--c-axis)" fontSize="10"
+                  fontFamily="JetBrains Mono, monospace" textAnchor="end">{plot.y.fmt(v)}</text>
+              </g>
+            );
+          })}
+          {[0.08, 0.32, 0.56, 0.8].map((f, i) => {
+            const v = x0 + (x1 - x0) * f;
+            return (
+              <g key={`x${i}`}>
+                <line x1={sx(v)} y1={T} x2={sx(v)} y2={T + ph} stroke="var(--c-grid)" />
+                <text x={sx(v)} y={T + ph + 15} fill="var(--c-axis)" fontSize="10"
+                  fontFamily="JetBrains Mono, monospace" textAnchor="middle">{plot.x.fmt(v)}</text>
+              </g>
+            );
+          })}
+          {plot.y.zero && y0 < 0 && (
+            <g>
+              <line x1={L} y1={sy(0)} x2={W - R} y2={sy(0)} stroke="var(--ink-subtle)" strokeDasharray="4,3" />
+              <text x={L - 7} y={sy(0) + 3.5} fill="var(--ink-subtle)" fontSize="10"
+                fontFamily="JetBrains Mono, monospace" textAnchor="end">0</text>
+            </g>
+          )}
+          {pts.map((d, i) => (
+            <circle key={i} cx={sx(d[plot.x.k])} cy={sy(d[plot.y.k])} r="3.4"
+              fill={d.returnPct > 0 ? 'var(--gain)' : 'var(--loss)'} fillOpacity="0.62"
+              stroke="transparent" strokeWidth="7"
+              onMouseEnter={(e) => show(e, d)} onMouseMove={(e) => show(e, d)} />
+          ))}
+          <text x={(L + W - R) / 2} y={H - 5} fill="var(--c-axis)" fontSize="10" textAnchor="middle">{plot.x.label}</text>
+        </svg>
+        {tip && (
+          <div className="tip" style={{ left: tip.left, top: tip.top }}>
+            <b>{tip.d.sym}{tip.d.rank ? ` · Q${tip.d.rank}` : ''}</b><br />
+            {plot.x.label}: <b>{plot.x.fmt(tip.d[plot.x.k])}</b><br />
+            {plot.y.label}: <span className={tip.d[plot.y.k] > 0 ? 'g' : 'l'}>{plot.y.fmt(tip.d[plot.y.k])}</span><br />
+            return <span className={tip.d.returnPct > 0 ? 'g' : 'l'}>{tip.d.returnPct.toFixed(1)}%</span>
+            {' · '}P&amp;L {fmtScatterInr(tip.d.realizedPnl)}<br />
+            held {tip.d.holdingDays}d · alloc {fmtScatterInr(tip.d.allocation)}<br />
+            <span className="tert">{tip.d.entryDate} → {tip.d.exitDate || '—'} · {tip.d.exit}</span>
+          </div>
         )}
-        {xTicks.map((x, i) => (
-          <g key={`x${i}`}>
-            <line x1={sx(x)} y1={T} x2={sx(x)} y2={H - B} stroke="#334155" strokeWidth="0.6" />
-            <text x={sx(x)} y={H - B + 14} textAnchor="middle" fontSize="10" fill="#64748b">{plot.x.fmt(x)}</text>
-          </g>
-        ))}
-        <text x={(L + W - R) / 2} y={H - 4} textAnchor="middle" fontSize="10" fill="#64748b">{plot.x.label}</text>
-        {pts.map((d, i) => (
-          <circle key={i} cx={sx(d[plot.x.k])} cy={sy(d[plot.y.k])} r="3.2"
-            fill={d.returnPct > 0 ? '#34d399' : '#fb7185'} fillOpacity="0.65"
-            stroke="transparent" strokeWidth="6"
-            onMouseEnter={(e) => showTip(e, d)} onMouseMove={(e) => showTip(e, d)} />
-        ))}
-      </svg>
-      {tip && (
-        <div className="absolute z-10 pointer-events-none bg-slate-800 border border-slate-600 rounded px-2.5 py-1.5 text-[11px] leading-4 text-slate-200 shadow-lg whitespace-nowrap"
-          style={{ left: tip.left, top: tip.top }}>
-          <div className="font-semibold text-slate-100">{tip.d.sym} {tip.d.rank ? `\u00b7 Q${tip.d.rank}` : ''}</div>
-          <div>{plot.x.label}: <span className="text-slate-100">{plot.x.fmt(tip.d[plot.x.k])}</span></div>
-          <div>{plot.y.label}: <span className={tip.d[plot.y.k] > 0 ? 'text-emerald-300' : 'text-rose-300'}>{plot.y.fmt(tip.d[plot.y.k])}</span></div>
-          <div>return: <span className={tip.d.returnPct > 0 ? 'text-emerald-300' : 'text-rose-300'}>{tip.d.returnPct.toFixed(1)}%</span> · P&L: {fmtScatterInr(tip.d.realizedPnl)}</div>
-          <div>held {tip.d.holdingDays}d · alloc {fmtScatterInr(tip.d.allocation)}</div>
-          <div className="text-slate-400">{tip.d.entryDate} → {tip.d.exitDate || '—'} · {tip.d.exit}</div>
+      </div>
+    </section>
+  );
+}
+
+function TradeChartModal({ runId, trade, onClose }) {
+  useEffect(() => {
+    if (!trade) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [trade, onClose]);
+  if (!trade) return null;
+  return (
+    <div className="btx btx-backdrop" onClick={onClose}>
+      <div className="btx-modal" role="dialog" aria-modal="true"
+        aria-label={`${trade.symbol} trade chart`} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <span className="t">{trade.symbol} · trade #{trade.id} · {trade.status}</span>
+          <span className="tert" style={{ fontSize: 12 }}>
+            {trade.entryFillDate || trade.signalDate} → {trade.exitDate || 'open'} · {trade.exitReason || 'open position'}
+            {retPct(trade) != null && (
+              <span className={retPct(trade) > 0 ? 'g' : 'l'}> · {fmtPctS(retPct(trade))}</span>
+            )}
+          </span>
+          <button type="button" className="btn btn-sm" style={{ marginLeft: 'auto' }} onClick={onClose}>✕</button>
         </div>
-      )}
+        <div className="modal-body" style={{ padding: 0 }}>
+          <img src={backtestTradeChartUrl(runId, trade.id)} alt={`${trade.symbol} chart`}
+            style={{ width: '100%', height: 'auto', display: 'block' }} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -2649,8 +1155,6 @@ function TradeLog({ runId }) {
   const [error, setError] = useState('');
   const [chartTrade, setChartTrade] = useState(null);
 
-  // Fetch the run's trades ONCE; track/status/exit-reason all filter
-  // client-side, so changing a filter never refetches ~2,000 rows.
   useEffect(() => {
     let alive = true;
     setLoading(true);
@@ -2661,9 +1165,7 @@ function TradeLog({ runId }) {
   }, [runId]);
 
   const exitReasons = useMemo(
-    () => Array.from(new Set(trades.map((t) => t.exitReason).filter(Boolean))).sort(),
-    [trades],
-  );
+    () => Array.from(new Set(trades.map((t) => t.exitReason).filter(Boolean))).sort(), [trades]);
 
   const rows = useMemo(() => {
     let out = trades;
@@ -2672,120 +1174,165 @@ function TradeLog({ runId }) {
     if (status) out = out.filter((t) => t.status === status);
     if (exitReason) out = out.filter((t) => t.exitReason === exitReason);
     if (sortKey) {
-      const get = TRADE_SORT_KEYS[sortKey];
+      const get = TRADE_SORT[sortKey];
       out = [...out].sort((a, b) => (sortDir === 'asc' ? get(a) - get(b) : get(b) - get(a)));
     }
     return out;
-  }, [trades, exitReason, sortKey, sortDir]);
+  }, [trades, track, status, exitReason, sortKey, sortDir]);
 
   const toggleSort = (key) => {
     if (sortKey === key) setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'));
     else { setSortKey(key); setSortDir('desc'); }
   };
+  const arrow = (k) => (sortKey === k ? (sortDir === 'desc' ? ' ▼' : ' ▲') : '');
+  const th = (k, label, cls) => (
+    <th className={`sortable ${cls || ''}`} title="Click to sort" onClick={() => toggleSort(k)}
+      aria-sort={sortKey === k ? (sortDir === 'desc' ? 'descending' : 'ascending') : 'none'}>
+      {label}{arrow(k)}
+    </th>
+  );
+
+  const closed = rows.filter((t) => t.realizedPnl != null);
+  const openRows = rows.filter((t) => t.status === 'OPEN');
+  const net = closed.reduce((a, t) => a + t.realizedPnl, 0);
+  const unreal = openRows.reduce((a, t) => a + (t.unrealizedPnl || 0), 0);
+  const wins = closed.filter((t) => t.realizedPnl > 0).length;
+  const avgR = closed.length ? closed.reduce((a, t) => a + (t.rMultiple || 0), 0) / closed.length : 0;
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap gap-3">
-        <select value={track} onChange={(e) => setTrack(e.target.value)}
-          className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
+    <div className="stack">
+      <div className="panel" style={{ padding: '10px 14px', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <select className="ctl" value={track} onChange={(e) => setTrack(e.target.value)}>
           <option value="">All tracks</option>
           <option value="quant">Quant</option>
           <option value="ai">AI</option>
         </select>
-        <select value={status} onChange={(e) => setStatus(e.target.value)}
-          className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
+        <select className="ctl" value={status} onChange={(e) => setStatus(e.target.value)}>
           <option value="">All statuses</option>
           <option value="PENDING">Pending</option>
           <option value="OPEN">Open</option>
           <option value="CLOSED">Closed</option>
           <option value="SUPERSEDED">Superseded</option>
         </select>
-        <select value={exitReason} onChange={(e) => setExitReason(e.target.value)}
-          className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm">
+        <select className="ctl" value={exitReason} onChange={(e) => setExitReason(e.target.value)}>
           <option value="">All exit reasons</option>
           {exitReasons.map((r) => <option key={r} value={r}>{r}</option>)}
         </select>
-        <button onClick={() => exportTradesCsv(rows, runId)} disabled={!rows.length}
-          className="px-3 py-1.5 text-sm rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-slate-200">
-          ⬇ Export CSV
-        </button>
+        <button type="button" className="btn btn-sm" disabled={!rows.length}
+          onClick={() => exportTradesCsv(rows, runId)}>⬇ Export CSV</button>
         {sortKey && (
-          <button onClick={() => { setSortKey(null); setSortDir('desc'); }}
-            className="px-2 py-1.5 text-xs rounded bg-slate-800 border border-slate-600 text-slate-400 hover:text-white">
-            Clear sort
-          </button>
+          <button type="button" className="btn btn-sm"
+            onClick={() => { setSortKey(null); setSortDir('desc'); }}>Clear sort</button>
         )}
+        <span className="tert" style={{ fontSize: 11.5, marginLeft: 'auto', marginRight: 6 }}>
+          Click a symbol to open its chart
+        </span>
+        <span className="eyebrow">{rows.length} of {trades.length} rows</span>
       </div>
 
-      {error && <div className="text-sm text-red-300">{error}</div>}
+      {error && <div className="errbar">{error}</div>}
 
       {!loading && <TradeScatter trades={rows} />}
 
-      <div className="bg-slate-900/60 border border-slate-700 rounded-lg overflow-x-auto">
-        <table className="w-full min-w-[980px] text-[11px]">
-          <thead>
-            <tr className="text-left text-[10px] text-slate-500 uppercase tracking-wide">
-              <th className="py-1.5 px-2"></th>
-              <th className="py-1.5 px-2">Symbol</th>
-              <th className="py-1.5 px-2">Rank</th>
-              <th className="py-1.5 px-2">Signal</th>
-              <th className="py-1.5 px-2">Entry</th>
-              <th className="py-1.5 px-2">Fill</th>
-              <th className="py-1.5 px-2">Exit</th>
-              <th className="py-1.5 px-2">Reason</th>
-              <th className="py-1.5 px-2">Trail SL</th>
-              <th className="py-1.5 px-2">Alloc</th>
-              <SortableTh label="Realized" sortKey="realizedPnl" active={sortKey === 'realizedPnl'} dir={sortDir} onClick={toggleSort} />
-              <SortableTh label="Unrealized" sortKey="unrealizedPnl" active={sortKey === 'unrealizedPnl'} dir={sortDir} onClick={toggleSort} />
-              <th className="py-1.5 px-2">R</th>
-              <th className="py-1.5 px-2">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((t) => (
-              <tr key={t.id} className={`border-t border-slate-800 ${trackRowClass(t)}`}>
-                <td className="py-1 px-2">
-                  <button onClick={() => setChartTrade(t)} title="View chart"
-                    className="px-1.5 py-0.5 text-[10px] rounded bg-slate-800 border border-slate-600 text-slate-300 hover:text-white hover:bg-slate-700 whitespace-nowrap">
-                    📈 Chart
-                  </button>
-                </td>
-                <td className="py-1 px-2 text-slate-200 font-medium whitespace-nowrap">{t.symbol}</td>
-                <td className="py-1 px-2 text-slate-400 whitespace-nowrap">
-                  {t.quantRank && <span className="text-sky-300 mr-1">Q{t.quantRank}</span>}
-                  {t.aiRank && <span className="text-purple-300">AI{t.aiRank}</span>}
-                </td>
-                <td className="py-1 px-2 text-slate-300 whitespace-nowrap">{t.signalDate}</td>
-                <td className="py-1 px-2 text-slate-300 whitespace-nowrap">{fmtInr(t.entryTriggerPrice)}</td>
-                <td className="py-1 px-2 text-slate-300 whitespace-nowrap">{t.entryFillDate ? `${fmtInr(t.entryFillPrice)} (${t.entryFillDate})` : '—'}</td>
-                <td className="py-1 px-2 text-slate-300 whitespace-nowrap">{t.exitDate ? `${fmtInr(t.exitPrice)} (${t.exitDate})` : '—'}</td>
-                <td className="py-1 px-2 text-slate-400 whitespace-nowrap">{t.exitReason || '—'}</td>
-                <td className="py-1 px-2 text-amber-300 whitespace-nowrap">
-                  {t.trailSl != null ? fmtInr(t.trailSl) : '—'}
-                  {t.trailSl != null && t.structuralSl != null && Math.abs(t.trailSl - t.structuralSl) > 0.01 && (
-                    <span className="text-slate-500 ml-1">(moved)</span>
-                  )}
-                </td>
-                <td className="py-1 px-2 text-slate-300 whitespace-nowrap">{fmtInr(t.allocation)}</td>
-                <td className={`py-1 px-2 font-semibold whitespace-nowrap ${pnlColor(t.realizedPnl)}`}>{fmtInr(t.realizedPnl)}</td>
-                <td className={`py-1 px-2 font-semibold whitespace-nowrap ${pnlColor(t.unrealizedPnl)}`}>{t.status === 'OPEN' ? fmtInr(t.unrealizedPnl) : '—'}</td>
-                <td className="py-1 px-2 text-slate-300 whitespace-nowrap">{fmtR(t.rMultiple)}</td>
-                <td className={`py-1 px-2 whitespace-nowrap ${TRADE_STATUS_COLOR[t.status]}`}>{t.status}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {loading && <div className="text-sm text-slate-400 px-3 py-4 animate-pulse">Loading trades…</div>}
-        {!loading && !rows.length && <div className="text-sm text-slate-500 px-3 py-4">No trades match these filters.</div>}
-      </div>
+      <section className="panel">
+        <div className="tablewrap">
+          {loading ? (
+            <div className="empty">Loading trades…</div>
+          ) : !rows.length ? (
+            <div className="empty">No trades match these filters.</div>
+          ) : (
+            <table className="tl">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Status</th>
+                  {th('entryTs', 'Entry ₹', 'right')}
+                  <th className="right">Exit ₹</th>
+                  <th className="right">Trail SL</th>
+                  <th>Reason</th>
+                  {th('holdingDays', 'Held', 'right')}
+                  {th('allocation', 'Alloc', 'right')}
+                  <th className="right">
+                    P&amp;L{' '}
+                    <span className={`sk ${sortKey === 'realizedPnl' ? 'on' : ''}`}
+                      onClick={(e) => { e.stopPropagation(); toggleSort('realizedPnl'); }}
+                      title="Sort by rupees">₹{arrow('realizedPnl')}</span>
+                    <span className="tert"> / </span>
+                    <span className={`sk ${sortKey === 'returnPct' ? 'on' : ''}`}
+                      onClick={(e) => { e.stopPropagation(); toggleSort('returnPct'); }}
+                      title="Sort by % of capital committed">%{arrow('returnPct')}</span>
+                  </th>
+                  {th('rMultiple', 'R', 'right')}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((t) => {
+                  const rp = retPct(t);
+                  const pnl = t.realizedPnl != null ? t.realizedPnl : (t.status === 'OPEN' ? t.unrealizedPnl : null);
+                  const moved = t.trailSl != null && t.structuralSl != null && t.trailSl > t.structuralSl * 1.03;
+                  const [dot, cls] = TRADE_DOT[t.status] || TRADE_DOT.CLOSED;
+                  return (
+                    <tr key={t.id} className={trackRowClass(t)}>
+                      <td title={`signal ${t.signalDate} · trigger ${fmtInr(t.entryTriggerPrice)}`}>
+                        <button type="button" className="symbtn" onClick={() => setChartTrade(t)}
+                          title={`Open ${t.symbol} chart`}>{t.symbol}</button>
+                        <div><RankChips t={t} /></div>
+                      </td>
+                      <td><span className={`st ${cls}`}><i style={{ background: dot }} />
+                        {t.status[0] + t.status.slice(1).toLowerCase()}</span></td>
+                      <td className="right">
+                        <div className="c1">{t.entryFillPrice != null ? fmtPx(t.entryFillPrice) : <span className="tert">not filled</span>}</div>
+                        <div className="c2">{shortDate(t.entryFillDate)}</div>
+                      </td>
+                      <td className="right">
+                        <div className="c1">{t.exitPrice != null ? fmtPx(t.exitPrice) : <span className="tert">—</span>}</div>
+                        <div className="c2">{shortDate(t.exitDate)}</div>
+                      </td>
+                      <td className="right">
+                        <div className="c1 w">{t.trailSl != null ? fmtPx(t.trailSl) : '—'}</div>
+                        {moved && <div className="c2">ratcheted</div>}
+                      </td>
+                      <td><span className="c1" style={{ fontSize: 12 }}>{t.exitReason || <span className="tert">—</span>}</span></td>
+                      <td className="right"><span className="c1">{t.holdingDays != null ? t.holdingDays : '—'}</span>
+                        <span className="c2" style={{ display: 'inline' }}> d</span></td>
+                      <td className="right"><span className="c1">{fmtInrCompact(t.allocation)}</span></td>
+                      <td className="right">
+                        <div className={`c1 ${pnlCls(pnl)}`} style={{ fontWeight: 600 }}>{pnl != null ? fmtInr(pnl) : '—'}</div>
+                        <div className={`c2 ${pnlCls(rp)}`}>{fmtPctS(rp)}{t.status === 'OPEN' ? ' mtm' : ''}</div>
+                      </td>
+                      <td className="right"><span className={`c1 ${pnlCls(t.rMultiple)}`}>{fmtR(t.rMultiple)}</span></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              {!!closed.length && (
+                <tfoot>
+                  <tr>
+                    <td>{closed.length} closed</td>
+                    <td>{openRows.length} open</td>
+                    <td colSpan={5}>win rate <span className="i">{((100 * wins) / closed.length).toFixed(1)}%</span></td>
+                    <td className="right">net</td>
+                    <td className="right">
+                      <span className={pnlCls(net)} style={{ fontWeight: 600 }}>{fmtInr(net)}</span>
+                      {!!unreal && <div className={`c2 ${pnlCls(unreal)}`}>{fmtInr(unreal)} open</div>}
+                    </td>
+                    <td className="right"><span className={pnlCls(avgR)}>{fmtR(avgR)}</span></td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          )}
+        </div>
+      </section>
 
       <TradeChartModal runId={runId} trade={chartTrade} onClose={() => setChartTrade(null)} />
     </div>
   );
 }
 
-// ---------------- Page ----------------
-
+/* ═══════════════════════════════════════════════════════════════════════
+   Page
+   ═══════════════════════════════════════════════════════════════════ */
 const DETAIL_TABS = [
   { id: 'summary', label: 'Summary' },
   { id: 'day', label: 'Day drill-down' },
@@ -2800,18 +1347,12 @@ export default function Backtest() {
   const [cancellingId, setCancellingId] = useState(null);
   const [formOpen, setFormOpen] = useState(false);
   const [selectionNonce, setSelectionNonce] = useState(0);
-  const [leftCollapsed, setLeftCollapsed] = useState(false);
-  const [rightCollapsed, setRightCollapsed] = useState(false);
   const pollRef = useRef(null);
 
   const refresh = async () => {
     try {
       const rs = await listBacktestRuns();
       setRuns(rs);
-      // Functional form — the 5s poll interval below is only ever set up
-      // once (empty deps), so this closure's `selectedId` would otherwise
-      // always be its initial `null` and keep snapping selection back to
-      // the newest run on every poll, overriding whatever the user clicked.
       setSelectedId((prev) => (prev == null && rs.length ? rs[0].id : prev));
     } catch (e) {
       setError(e.message);
@@ -2842,9 +1383,6 @@ export default function Backtest() {
   const running = runs.find((r) => r.status === 'RUNNING');
   const selected = runs.find((r) => r.id === selectedId);
 
-  // Selecting a run always jumps to the Summary tab and forces a fresh fetch
-  // (via the RunSummary `key` below, which remounts it) — even re-clicking
-  // the already-selected run refreshes it, rather than relying on the 5s poll.
   const selectRun = (id) => {
     setSelectedId(id);
     setDetailTab('summary');
@@ -2853,85 +1391,69 @@ export default function Backtest() {
   };
 
   return (
-    <div className={`grid gap-4 items-start ${leftCollapsed ? 'grid-cols-1' : rightCollapsed ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-[760px_1fr]'}`}>
-      {/* Collapse button row */}
-      <div className="flex justify-between gap-2 lg:col-span-full">
-        <button onClick={() => setLeftCollapsed(!leftCollapsed)}
-          title={leftCollapsed ? 'Show left panel' : 'Hide left panel'}
-          className="px-3 py-1.5 text-xs rounded bg-slate-800 border border-slate-600 text-slate-300 hover:text-white">
-          {leftCollapsed ? '▶ Show left' : '◀ Hide left'}
-        </button>
-        <button onClick={() => setRightCollapsed(!rightCollapsed)}
-          title={rightCollapsed ? 'Show right panel' : 'Hide right panel'}
-          className="px-3 py-1.5 text-xs rounded bg-slate-800 border border-slate-600 text-slate-300 hover:text-white">
-          {rightCollapsed ? '◀ Show right' : 'Hide right ▶'}
-        </button>
-      </div>
+    <div className="btx">
+      <div className="work">
+        <div className="stack">
+          <CompactBacktestForm
+            open={formOpen}
+            onToggleOpen={setFormOpen}
+            onCreated={(id) => { selectRun(id); refresh(); }}
+            blocked={!!running}
+            blockedReason={running ? `Run #${running.id} in progress` : ''}
+          />
+          {error && <div className="errbar">{error}</div>}
+          <RunList runs={runs} selectedId={selectedId} onSelect={selectRun}
+            onCancel={cancel} cancellingId={cancellingId} />
+        </div>
 
-      {/* Left: new-run form + run list — pinned so it stays visible while
-          the right-hand detail panel is what scrolls. */}
-      {!leftCollapsed && (
-      <div className="space-y-3 lg:sticky lg:top-4">
-        <CompactBacktestForm
-          open={formOpen}
-          onToggleOpen={setFormOpen}
-          onCreated={(id) => { selectRun(id); refresh(); }}
-          blocked={!!running}
-          blockedReason={running ? `Run #${running.id} in progress` : ''}
-        />
-
-        {error && <div className="bg-red-900/40 border border-red-700 text-red-200 text-sm rounded px-3 py-2">{error}</div>}
-
-        <RunList runs={runs} selectedId={selectedId} onSelect={selectRun} onCancel={cancel} cancellingId={cancellingId} />
-      </div>
-      )}
-
-      {/* Right: selected run's details, side by side with the list instead
-          of stacked below it. */}
-      {!rightCollapsed && (
-      <div className="space-y-3 min-w-0">
-        {!selected ? (
-          <div className="text-sm text-slate-400 px-1 py-8 text-center border border-dashed border-slate-700 rounded-lg">
-            Select a run on the left to see its summary.
-          </div>
-        ) : (
-          <>
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <div className="text-sm text-slate-300">
-                Run #{selected.id} · {selected.startDate} → {selected.endDate} · {selected.trackMode}
-                {selected.status === 'RUNNING' && selected.progressTotalDays
-                  ? ` · day ${selected.progressDay}/${selected.progressTotalDays}`
-                  : ''}
-                {selected.error && <span className="text-red-300"> · {selected.error}</span>}
-              </div>
-              <div className="flex items-center gap-1">
+        <div className="stack">
+          {!selected ? (
+            <div className="panel empty">Select a run on the left to see its summary.</div>
+          ) : (
+            <>
+              <div className="runhead">
+                <span className="title">Run #{selected.id}</span>
+                <span className="window">
+                  {selected.startDate} → {selected.endDate} · {selected.strategy} · {selected.trackMode}
+                  {' · '}{fmtInrCompact(selected.capital)}
+                  {selected.posTranches > 1 ? ` · ${selected.posTranches}T` : ''}
+                  {selected.status === 'RUNNING' && selected.progressTotalDays
+                    ? ` · day ${selected.progressDay}/${selected.progressTotalDays}` : ''}
+                </span>
+                {selected.error && <span className="l" style={{ fontSize: 12 }}>{selected.error}</span>}
                 {selected.status === 'RUNNING' && (
-                  <button onClick={() => cancel(selected.id)} disabled={cancellingId === selected.id}
-                    className="px-3 py-1.5 text-sm rounded bg-red-900/60 border border-red-700 text-red-200 hover:bg-red-900 disabled:opacity-50 mr-2">
+                  <button type="button" className="btn btn-sm btn-danger" disabled={cancellingId === selected.id}
+                    onClick={() => cancel(selected.id)}>
                     {cancellingId === selected.id ? 'Stopping…' : 'Stop run'}
                   </button>
                 )}
-                {DETAIL_TABS.map((t) => (
-                  <button key={t.id} onClick={() => setDetailTab(t.id)}
-                    className={`px-3 py-1.5 text-sm rounded ${detailTab === t.id
-                      ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300 hover:text-white'}`}>
-                    {t.label}
-                  </button>
-                ))}
+                <div className="seg" role="tablist" style={{ marginLeft: 'auto' }}>
+                  {DETAIL_TABS.map((t) => (
+                    <button key={t.id} type="button" role="tab" aria-selected={detailTab === t.id}
+                      onClick={() => setDetailTab(t.id)}>{t.label}</button>
+                  ))}
+                </div>
               </div>
-            </div>
 
-            {selected.status === 'RUNNING' && (
-              <div className="text-sm text-amber-300">Run in progress — results below will update once trades are simulated. If progress hasn't moved in a while, use Stop to unblock the next run.</div>
-            )}
+              {selected.status === 'RUNNING' && (
+                <div className="warnbar">
+                  Run in progress — results below update once trades are simulated. If progress hasn&apos;t
+                  moved in a while, use Stop to unblock the next run.
+                </div>
+              )}
 
-            {detailTab === 'summary' && <RunSummary key={`${selected.id}-${selectionNonce}`} run={selected} runId={selected.id} status={selected.status} />}
-            {detailTab === 'day' && <DayDrilldown runId={selected.id} minDate={selected.startDate} maxDate={selected.endDate} />}
-            {detailTab === 'trades' && <TradeLog runId={selected.id} />}
-          </>
-        )}
+              {detailTab === 'summary' && (
+                <RunSummary key={`${selected.id}-${selectionNonce}`} run={selected}
+                  runId={selected.id} status={selected.status} />
+              )}
+              {detailTab === 'day' && (
+                <DayDrilldown runId={selected.id} minDate={selected.startDate} maxDate={selected.endDate} />
+              )}
+              {detailTab === 'trades' && <TradeLog runId={selected.id} />}
+            </>
+          )}
+        </div>
       </div>
-      )}
     </div>
   );
 }

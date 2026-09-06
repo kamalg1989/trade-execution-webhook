@@ -441,19 +441,10 @@ export default function CompactBacktestForm({ onCreated, blocked, blockedReason,
 
   if (!open) {
     return (
-      <section className="panel">
-        <div className="panel-head">
-          <h2>Launch</h2>
-          <span className="eyebrow" style={{ marginLeft: 'auto' }}>backtest</span>
-        </div>
-        <div style={{ padding: '12px 14px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button type="button" className="btn btn-primary" onClick={() => onToggleOpen(true)}>
-            + New backtest run
-          </button>
-          <span className="tert" style={{ fontSize: 12 }}>⌘/Ctrl+Enter to launch</span>
-          {blocked && <span className="w" style={{ fontSize: 12, marginLeft: 'auto' }}>{blockedReason}</span>}
-        </div>
-      </section>
+      <button onClick={() => onToggleOpen(true)}
+        className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2 rounded-lg">
+        + New Backtest Run <span className="font-normal text-emerald-200 text-xs">(⌘/Ctrl+Enter to launch)</span>
+      </button>
     );
   }
 
@@ -462,31 +453,29 @@ export default function CompactBacktestForm({ onCreated, blocked, blockedReason,
   const isItf = formData.strategy === 'INDEX_TF';
 
   return (
-    <section className="panel" style={{ maxHeight: '80vh', overflowY: 'auto' }}>
-      <div className="panel-head" style={{ position: 'sticky', top: 0, zIndex: 10, background: 'var(--s1)' }}>
-        <h2>Launch</h2>
-        <span className="eyebrow">new backtest</span>
-        <button type="button" className="btn btn-sm" style={{ marginLeft: 'auto' }}
-          onClick={() => onToggleOpen(false)}>✕</button>
+    <div className="bg-slate-800 border border-slate-700 rounded-lg p-4 space-y-3 max-h-[80vh] overflow-y-auto">
+      <div className="flex justify-between items-center">
+        <h3 className="text-lg font-bold text-white">New Backtest</h3>
+        <button type="button" onClick={() => onToggleOpen(false)} className="text-slate-400 hover:text-white text-xl">✕</button>
       </div>
 
-      <div style={{ padding: '12px 14px' }} className="space-y-3">
-      {blocked && <div className="warnbar">{blockedReason}</div>}
+      {blocked && <div className="bg-yellow-900/40 border border-yellow-700 text-yellow-200 text-xs rounded px-3 py-2">{blockedReason}</div>}
 
       {/* Quick presets — one click to the audited configurations */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+      <div className="flex flex-wrap gap-2">
         {Object.entries(QUICK_PRESETS).map(([name, qp]) => (
           <button key={name} type="button" onClick={() => applyQuickPreset(name)} title={qp.hint}
-            className="chip" aria-pressed={selectedPreset === name}>
-            {selectedPreset === name && <span className="tick" />}{name}
+            className={`px-2.5 py-1.5 text-[11px] rounded-lg border font-semibold ${selectedPreset === name
+              ? 'bg-emerald-700/60 border-emerald-500 text-white'
+              : 'bg-slate-700/60 border-slate-600 text-slate-200 hover:border-emerald-600'}`}>
+            ⭐ {name}
           </button>
         ))}
       </div>
 
       {/* Saved presets */}
-      <div style={{ background: 'var(--s2)', border: '1px solid var(--hair)', borderRadius: 'var(--r-md)' }}
-        className="p-3 space-y-2">
-        <div className="eyebrow">Saved presets</div>
+      <div className="bg-slate-700/50 rounded p-3 space-y-2">
+        <div className="text-xs font-semibold text-slate-300 uppercase">Saved presets</div>
         <select value={selectedPreset} onChange={(e) => e.target.value && loadPreset(e.target.value)}
           className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm text-slate-100">
           <option value="">Load saved preset…</option>
@@ -671,13 +660,12 @@ export default function CompactBacktestForm({ onCreated, blocked, blockedReason,
         </details>
 
         <button type="submit" disabled={submitting || blocked}
-          className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }}>
-          {submitting ? 'Creating…' : 'Run backtest'}
-          <span className="tert" style={{ fontSize: 11 }}>⌘/Ctrl+Enter</span>
+          className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold py-2 rounded-lg">
+          {submitting ? 'Creating…' : 'Run Backtest'}
+          <span className="font-normal text-emerald-200 text-xs ml-2">⌘/Ctrl+Enter</span>
         </button>
       </form>
-      </div>
-    </section>
+    </div>
   );
 }
 
