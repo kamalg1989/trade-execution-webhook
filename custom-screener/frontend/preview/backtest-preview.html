@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
 <meta name="robots" content="noindex">
-<style>*,*::before,*::after{box-sizing:border-box}html{color-scheme:dark}
+<title>OHM Backtest Console</title>
+<style>*,*::before,*::after{box-sizing:border-box}
 body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
 </head>
 <body>
@@ -14,15 +14,46 @@ body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
 <style>
 /* ── Linear design language (DESIGN.md tokens), applied to a quant console ── */
 :root{
-  --canvas:#010102; --s1:#0f1011; --s2:#141516; --s3:#18191a;
-  --hair:#23252a; --hair-strong:#34343a;
-  --ink:#f7f8f8; --ink-muted:#d0d6e0; --ink-subtle:#8a8f98; --ink-tert:#62666d;
-  --accent:#5e6ad2; --accent-hover:#828fff; --accent-focus:#5e69d1;
-  --gain:#3fb950; --loss:#e5484d; --warn:#e2a336; --info:#7a86ff;
-  --quant:#4aa8e0; --ai:#b07ae0;
+  /* Light is the base set. Linear's own surface ladder inverted: paper-white
+     panels on a faintly cool page, the same lavender accent, and semantic
+     colours darkened so they pass on white rather than glowing. */
+  color-scheme:light;
+  --canvas:#f7f8fa; --s1:#ffffff; --s2:#f1f3f7; --s3:#e7eaf0;
+  --hair:#e2e5ec; --hair-strong:#c6cad5;
+  --ink:#14161b; --ink-muted:#3a3f4a; --ink-subtle:#5f6673; --ink-tert:#878d9a;
+  --accent:#5058c8; --accent-hover:#3d45b4; --accent-focus:#5e69d1; --on-accent:#ffffff;
+  --gain:#137a37; --loss:#c02a34; --warn:#8a6100; --info:#4550bd;
+  --quant:#1667c8; --ai:#7431c4;
+  --c-line:#5058c8; --c-grid:#e2e5ec; --c-axis:#878d9a; --c-hwm:#b3b8c4; --c-fill:.14;
+  --glass:rgba(247,248,250,.92); --glass2:rgba(241,243,247,.95);
+  --scrim:rgba(18,20,26,.46); --shadow:0 8px 24px rgba(18,20,26,.16);
   --r-xs:4px; --r-sm:6px; --r-md:8px; --r-lg:12px; --pill:9999px;
   --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
   --sans:'Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display',system-ui,sans-serif;
+}
+@media (prefers-color-scheme:dark){ :root:not([data-theme="light"]){
+  color-scheme:dark;
+  --canvas:#010102; --s1:#0f1011; --s2:#141516; --s3:#18191a;
+  --hair:#23252a; --hair-strong:#34343a;
+  --ink:#f7f8f8; --ink-muted:#d0d6e0; --ink-subtle:#8a8f98; --ink-tert:#62666d;
+  --accent:#5e6ad2; --accent-hover:#828fff; --accent-focus:#5e69d1; --on-accent:#ffffff;
+  --gain:#3fb950; --loss:#e5484d; --warn:#e2a336; --info:#7a86ff;
+  --quant:#4aa8e0; --ai:#b07ae0;
+  --c-line:#828fff; --c-grid:#23252a; --c-axis:#62666d; --c-hwm:#4a4d54; --c-fill:.20;
+  --glass:rgba(1,1,2,.92); --glass2:rgba(20,21,22,.95);
+  --scrim:rgba(0,0,0,.72); --shadow:0 8px 24px rgba(0,0,0,.6);
+} }
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --canvas:#010102; --s1:#0f1011; --s2:#141516; --s3:#18191a;
+  --hair:#23252a; --hair-strong:#34343a;
+  --ink:#f7f8f8; --ink-muted:#d0d6e0; --ink-subtle:#8a8f98; --ink-tert:#62666d;
+  --accent:#5e6ad2; --accent-hover:#828fff; --accent-focus:#5e69d1; --on-accent:#ffffff;
+  --gain:#3fb950; --loss:#e5484d; --warn:#e2a336; --info:#7a86ff;
+  --quant:#4aa8e0; --ai:#b07ae0;
+  --c-line:#828fff; --c-grid:#23252a; --c-axis:#62666d; --c-hwm:#4a4d54; --c-fill:.20;
+  --glass:rgba(1,1,2,.92); --glass2:rgba(20,21,22,.95);
+  --scrim:rgba(0,0,0,.72); --shadow:0 8px 24px rgba(0,0,0,.6);
 }
 *{box-sizing:border-box;}
 body{margin:0;background:var(--canvas);color:var(--ink);font-family:var(--sans);
@@ -41,7 +72,7 @@ input,select{font:inherit;}
 /* ── top bar ─────────────────────────────────────────────────────── */
 .topbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
   padding:16px 0 14px;border-bottom:1px solid var(--hair);
-  position:sticky;top:0;z-index:60;background:rgba(1,1,2,.93);backdrop-filter:blur(10px);}
+  position:sticky;top:0;z-index:60;background:var(--glass);backdrop-filter:blur(10px);}
 .brand{display:flex;align-items:baseline;gap:10px;}
 .brand h1{margin:0;font-size:16px;font-weight:600;letter-spacing:-0.3px;}
 .env{font-family:var(--mono);font-size:11px;color:var(--ink-tert);
@@ -51,11 +82,11 @@ input,select{font:inherit;}
   border:1px solid var(--hair);border-radius:var(--pill);background:var(--s1);
   font-size:12px;color:var(--ink-subtle);}
 .dot{width:6px;height:6px;border-radius:50%;background:var(--warn);
-  box-shadow:0 0 0 3px rgba(226,163,54,.16);}
+  box-shadow:0 0 0 3px color-mix(in srgb, var(--warn) 18%, transparent);}
 @media (prefers-reduced-motion:no-preference){.dot{animation:pulse 2.4s ease-in-out infinite;}}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
 .proto{display:inline-flex;align-items:center;height:22px;padding:0 9px;border-radius:var(--pill);
-  background:rgba(94,106,210,.14);border:1px solid rgba(94,106,210,.35);
+  background:color-mix(in srgb, var(--accent) 14%, transparent);border:1px solid color-mix(in srgb, var(--accent) 38%, transparent);
   font-family:var(--mono);font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:var(--accent-hover);}
 
 /* ── controls ────────────────────────────────────────────────────── */
@@ -66,8 +97,8 @@ input,select{font:inherit;}
 .btn:disabled{opacity:.42;cursor:not-allowed;}
 .btn-primary{background:var(--accent);border-color:var(--accent);color:#fff;}
 .btn-primary:hover{background:var(--accent-hover);border-color:var(--accent-hover);}
-.btn-danger{background:transparent;border-color:rgba(229,72,77,.4);color:var(--loss);}
-.btn-danger:hover{background:rgba(229,72,77,.12);}
+.btn-danger{background:transparent;border-color:color-mix(in srgb, var(--loss) 42%, transparent);color:var(--loss);}
+.btn-danger:hover{background:color-mix(in srgb, var(--loss) 13%, transparent);}
 .btn-sm{min-height:26px;padding:0 9px;font-size:12px;border-radius:var(--r-sm);}
 .ctl{height:28px;padding:0 8px;background:var(--s2);color:var(--ink-muted);
   border:1px solid var(--hair);border-radius:var(--r-md);font-size:12px;max-width:100%;}
@@ -100,12 +131,12 @@ input.ctl::placeholder{color:var(--ink-tert);}
   border:1px solid var(--hair);border-radius:var(--pill);background:var(--s2);
   font-size:12px;color:var(--ink-subtle);}
 .chip:hover{color:var(--ink);border-color:var(--hair-strong);}
-.chip[aria-pressed="true"]{border-color:var(--accent);color:var(--ink);background:rgba(94,106,210,.14);}
+.chip[aria-pressed="true"]{border-color:var(--accent);color:var(--ink);background:color-mix(in srgb, var(--accent) 13%, transparent);}
 .chip .tick{width:5px;height:5px;border-radius:50%;background:var(--accent);}
 .launch-meta{display:flex;gap:6px;flex-wrap:wrap;}
 .tag{font-family:var(--mono);font-size:11px;color:var(--ink-subtle);background:var(--s2);
   border:1px solid var(--hair);border-radius:var(--r-xs);padding:1px 6px;white-space:nowrap;}
-.tag.warnt{color:var(--warn);border-color:rgba(226,163,54,.3);background:rgba(226,163,54,.08);}
+.tag.warnt{color:var(--warn);border-color:color-mix(in srgb, var(--warn) 34%, transparent);background:color-mix(in srgb, var(--warn) 10%, transparent);}
 .launch-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 
 /* ── filter bar ──────────────────────────────────────────────────── */
@@ -129,12 +160,12 @@ input.ctl::placeholder{color:var(--ink-tert);}
 
 .badge{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:var(--r-xs);
   font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.3px;text-transform:uppercase;border:1px solid transparent;}
-.b-done{color:var(--gain);background:rgba(63,185,80,.11);border-color:rgba(63,185,80,.28);}
-.b-run{color:var(--warn);background:rgba(226,163,54,.11);border-color:rgba(226,163,54,.3);}
-.b-fail{color:var(--loss);background:rgba(229,72,77,.1);border-color:rgba(229,72,77,.3);}
+.b-done{color:var(--gain);background:color-mix(in srgb, var(--gain) 12%, transparent);border-color:color-mix(in srgb, var(--gain) 32%, transparent);}
+.b-run{color:var(--warn);background:color-mix(in srgb, var(--warn) 12%, transparent);border-color:color-mix(in srgb, var(--warn) 34%, transparent);}
+.b-fail{color:var(--loss);background:color-mix(in srgb, var(--loss) 11%, transparent);border-color:color-mix(in srgb, var(--loss) 34%, transparent);}
 .b-void{color:var(--ink-tert);background:var(--s2);border-color:var(--hair);}
-.b-flag{color:var(--info);background:rgba(122,134,255,.1);border-color:rgba(122,134,255,.28);}
-.b-warn{color:var(--warn);background:rgba(226,163,54,.1);border-color:rgba(226,163,54,.28);}
+.b-flag{color:var(--info);background:color-mix(in srgb, var(--info) 11%, transparent);border-color:color-mix(in srgb, var(--info) 32%, transparent);}
+.b-warn{color:var(--warn);background:color-mix(in srgb, var(--warn) 11%, transparent);border-color:color-mix(in srgb, var(--warn) 32%, transparent);}
 
 /* ── detail ──────────────────────────────────────────────────────── */
 .detail{display:flex;flex-direction:column;gap:12px;min-width:0;}
@@ -159,8 +190,8 @@ input.ctl::placeholder{color:var(--ink-tert);}
 .stat .v{font-family:var(--mono);font-size:15px;font-variant-numeric:tabular-nums;}
 .stat .k{margin-top:2px;font-size:11px;color:var(--ink-tert);}
 
-.warnbar{font-size:12px;color:var(--warn);background:rgba(226,163,54,.07);
-  border:1px solid rgba(226,163,54,.28);border-radius:var(--r-md);padding:9px 12px;}
+.warnbar{font-size:12px;color:var(--warn);background:color-mix(in srgb, var(--warn) 9%, transparent);
+  border:1px solid color-mix(in srgb, var(--warn) 32%, transparent);border-radius:var(--r-md);padding:9px 12px;}
 
 .chartcard{padding:13px 15px 8px;}
 .chart-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;}
@@ -172,7 +203,7 @@ svg{display:block;width:100%;height:auto;}
 .tip{position:absolute;z-index:20;pointer-events:none;background:var(--s3);
   border:1px solid var(--hair-strong);border-radius:var(--r-md);padding:7px 10px;
   font-size:11px;line-height:1.55;color:var(--ink-muted);white-space:nowrap;
-  box-shadow:0 8px 24px rgba(0,0,0,.6);}
+  box-shadow:var(--shadow);}
 .tip b{color:var(--ink);font-weight:600;}
 
 /* ── tables ──────────────────────────────────────────────────────── */
@@ -189,7 +220,7 @@ th .info{display:inline-block;width:12px;height:12px;line-height:12px;text-align
 td{padding:7px 10px;border-bottom:1px solid var(--hair);white-space:nowrap;color:var(--ink-muted);}
 tbody tr:last-child td{border-bottom:none;}
 tbody tr:hover td{background:var(--s2);}
-tr.sel td{background:rgba(94,106,210,.12);}
+tr.sel td{background:color-mix(in srgb, var(--accent) 12%, transparent);}
 /* Track rail on the first cell only — the old rule painted a stripe inside
    every cell, which is what made the log read as a grid of bars. */
 tr.tk-q td:first-child{box-shadow:inset 3px 0 0 var(--quant);}
@@ -234,12 +265,12 @@ td.sym{color:var(--ink);font-weight:500;}
 .minitable td{padding:6px 10px;font-size:12.5px;}
 
 .bookbar{position:sticky;bottom:0;z-index:30;display:flex;gap:18px;flex-wrap:wrap;padding:10px 15px;
-  background:rgba(20,21,22,.95);backdrop-filter:blur(10px);border:1px solid var(--hair-strong);
+  background:var(--glass2);backdrop-filter:blur(10px);border:1px solid var(--hair-strong);
   border-radius:var(--r-lg);font-size:13px;color:var(--ink-subtle);}
 .bookbar b{font-family:var(--mono);font-weight:500;color:var(--ink);}
 
 /* ── modal ───────────────────────────────────────────────────────── */
-.backdrop{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:100;
+.backdrop{position:fixed;inset:0;background:var(--scrim);z-index:100;
   display:flex;align-items:center;justify-content:center;padding:20px;}
 .modal{background:var(--s1);border:1px solid var(--hair-strong);border-radius:var(--r-lg);
   width:min(1040px,96vw);max-height:92vh;overflow:auto;}
@@ -267,6 +298,11 @@ td.sym{color:var(--ink);font-weight:500;}
     <span class="proto">Prototype</span>
     <div class="spacer"></div>
     <span class="livepill"><span class="dot"></span> #31616 running · day 1,420 / 2,680</span>
+    <div class="seg" id="theme" role="group" aria-label="Colour theme">
+      <button data-theme-set="auto" aria-pressed="true" title="Follow system">Auto</button>
+      <button data-theme-set="light" aria-pressed="false">Light</button>
+      <button data-theme-set="dark" aria-pressed="false">Dark</button>
+    </div>
     <button class="btn">Compare runs</button>
     <button class="btn btn-primary">New run</button>
   </header>
@@ -818,36 +854,36 @@ function drawEquity() {
   const ddLine = dds.map((d, i) => `${i?'L':'M'}${xi(i).toFixed(1)},${yd(d).toFixed(1)}`).join('');
   const trough = dds.indexOf(maxDD);
   const ddPanel = !showDD ? '' : `
-    <line x1="${M.l}" y1="${ddTop}" x2="${W-M.r}" y2="${ddTop}" stroke="#34343a"/>
-    <path d="${ddLine} L${xi(P.length-1).toFixed(1)},${ddTop} L${M.l},${ddTop} Z" fill="#e5484d" fill-opacity="0.2"/>
-    <path d="${ddLine}" fill="none" stroke="#e5484d" stroke-width="1.1"/>
-    <circle cx="${xi(trough).toFixed(1)}" cy="${yd(maxDD).toFixed(1)}" r="3" fill="#e5484d"/>
-    <text x="${M.l-8}" y="${ddTop+4}" fill="#62666d" font-size="10" font-family="JetBrains Mono, monospace" text-anchor="end">0%</text>
-    <text x="${M.l-8}" y="${ddTop+DDH+4}" fill="#62666d" font-size="10" font-family="JetBrains Mono, monospace" text-anchor="end">−${maxDD.toFixed(1)}%</text>
-    <text x="${(xi(trough)+7).toFixed(1)}" y="${(yd(maxDD)-4).toFixed(1)}" fill="#e5484d" font-size="10" font-family="JetBrains Mono, monospace">${P[trough].date.slice(0,7)}</text>`;
+    <line x1="${M.l}" y1="${ddTop}" x2="${W-M.r}" y2="${ddTop}" stroke="var(--hair-strong)"/>
+    <path d="${ddLine} L${xi(P.length-1).toFixed(1)},${ddTop} L${M.l},${ddTop} Z" fill="var(--loss)" fill-opacity="0.2"/>
+    <path d="${ddLine}" fill="none" stroke="var(--loss)" stroke-width="1.1"/>
+    <circle cx="${xi(trough).toFixed(1)}" cy="${yd(maxDD).toFixed(1)}" r="3" fill="var(--loss)"/>
+    <text x="${M.l-8}" y="${ddTop+4}" fill="var(--c-axis)" font-size="10" font-family="JetBrains Mono, monospace" text-anchor="end">0%</text>
+    <text x="${M.l-8}" y="${ddTop+DDH+4}" fill="var(--c-axis)" font-size="10" font-family="JetBrains Mono, monospace" text-anchor="end">−${maxDD.toFixed(1)}%</text>
+    <text x="${(xi(trough)+7).toFixed(1)}" y="${(yd(maxDD)-4).toFixed(1)}" fill="var(--loss)" font-size="10" font-family="JetBrains Mono, monospace">${P[trough].date.slice(0,7)}</text>`;
 
   const xLabels = [0, 100, 200, 300, 400, 500, 609].map(i =>
-    `<text x="${xi(i).toFixed(1)}" y="${H-10}" fill="#62666d" font-size="10" font-family="JetBrains Mono, monospace" text-anchor="middle">${P[i].date.slice(0,7)}</text>`).join('');
+    `<text x="${xi(i).toFixed(1)}" y="${H-10}" fill="var(--c-axis)" font-size="10" font-family="JetBrains Mono, monospace" text-anchor="middle">${P[i].date.slice(0,7)}</text>`).join('');
 
   box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Account equity from ₹20 lakh to ${inrC(final)}, maximum drawdown ${maxDD.toFixed(1)} percent">
     <defs><linearGradient id="eqf" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#828fff" stop-opacity="0.20"/><stop offset="100%" stop-color="#828fff" stop-opacity="0"/></linearGradient></defs>
-    ${ticks.map(v => `<line x1="${M.l}" y1="${y(v).toFixed(1)}" x2="${W-M.r}" y2="${y(v).toFixed(1)}" stroke="#23252a" stroke-dasharray="3,3"/>
-      <text x="${M.l-8}" y="${(y(v)+3.5).toFixed(1)}" fill="#62666d" font-size="10" font-family="JetBrains Mono, monospace" text-anchor="end">${inrC(v)}</text>`).join('')}
-    <line x1="${M.l}" y1="${y(CAP).toFixed(1)}" x2="${W-M.r}" y2="${y(CAP).toFixed(1)}" stroke="#4a4d54" stroke-width="1.4"/>
-    <text x="${M.l+5}" y="${(y(CAP)-5).toFixed(1)}" fill="#62666d" font-size="9" font-family="JetBrains Mono, monospace">start ₹20L</text>
+      <stop offset="0%" stop-color="var(--c-line)" stop-opacity="var(--c-fill)"/><stop offset="100%" stop-color="var(--c-line)" stop-opacity="0"/></linearGradient></defs>
+    ${ticks.map(v => `<line x1="${M.l}" y1="${y(v).toFixed(1)}" x2="${W-M.r}" y2="${y(v).toFixed(1)}" stroke="var(--c-grid)" stroke-dasharray="3,3"/>
+      <text x="${M.l-8}" y="${(y(v)+3.5).toFixed(1)}" fill="var(--c-axis)" font-size="10" font-family="JetBrains Mono, monospace" text-anchor="end">${inrC(v)}</text>`).join('')}
+    <line x1="${M.l}" y1="${y(CAP).toFixed(1)}" x2="${W-M.r}" y2="${y(CAP).toFixed(1)}" stroke="var(--c-hwm)" stroke-width="1.4"/>
+    <text x="${M.l+5}" y="${(y(CAP)-5).toFixed(1)}" fill="var(--c-axis)" font-size="9" font-family="JetBrains Mono, monospace">start ₹20L</text>
     <path d="${line} L${xi(P.length-1).toFixed(1)},${(M.t+eqH).toFixed(1)} L${M.l},${(M.t+eqH).toFixed(1)} Z" fill="url(#eqf)"/>
-    <path d="${peakLine}" fill="none" stroke="#4a4d54" stroke-width="1" stroke-dasharray="4,3"/>
-    <path d="${line}" fill="none" stroke="#828fff" stroke-width="1.8" stroke-linejoin="round"/>
-    <circle cx="${xi(P.length-1).toFixed(1)}" cy="${y(final).toFixed(1)}" r="3.4" fill="#828fff"/>
-    <text x="${(xi(P.length-1)-8).toFixed(1)}" y="${(y(final)-9).toFixed(1)}" fill="#f7f8f8" font-size="11" font-family="JetBrains Mono, monospace" text-anchor="end">${inrC(final)}</text>
+    <path d="${peakLine}" fill="none" stroke="var(--c-hwm)" stroke-width="1" stroke-dasharray="4,3"/>
+    <path d="${line}" fill="none" stroke="var(--c-line)" stroke-width="1.8" stroke-linejoin="round"/>
+    <circle cx="${xi(P.length-1).toFixed(1)}" cy="${y(final).toFixed(1)}" r="3.4" fill="var(--c-line)"/>
+    <text x="${(xi(P.length-1)-8).toFixed(1)}" y="${(y(final)-9).toFixed(1)}" fill="var(--ink)" font-size="11" font-family="JetBrains Mono, monospace" text-anchor="end">${inrC(final)}</text>
     ${ddPanel}${xLabels}
     <rect id="eq-hit" x="${M.l}" y="${M.t}" width="${pw}" height="${eqH + GAP + DDH}" fill="transparent"/></svg>`;
 
   $('#eq-legend').innerHTML =
-    `<span><i style="background:#828fff"></i>Account equity</span>
-     <span><i style="background:#4a4d54"></i>High-water mark</span>
-     ${showDD ? '<span><i style="background:#e5484d;opacity:.6"></i>Underwater</span>' : ''}
+    `<span><i style="background:var(--c-line)"></i>Account equity</span>
+     <span><i style="background:var(--c-hwm)"></i>High-water mark</span>
+     ${showDD ? '<span><i style="background:var(--loss);opacity:.6"></i>Underwater</span>' : ''}
      <span class="tert">Start <b class="mono" style="color:var(--ink-muted)">${inrC(CAP)}</b></span>
      <span class="tert">Peak <b class="mono" style="color:var(--ink-muted)">${inrC(peak)}</b></span>
      <span class="tert">End <b class="mono g">${inrC(final)}</b></span>
@@ -1070,19 +1106,19 @@ function drawScatter(rows) {
   $('#sc-meta').textContent = `${pts.length} closed trades · ${(100 * wins / pts.length).toFixed(1)}% winners · hover a dot for details`;
 
   const grid = [.15,.4,.65,.9].map(f => { const v = y0 + (y1 - y0) * f; return `
-    <line x1="${L}" y1="${sy(v).toFixed(1)}" x2="${W-R}" y2="${sy(v).toFixed(1)}" stroke="#23252a"/>
-    <text x="${L-7}" y="${(sy(v)+3.5).toFixed(1)}" fill="#62666d" font-size="10" font-family="JetBrains Mono, monospace" text-anchor="end">${plot.y.f(v)}</text>`; }).join('');
+    <line x1="${L}" y1="${sy(v).toFixed(1)}" x2="${W-R}" y2="${sy(v).toFixed(1)}" stroke="var(--c-grid)"/>
+    <text x="${L-7}" y="${(sy(v)+3.5).toFixed(1)}" fill="var(--c-axis)" font-size="10" font-family="JetBrains Mono, monospace" text-anchor="end">${plot.y.f(v)}</text>`; }).join('');
   const xg = [.08,.32,.56,.8].map(f => { const v = x0 + (x1 - x0) * f; return `
-    <line x1="${sx(v).toFixed(1)}" y1="${T}" x2="${sx(v).toFixed(1)}" y2="${T+ph}" stroke="#23252a"/>
-    <text x="${sx(v).toFixed(1)}" y="${T+ph+15}" fill="#62666d" font-size="10" font-family="JetBrains Mono, monospace" text-anchor="middle">${plot.x.f(v)}</text>`; }).join('');
-  const zero = (plot.y.zero && y0 < 0) ? `<line x1="${L}" y1="${sy(0).toFixed(1)}" x2="${W-R}" y2="${sy(0).toFixed(1)}" stroke="#8a8f98" stroke-dasharray="4,3"/>
-    <text x="${L-7}" y="${(sy(0)+3.5).toFixed(1)}" fill="#8a8f98" font-size="10" font-family="JetBrains Mono, monospace" text-anchor="end">0</text>` : '';
+    <line x1="${sx(v).toFixed(1)}" y1="${T}" x2="${sx(v).toFixed(1)}" y2="${T+ph}" stroke="var(--c-grid)"/>
+    <text x="${sx(v).toFixed(1)}" y="${T+ph+15}" fill="var(--c-axis)" font-size="10" font-family="JetBrains Mono, monospace" text-anchor="middle">${plot.x.f(v)}</text>`; }).join('');
+  const zero = (plot.y.zero && y0 < 0) ? `<line x1="${L}" y1="${sy(0).toFixed(1)}" x2="${W-R}" y2="${sy(0).toFixed(1)}" stroke="var(--ink-subtle)" stroke-dasharray="4,3"/>
+    <text x="${L-7}" y="${(sy(0)+3.5).toFixed(1)}" fill="var(--ink-subtle)" font-size="10" font-family="JetBrains Mono, monospace" text-anchor="end">0</text>` : '';
   const dots = pts.map((d, i) => `<circle cx="${sx(d[plot.x.k]).toFixed(1)}" cy="${sy(d[plot.y.k]).toFixed(1)}" r="3.4"
-    fill="${d.returnPct > 0 ? '#3fb950' : '#e5484d'}" fill-opacity="0.62" stroke="transparent" stroke-width="7" data-pt="${i}"/>`).join('');
+    fill="${d.returnPct > 0 ? 'var(--gain)' : 'var(--loss)'}" fill-opacity="0.62" stroke="transparent" stroke-width="7" data-pt="${i}"/>`).join('');
 
   $('#sc-box').innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Scatter of closed trades: ${esc(plot.label)}">
     ${grid}${xg}${zero}${dots}
-    <text x="${(L+W-R)/2}" y="${H-5}" fill="#62666d" font-size="10" text-anchor="middle">${esc(plot.x.label)}</text></svg>`;
+    <text x="${(L+W-R)/2}" y="${H-5}" fill="var(--c-axis)" font-size="10" text-anchor="middle">${esc(plot.x.label)}</text></svg>`;
 
   const box = $('#sc-box');
   box.querySelectorAll('[data-pt]').forEach(c => {
@@ -1139,8 +1175,8 @@ function openChart(id) {
     : null;
   const exitPx = exitI != null ? bars[exitI].c : null;
   const entryPx = bars[ENTRY_I].c;
-  const candles = bars.map((b, i) => `<line x1="${x(i).toFixed(1)}" y1="${y(b.h).toFixed(1)}" x2="${x(i).toFixed(1)}" y2="${y(b.l).toFixed(1)}" stroke="${b.c>=b.o?'#3fb950':'#e5484d'}" stroke-width="1"/>
-    <rect x="${(x(i)-bw*0.32).toFixed(1)}" y="${y(Math.max(b.o,b.c)).toFixed(1)}" width="${(bw*0.64).toFixed(1)}" height="${Math.max(1,Math.abs(y(b.o)-y(b.c))).toFixed(1)}" fill="${b.c>=b.o?'#3fb950':'#e5484d'}"/>`).join('');
+  const candles = bars.map((b, i) => `<line x1="${x(i).toFixed(1)}" y1="${y(b.h).toFixed(1)}" x2="${x(i).toFixed(1)}" y2="${y(b.l).toFixed(1)}" stroke="${b.c>=b.o?'var(--gain)':'var(--loss)'}" stroke-width="1"/>
+    <rect x="${(x(i)-bw*0.32).toFixed(1)}" y="${y(Math.max(b.o,b.c)).toFixed(1)}" width="${(bw*0.64).toFixed(1)}" height="${Math.max(1,Math.abs(y(b.o)-y(b.c))).toFixed(1)}" fill="${b.c>=b.o?'var(--gain)':'var(--loss)'}"/>`).join('');
   // Entry and exit each get a dotted pair: a vertical line on the session and a
   // horizontal line at the price, so the trade reads as a rectangle on the chart.
   const mark = (i, price, label, color) => i == null ? '' : `
@@ -1154,10 +1190,10 @@ function openChart(id) {
   barDates.forEach((d, i) => { if (d.getMonth() !== lastMonth) { lastMonth = d.getMonth(); kept.push(i); } });
   const every = Math.ceil(kept.length / 7);
   const dateAxis = kept.filter((_, k) => k % every === 0).map(i => `
-    <line x1="${x(i).toFixed(1)}" y1="${(H-M.b).toFixed(1)}" x2="${x(i).toFixed(1)}" y2="${(H-M.b+4).toFixed(1)}" stroke="#34343a"/>
-    <text x="${x(i).toFixed(1)}" y="${H-M.b+17}" fill="#62666d" font-size="10" font-family="JetBrains Mono, monospace" text-anchor="middle">${fmtDay(barDates[i])}</text>`).join('')
-    + `<text x="${x(0).toFixed(1)}" y="${H-4}" fill="#4a4d54" font-size="9" font-family="JetBrains Mono, monospace" text-anchor="start">${fmtFull(barDates[0])}</text>
-       <text x="${x(N-1).toFixed(1)}" y="${H-4}" fill="#4a4d54" font-size="9" font-family="JetBrains Mono, monospace" text-anchor="end">${fmtFull(barDates[N-1])}</text>`;
+    <line x1="${x(i).toFixed(1)}" y1="${(H-M.b).toFixed(1)}" x2="${x(i).toFixed(1)}" y2="${(H-M.b+4).toFixed(1)}" stroke="var(--hair-strong)"/>
+    <text x="${x(i).toFixed(1)}" y="${H-M.b+17}" fill="var(--c-axis)" font-size="10" font-family="JetBrains Mono, monospace" text-anchor="middle">${fmtDay(barDates[i])}</text>`).join('')
+    + `<text x="${x(0).toFixed(1)}" y="${H-4}" fill="var(--c-hwm)" font-size="9" font-family="JetBrains Mono, monospace" text-anchor="start">${fmtFull(barDates[0])}</text>
+       <text x="${x(N-1).toFixed(1)}" y="${H-4}" fill="var(--c-hwm)" font-size="9" font-family="JetBrains Mono, monospace" text-anchor="end">${fmtFull(barDates[N-1])}</text>`;
   $('#modal-root').innerHTML = `<div class="backdrop" id="backdrop">
     <div class="modal" role="dialog" aria-modal="true" aria-label="${t.symbol} trade chart">
       <div class="modal-head">
@@ -1167,13 +1203,13 @@ function openChart(id) {
       </div>
       <div class="modal-body">
         <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Daily candles for ${t.symbol} with entry, exit and structural stop">
-          ${[0,.25,.5,.75,1].map(f => { const v = lo + (hi - lo) * f; return `<line x1="${M.l}" y1="${y(v).toFixed(1)}" x2="${W-M.r}" y2="${y(v).toFixed(1)}" stroke="#23252a" stroke-dasharray="3,3"/>
-            <text x="${W-M.r+6}" y="${(y(v)+3.5).toFixed(1)}" fill="#62666d" font-size="10" font-family="JetBrains Mono, monospace">${inr(v)}</text>`; }).join('')}
+          ${[0,.25,.5,.75,1].map(f => { const v = lo + (hi - lo) * f; return `<line x1="${M.l}" y1="${y(v).toFixed(1)}" x2="${W-M.r}" y2="${y(v).toFixed(1)}" stroke="var(--c-grid)" stroke-dasharray="3,3"/>
+            <text x="${W-M.r+6}" y="${(y(v)+3.5).toFixed(1)}" fill="var(--c-axis)" font-size="10" font-family="JetBrains Mono, monospace">${inr(v)}</text>`; }).join('')}
           ${candles}
-          <path d="${ema.map((v,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('')}" fill="none" stroke="#828fff" stroke-width="1.4"/>
-          <line x1="${M.l}" y1="${(H-M.b).toFixed(1)}" x2="${W-M.r}" y2="${(H-M.b).toFixed(1)}" stroke="#23252a"/>
+          <path d="${ema.map((v,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('')}" fill="none" stroke="var(--c-line)" stroke-width="1.4"/>
+          <line x1="${M.l}" y1="${(H-M.b).toFixed(1)}" x2="${W-M.r}" y2="${(H-M.b).toFixed(1)}" stroke="var(--c-grid)"/>
           ${dateAxis}
-          ${mark(entryI, entryPx, 'entry', '#7a86ff')}${mark(exitI, exitPx, 'exit', exitPx >= entryPx ? '#3fb950' : '#e5484d')}
+          ${mark(entryI, entryPx, 'entry', 'var(--info)')}${mark(exitI, exitPx, 'exit', exitPx >= entryPx ? 'var(--gain)' : 'var(--loss)')}
         </svg>
         <p class="tert" style="font-size:11px;margin:8px 2px 0;">Prototype renders the candles locally. In the app this is the server-rendered PNG from <span class="mono">/api/backtest/${railState.selected}/trade/${t.id}/chart</span>.</p>
       </div></div></div>`;
@@ -1184,6 +1220,22 @@ function openChart(id) {
 }
 function closeChart() { $('#modal-root').innerHTML = ''; document.removeEventListener('keydown', escClose); }
 function escClose(e) { if (e.key === 'Escape') closeChart(); }
+
+/* ═══ theme ═════════════════════════════════════════════════════════ */
+// Chart colours are CSS custom properties on inline SVG, so switching the
+// theme repaints the charts without redrawing them.
+const THEME_KEY = 'ohm-backtest-theme';
+function setTheme(t) {
+  if (t === 'auto') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', t);
+  $('#theme').querySelectorAll('[data-theme-set]').forEach(b =>
+    b.setAttribute('aria-pressed', String(b.dataset.themeSet === t)));
+  try { localStorage.setItem(THEME_KEY, t); } catch (e) { /* private window */ }
+}
+$('#theme').addEventListener('click', e => {
+  const b = e.target.closest('[data-theme-set]'); if (b) setTheme(b.dataset.themeSet);
+});
+(() => { let t = 'auto'; try { t = localStorage.getItem(THEME_KEY) || 'auto'; } catch (e) {} setTheme(t); })();
 
 /* ═══ boot ══════════════════════════════════════════════════════════ */
 renderRail(); drawEquity(); selectRun(31615); renderDay(); renderTrades();
