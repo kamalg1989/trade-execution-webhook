@@ -297,7 +297,7 @@ td.sym{color:var(--ink);font-weight:500;}
     <div class="brand"><h1>Backtest</h1><span class="env">custom-screener · ohmstockvault</span></div>
     <span class="proto">Prototype</span>
     <div class="spacer"></div>
-    <span class="livepill"><span class="dot"></span> #31616 running · day 1,420 / 2,680</span>
+    <span class="livepill"><span class="dot"></span> #31620 running · day 1,420 / 2,680</span>
     <div class="seg" id="theme" role="group" aria-label="Colour theme">
       <button data-theme-set="auto" aria-pressed="true" title="Follow system">Auto</button>
       <button data-theme-set="light" aria-pressed="false">Light</button>
@@ -316,17 +316,11 @@ td.sym{color:var(--ink);font-weight:500;}
         <div class="panel-head"><h2>Launch</h2><span class="eyebrow" style="margin-left:auto;">preset</span></div>
         <div class="launcher">
           <div class="preset-row" id="presets"></div>
-          <div class="launch-meta">
-            <span class="tag">₹20,00,000</span><span class="tag">2015-01-01 → 2026-09-05</span>
-            <span class="tag">band 45–70</span><span class="tag">mid_cut 0.40</span>
-            <span class="tag">cov_guard 0.5</span><span class="tag">ADV 2%</span>
-            <span class="tag">slip 0.20%</span><span class="tag">buy costs on</span>
-            <span class="tag warnt">⚠ next_open_exit</span>
-          </div>
+          <div class="launch-meta" id="launch-meta"></div>
           <div class="launch-actions">
             <button class="btn btn-primary" disabled>Run backtest</button>
             <button class="btn">Edit 34 parameters</button>
-            <span class="w" style="font-size:12px;">Queued behind #31616</span>
+            <span class="w" style="font-size:12px;">Queued behind #31620</span>
           </div>
         </div>
       </section>
@@ -499,40 +493,99 @@ const SYMS = ['SAREGAMA','KPITTECH','CAPLIPOINT','JBCHEPHARM','NEWGEN','KAYNES',
 const REASONS = ['Target','Structural SL','EMA21 trail','Trail SL','Time stop','Rebalance','Failed breakout'];
 const STRATS = ['PORTFOLIO','WEEKLY_BREAKOUT','INDEX_TF','SQUEEZE_BREAKOUT','RSI_REVERSION'];
 
-/* ── runs ── */
+// Preset families — used by the launcher chips AND the strategy filter, so a
+// run can be found by the preset it was launched from, not only by engine name.
+const PRESETS = [
+  { id:'A5_T3',  name:'POSITIONAL A5 × 3 Tranches', sub:'lowest drawdown',
+    tags:['₹30,00,000','3 tranches','phase 0','earn gate 0','band 45–70','ADV 2%','slip 0.20%','buy costs on'] },
+  { id:'A5',     name:'POSITIONAL Combo v3 A5', sub:'recommended',
+    tags:['₹20,00,000','1 tranche','band 45–70','mid_cut 0.40','cov_guard 0.5','ADV 2%','slip 0.20%','buy costs on'] },
+  { id:'A5_US',  name:'A5 US v9', sub:'US universe', tags:['$250,000','1 tranche','band 45–70','ADV 2%','slip 0.15%'] },
+  { id:'NSE_C',  name:'NSE-C improved', sub:'', tags:['₹20,00,000','quarterly rebalance','top_n 25'] },
+  { id:'WKLY',   name:'Weekly breakout', sub:'', tags:['₹20,00,000','weekly cadence','risk 1.0%','MACD trail'] },
+  { id:'U1',     name:'U1 baseline', sub:'control', tags:['₹20,00,000','no exits','rebalance only'] },
+  { id:'PROD',   name:'Production today', sub:'', tags:['₹20,00,000','daily cadence','A/B control'] },
+];
+const PRESET_BY_ID = Object.fromEntries(PRESETS.map(p => [p.id, p]));
+const WIN = '2011-01-01 → 2026-09-04';
+
+// #31609–#31619 are the real 3-tranche / start-phase study, with that study's
+// own figures — the prototype should not put invented numbers on real run ids.
 const SEED_RUNS = [
-  {id:31616,status:'RUNNING',strategy:'PORTFOLIO',track:'QUANT',when:'2026-09-06 22:40',exec:null,notes:'A5 rerun with cov guard 0.55',pct:53,progress:'1,420 / 2,680',tags:['band 45–70','cov_guard 0.55','ADV 2%']},
-  {id:31615,status:'COMPLETED',strategy:'PORTFOLIO',track:'QUANT',when:'2026-09-06 19:12',exec:252,notes:'POSITIONAL Combo v3 A5 (recommended)',cagr:22.5,dd:-17.4,w12:-12.8,martin:1.29,trades:1284,real:17840000,unreal:1700000,tags:['band 45–70','mid_cut 0.40','buy costs','slip 0.20%'],flags:[{t:'A5',c:'b-flag'}]},
-  {id:31608,status:'COMPLETED',strategy:'PORTFOLIO',track:'QUANT',when:'2026-09-05 21:04',exec:248,notes:'ATR ceiling counterfactual 120%',cagr:21.1,dd:-18.9,w12:-14.1,martin:1.12,trades:1310,real:15920000,unreal:1240000,tags:['atr_trim 120%','band 45–70']},
-  {id:31607,status:'COMPLETED',strategy:'PORTFOLIO',track:'QUANT',when:'2026-09-05 20:31',exec:244,notes:'ATR ceiling counterfactual 80%',cagr:20.4,dd:-19.6,w12:-15.0,martin:1.04,trades:1198,real:14610000,unreal:980000,tags:['atr_trim 80%','band 45–70']},
-  {id:31588,status:'COMPLETED',strategy:'PORTFOLIO',track:'QUANT',when:'2026-09-05 11:47',exec:301,notes:'screen_gpt production replica',cagr:19.8,dd:-21.2,w12:-16.4,martin:0.93,trades:1442,real:13380000,unreal:1510000,tags:['prod replica','daily cadence'],flags:[{t:'replica',c:'b-flag'}]},
-  {id:31115,status:'COMPLETED',strategy:'PORTFOLIO',track:'QUANT',when:'2026-08-27 20:55',exec:263,notes:'Run of record — UI preset launch',cagr:22.52,dd:-17.40,w12:-12.82,martin:1.29,trades:1281,real:17790000,unreal:1660000,tags:['band 45–70','cov_guard 0.5','buy costs'],flags:[{t:'record',c:'b-flag'}]},
-  {id:31114,status:'VOID',strategy:'PORTFOLIO',track:'QUANT',when:'2026-08-27 20:02',exec:259,notes:'Discarded — stale service ran cov_guard and buy costs NULL',tags:['stale service'],flags:[{t:'discard',c:'b-warn'}]},
-  {id:31107,status:'COMPLETED',strategy:'PORTFOLIO',track:'QUANT',when:'2026-08-26 18:20',exec:255,notes:'A5 params baseline',cagr:22.3,dd:-17.9,w12:-13.4,martin:1.24,trades:1276,real:17240000,unreal:1420000,tags:['band 45–70']},
-  {id:31090,status:'FAILED',strategy:'WEEKLY_BREAKOUT',track:'QUANT',when:'2026-08-26 09:14',exec:38,notes:'OOM during path_stats',tags:['weekly cadence'],flags:[{t:'oom',c:'b-warn'}]},
+  {id:31620,status:'RUNNING',strategy:'PORTFOLIO',preset:'A5_T3',track:'QUANT',cap:3000000,when:'2026-09-06 22:40',
+   notes:'3T @ ₹30L, gate 0, cov guard 0.55',pct:53,progress:'1,420 / 2,680',tranches:3,tags:['3 tranches','gate 0','cov_guard 0.55']},
+  {id:31619,status:'COMPLETED',strategy:'PORTFOLIO',preset:'A5',track:'QUANT',cap:3000000,when:'2026-09-05 22:14',exec:268,
+   notes:'1 tranche @ ₹30L — sizing control',cagr:23.14,dd:-20.23,w12:-12.89,calmar:1.144,trades:2124,
+   real:24980000,unreal:2310000,tranches:1,tags:['1 tranche','gate 0','₹30L/book']},
+  {id:31618,status:'COMPLETED',strategy:'PORTFOLIO',preset:'A5_T3',track:'QUANT',cap:3000000,when:'2026-09-05 21:52',exec:604,
+   notes:'3T @ ₹30L — chosen config',cagr:23.37,dd:-20.17,w12:-10.59,calmar:1.159,trades:6371,
+   real:25640000,unreal:2410000,tranches:3,tags:['3 tranches','gate 0','₹10L/book','0.47% sub-₹10k'],
+   flags:[{t:'chosen',c:'b-flag'}]},
+  {id:31617,status:'COMPLETED',strategy:'PORTFOLIO',preset:'A5_T3',track:'QUANT',cap:4500000,when:'2026-09-05 20:58',exec:611,
+   notes:'3T @ ₹45L, base phase 7 — byte-identical to #31616',cagr:23.43,dd:-19.67,w12:-10.60,calmar:1.191,trades:6367,
+   real:38720000,unreal:3410000,tranches:3,tags:['3 tranches','phase 7','₹15L/book'],flags:[{t:'= #31616',c:'b-flag'}]},
+  {id:31616,status:'COMPLETED',strategy:'PORTFOLIO',preset:'A5_T3',track:'QUANT',cap:4500000,when:'2026-09-05 20:11',exec:608,
+   notes:'3T @ ₹45L, base phase 0',cagr:23.43,dd:-19.67,w12:-10.60,calmar:1.191,trades:6367,
+   real:38720000,unreal:3410000,tranches:3,tags:['3 tranches','phase 0','₹15L/book']},
+  {id:31615,status:'COMPLETED',strategy:'PORTFOLIO',preset:'A5',track:'QUANT',cap:4500000,when:'2026-09-05 18:40',exec:262,
+   notes:'1T @ ₹45L, phase 17 — worst drawdown of the six',cagr:23.42,dd:-21.97,w12:-11.25,calmar:1.066,trades:2088,
+   real:37010000,unreal:2960000,tranches:1,tags:['1 tranche','phase 17']},
+  {id:31614,status:'COMPLETED',strategy:'PORTFOLIO',preset:'A5',track:'QUANT',cap:4500000,when:'2026-09-05 18:02',exec:259,
+   notes:'1T @ ₹45L, phase 14',cagr:23.40,dd:-20.25,w12:-14.31,calmar:1.156,trades:2091,
+   real:36940000,unreal:3020000,tranches:1,tags:['1 tranche','phase 14']},
+  {id:31613,status:'COMPLETED',strategy:'PORTFOLIO',preset:'A5',track:'QUANT',cap:4500000,when:'2026-09-05 17:25',exec:264,
+   notes:'1T @ ₹45L, phase 10 — best single phase, not the expectation',cagr:24.57,dd:-17.28,w12:-13.70,calmar:1.422,
+   trades:2103,real:41880000,unreal:3120000,tranches:1,tags:['1 tranche','phase 10'],flags:[{t:'lottery win',c:'b-warn'}]},
+  {id:31612,status:'COMPLETED',strategy:'PORTFOLIO',preset:'A5',track:'QUANT',cap:4500000,when:'2026-09-05 16:47',exec:257,
+   notes:'1T @ ₹45L, phase 7',cagr:23.59,dd:-18.80,w12:-13.31,calmar:1.255,trades:2079,
+   real:37620000,unreal:2880000,tranches:1,tags:['1 tranche','phase 7']},
+  {id:31611,status:'COMPLETED',strategy:'PORTFOLIO',preset:'A5',track:'QUANT',cap:4500000,when:'2026-09-05 16:09',exec:255,
+   notes:'1T @ ₹45L, phase 3',cagr:22.22,dd:-19.50,w12:-10.85,calmar:1.139,trades:2066,
+   real:33940000,unreal:2740000,tranches:1,tags:['1 tranche','phase 3']},
+  {id:31610,status:'COMPLETED',strategy:'PORTFOLIO',preset:'A5',track:'QUANT',cap:4500000,when:'2026-09-05 15:31',exec:261,
+   notes:'1T @ ₹45L, phase 0',cagr:22.98,dd:-19.72,w12:-12.60,calmar:1.165,trades:2072,
+   real:36020000,unreal:2810000,tranches:1,tags:['1 tranche','phase 0']},
+  {id:31609,status:'COMPLETED',strategy:'PORTFOLIO',preset:'A5_T3',track:'QUANT',cap:2000000,when:'2026-09-04 23:18',exec:597,
+   notes:'3T @ ₹20L — 4.18% of positions under ₹10k',cagr:23.30,dd:-20.15,w12:-10.51,calmar:1.156,trades:6369,
+   real:16980000,unreal:1540000,tranches:3,tags:['3 tranches','₹6.67L/book','sub-scale orders'],flags:[{t:'undersized',c:'b-warn'}]},
+  {id:31567,status:'VOID',strategy:'PORTFOLIO',preset:'A5_T3',track:'QUANT',cap:4500000,when:'2026-08-31 20:40',exec:590,
+   notes:'7 tranches — contaminated 14-day earn gate, do not quote',tranches:7,tags:['7 tranches','earn gate 14'],flags:[{t:'look-ahead',c:'b-warn'}]},
+  {id:31566,status:'VOID',strategy:'PORTFOLIO',preset:'A5_T3',track:'QUANT',cap:4500000,when:'2026-08-31 20:02',exec:588,
+   notes:'5 tranches — contaminated 14-day earn gate, do not quote',tranches:5,tags:['5 tranches','earn gate 14'],flags:[{t:'look-ahead',c:'b-warn'}]},
+  {id:31565,status:'VOID',strategy:'PORTFOLIO',preset:'A5_T3',track:'QUANT',cap:4500000,when:'2026-08-31 19:24',exec:585,
+   notes:'3 tranches — contaminated 14-day earn gate, do not quote',tranches:3,tags:['3 tranches','earn gate 14'],flags:[{t:'look-ahead',c:'b-warn'}]},
+  {id:31588,status:'COMPLETED',strategy:'PORTFOLIO',preset:'PROD',track:'QUANT',cap:2000000,when:'2026-09-05 11:47',exec:301,
+   notes:'screen_gpt production replica',cagr:19.8,dd:-21.2,w12:-16.4,calmar:0.93,trades:1442,
+   real:13380000,unreal:1510000,tranches:1,tags:['prod replica','daily cadence']},
+  {id:31090,status:'FAILED',strategy:'WEEKLY_BREAKOUT',preset:'WKLY',track:'QUANT',cap:2000000,when:'2026-08-26 09:14',exec:38,
+   notes:'OOM during path_stats',tranches:1,tags:['weekly cadence'],flags:[{t:'oom',c:'b-warn'}]},
 ];
 const RUNS = SEED_RUNS.slice();
 (function () {
   const r = lcg(4242);
-  for (let i = 0; i < 62; i++) {
-    const cagr = 6 + r() * 20, dd = -(9 + r() * 18), st = r();
-    const strategy = STRATS[Math.floor(r() * STRATS.length)];
-    const short = r() > 0.86;
+  for (let i = 0; i < 55; i++) {
+    const cagr = 6 + r() * 20, dd = -(9 + r() * 18);
+    const pr = PRESETS[Math.floor(r() * PRESETS.length)];
+    const cap = [2000000, 3000000, 4500000][Math.floor(r() * 3)];
     RUNS.push({
-      id: 31085 - i * 3, status: st > 0.94 ? 'FAILED' : 'COMPLETED', strategy,
-      track: ['QUANT','AI','BOTH'][Math.floor(r() * 3)],
-      when: '2026-0' + (7 + Math.floor(r() * 2)) + '-' + String(2 + Math.floor(r() * 26)).padStart(2,'0') + ' ' + String(9 + Math.floor(r()*13)).padStart(2,'0') + ':' + String(Math.floor(r()*59)).padStart(2,'0'),
-      exec: Math.round(40 + r() * 300),
+      id: 31560 - i * 3, status: r() > 0.94 ? 'FAILED' : 'COMPLETED',
+      strategy: STRATS[Math.floor(r() * STRATS.length)], preset: pr.id,
+      track: ['QUANT','AI','BOTH'][Math.floor(r() * 3)], cap,
+      when: '2026-0' + (7 + Math.floor(r() * 2)) + '-' + String(2 + Math.floor(r() * 26)).padStart(2,'0')
+            + ' ' + String(9 + Math.floor(r()*13)).padStart(2,'0') + ':' + String(Math.floor(r()*59)).padStart(2,'0'),
+      exec: Math.round(40 + r() * 560),
       notes: ['sweep leg','gate sensitivity','exit ladder probe','sector cap test','vol floor probe','rebalance 42d'][Math.floor(r()*6)],
-      cagr, dd, w12: dd * 0.7, martin: cagr / Math.abs(dd), trades: Math.round(300 + r() * 1400),
-      real: Math.round((cagr - 8) * 900000), unreal: Math.round(r() * 2200000 - 400000),
-      short, tags: ['sweep', 'top_n ' + (10 + Math.floor(r()*20)), 'sl ' + ['none','fixed 15%','ema21','sma50'][Math.floor(r()*4)]],
+      cagr, dd, w12: dd * 0.7, calmar: cagr / Math.abs(dd), trades: Math.round(900 + r() * 5600),
+      real: Math.round(cap * (cagr - 8) * 0.45), unreal: Math.round(r() * 2200000 - 400000),
+      short: r() > 0.88, tranches: [1,1,3,5][Math.floor(r()*4)],
+      tags: ['sweep', 'top_n ' + (10 + Math.floor(r()*20)), 'sl ' + ['none','fixed 15%','ema21','sma50'][Math.floor(r()*4)]],
     });
   }
 })();
-RUNS.forEach(r => { if (r.real != null) { r.total = r.real + (r.unreal || 0);
-  r.realPct = 100 * r.real / 2000000; r.unrealPct = 100 * (r.unreal || 0) / 2000000;
-  r.totalPct = 100 * r.total / 2000000; } });
+RUNS.forEach(r => { r.cap = r.cap || 2000000;
+  if (r.real != null) { r.total = r.real + (r.unreal || 0);
+    r.realPct = 100 * r.real / r.cap; r.unrealPct = 100 * (r.unreal || 0) / r.cap;
+    r.totalPct = 100 * r.total / r.cap; } });
 
 /* ── trades ── */
 const TRADES = (function () {
@@ -597,19 +650,29 @@ const POINTS = (function () {
 })();
 
 /* ═══ launcher presets ══════════════════════════════════════════════ */
-const PRESET_NAMES = ['POSITIONAL Combo v3 A5','A5 US v9','NSE-C improved','Weekly breakout','U1 baseline','Production today'];
-$('#presets').innerHTML = PRESET_NAMES.map((p, i) =>
-  `<button class="chip" aria-pressed="${i===0}">${i===0?'<span class="tick"></span>':''}${esc(p)}</button>`).join('');
+$('#presets').innerHTML = PRESETS.map(p =>
+  `<button class="chip" data-preset="${p.id}" aria-pressed="false">${esc(p.name)}${p.sub?` <span class="tert">${esc(p.sub)}</span>`:''}</button>`).join('');
+function showPreset(id) {
+  const p = PRESET_BY_ID[id];
+  $('#presets').querySelectorAll('.chip').forEach(c => {
+    const on = c.dataset.preset === id;
+    c.setAttribute('aria-pressed', String(on));
+    c.querySelector('.tick')?.remove();
+    if (on) c.insertAdjacentHTML('afterbegin', '<span class="tick"></span>');
+  });
+  $('#launch-meta').innerHTML = [`<span class="tag">${WIN}</span>`]
+    .concat(p.tags.map(t => `<span class="tag">${esc(t)}</span>`))
+    .concat('<span class="tag warnt">⚠ next_open_exit</span>').join('');
+}
 $('#presets').addEventListener('click', e => {
-  const b = e.target.closest('.chip'); if (!b) return;
-  $('#presets').querySelectorAll('.chip').forEach(c => { c.setAttribute('aria-pressed','false'); c.querySelector('.tick')?.remove(); });
-  b.setAttribute('aria-pressed','true'); b.insertAdjacentHTML('afterbegin','<span class="tick"></span>');
+  const b = e.target.closest('[data-preset]'); if (b) showPreset(b.dataset.preset);
 });
+showPreset('A5_T3');
 
 /* ═══ run rail ══════════════════════════════════════════════════════ */
 const SORTS = {
   newest:{label:'Newest first',fn:(a,b)=>b.id-a.id}, oldest:{label:'Oldest first',fn:(a,b)=>a.id-b.id},
-  calmar:{label:'Calmar ↓',fn:(a,b)=>(b.martin??-9)-(a.martin??-9)},
+  calmar:{label:'Calmar ↓',fn:(a,b)=>(b.calmar??-9)-(a.calmar??-9)},
   cagrDesc:{label:'CAGR ↓',fn:(a,b)=>(b.cagr??-99)-(a.cagr??-99)},
   ddAsc:{label:'Max DD ↑',fn:(a,b)=>(b.dd??-99)-(a.dd??-99)},
   totalDesc:{label:'Total P&L ↓',fn:(a,b)=>(b.total??-1e18)-(a.total??-1e18)},
@@ -619,12 +682,16 @@ const SORTS = {
   tradesDesc:{label:'Trades ↓',fn:(a,b)=>(b.trades??0)-(a.trades??0)},
 };
 $('#f-sort').innerHTML = Object.entries(SORTS).map(([k,v]) => `<option value="${k}">${esc(v.label)}</option>`).join('');
-$('#f-strategy').innerHTML = '<option value="ALL">All strategies</option>' +
-  [...new Set(RUNS.map(r=>r.strategy))].sort().map(s => `<option>${s}</option>`).join('');
+$('#f-strategy').innerHTML = '<option value="ALL">All strategies</option>'
+  + '<optgroup label="Preset">'
+  + PRESETS.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')
+  + '</optgroup><optgroup label="Engine strategy">'
+  + [...new Set(RUNS.map(r => r.strategy))].sort().map(x => `<option value="${x}">${x}</option>`).join('')
+  + '</optgroup>';
 
 const BADGE = {COMPLETED:['b-done','Completed'],RUNNING:['b-run','Running'],FAILED:['b-fail','Failed'],VOID:['b-void','Void']};
 const PAGE = 25;
-let railState = { limit: PAGE, view: 'list', selected: 31615 };
+let railState = { limit: PAGE, view: 'list', selected: 31618 };
 
 function filteredRuns() {
   const q = $('#f-q').value.trim().toLowerCase(), idq = $('#f-id').value.trim().replace(/^#/,'');
@@ -633,11 +700,11 @@ function filteredRuns() {
   return RUNS
     .filter(r => s === 'ALL' || r.status === s)
     .filter(r => tk === 'ALL' || r.track === tk)
-    .filter(r => sg === 'ALL' || r.strategy === sg)
+    .filter(r => sg === 'ALL' || r.strategy === sg || r.preset === sg)
     .filter(r => !idq || String(r.id).startsWith(idq))
     .filter(r => !dt || r.when.slice(0,10) >= dt)
     .filter(r => !win || (r.total ?? 0) > 0)
-    .filter(r => !q || [r.notes, '#'+r.id, r.strategy, ...(r.tags||[])].join(' ').toLowerCase().includes(q))
+    .filter(r => !q || [r.notes, '#'+r.id, r.strategy, PRESET_BY_ID[r.preset]?.name, ...(r.tags||[])].join(' ').toLowerCase().includes(q))
     .sort(SORTS[$('#f-sort').value].fn);
 }
 
@@ -648,7 +715,7 @@ function runCard(r) {
       <span>CAGR <b class="${r.cagr>=0?'g':'l'}">${sgn(r.cagr)}</b>${r.short?'<span class="w">*</span>':''}</span>
       <span>DD <b class="l">${r.dd.toFixed(1)}%</b></span>
       <span>w12m <b class="w">${r.w12.toFixed(1)}%</b></span>
-      <span>Martin <b class="muted">${r.martin.toFixed(2)}</b></span>
+      <span>Calmar <b class="muted">${r.calmar.toFixed(2)}</b></span>
       <span>Total <b class="${pnlCls(r.total)}">${inrC(r.total)}</b> <b class="${pnlCls(r.total)}">${pctS(r.totalPct)}</b></span>
       <span>${(r.trades||0).toLocaleString('en-IN')} trades</span></div>` : '';
   const prog = r.pct != null ? `<div class="prog"><i style="width:${r.pct}%"></i></div>
@@ -658,7 +725,8 @@ function runCard(r) {
   return `<button class="run" aria-current="${r.id===railState.selected}" data-run="${r.id}" title="${esc(r.notes||'')}">
       <span class="run-id">#${r.id}<span class="badge ${cls}">${txt}</span>${flags}</span>
       <span class="run-when">${esc(r.when)}</span>
-      <span class="run-sub">${esc(r.notes||'defaults')} · ${r.strategy} · ${r.track}${r.exec?` · ${(r.exec/60).toFixed(1)}m`:''}</span>
+      <span class="run-sub">${esc(r.notes||'defaults')}</span>
+      <span class="run-sub tert">${esc(PRESET_BY_ID[r.preset]?.name || r.strategy)} · ${inrC(r.cap)}${r.tranches>1?` · ${r.tranches} tranches`:''}${r.exec?` · ${(r.exec/60).toFixed(1)}m`:''}</span>
       ${prog}${nums}${tags}${stop}</button>`;
 }
 
@@ -670,7 +738,7 @@ const RUN_COLS = [
   ['Total','Realized + unrealized','total'], ['Total %','Total P&L as % of starting capital','totalPct'],
   ['CAGR','Compound annual growth, MtM weekly','cagr'],
   ['maxDD','Peak-to-trough, MtM weekly','dd'], ['w12m','Worst rolling 12-month return','w12'],
-  ['Martin','CAGR ÷ ulcer index','martin'], ['Settings','Preset, notes and non-default params',''], ['',''],
+  ['Calmar','CAGR ÷ max drawdown','calmar'], ['Settings','Preset, notes and non-default params',''], ['',''],
 ];
 let tableSort = { key: null, dir: 'desc' };
 
@@ -692,7 +760,7 @@ function runTable(rows) {
       <td class="n tert">${r.exec?(r.exec/60).toFixed(1)+'m':'—'}</td>
       <td class="n">${r.short?'2025–26':'2015–26'}</td>
       <td>${r.track}</td>
-      <td class="n">₹20L</td>
+      <td class="n">${inrC(r.cap)}${r.tranches>1?` <span class="tert">×${r.tranches}T</span>`:''}</td>
       <td class="${r.status==='COMPLETED'?'g':r.status==='RUNNING'?'w':r.status==='FAILED'?'l':'tert'}">${r.status}${r.pct!=null?` <span class="tert">· ${r.pct}%</span>`:''}</td>
       <td class="n">${r.trades?r.trades.toLocaleString('en-IN'):'—'}</td>
       <td class="n ${pnlCls(r.real)}">${inrC(r.real)}</td>
@@ -704,7 +772,7 @@ function runTable(rows) {
       <td class="n ${r.cagr==null?'tert':r.cagr>=0?'g':'l'}">${r.cagr!=null?sgn(r.cagr):'—'}${r.short?'*':''}</td>
       <td class="n l">${r.dd!=null?r.dd.toFixed(1)+'%':'—'}</td>
       <td class="n w">${r.w12!=null?r.w12.toFixed(1)+'%':'—'}</td>
-      <td class="n">${r.martin!=null?r.martin.toFixed(2):'—'}</td>
+      <td class="n">${r.calmar!=null?r.calmar.toFixed(2):'—'}</td>
       <td style="white-space:normal;min-width:210px;">
         <div style="color:var(--ink-muted)">${esc(r.notes||'defaults')}</div>
         <div class="run-tags" style="margin-top:3px">${(r.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div></td>
@@ -753,7 +821,7 @@ document.addEventListener('click', e => {
   const th = e.target.closest('th[data-sort]');
   if (th) { const k = th.dataset.sort;
     tableSort = tableSort.key === k ? { key: k, dir: tableSort.dir === 'desc' ? 'asc' : 'desc' } : { key: k, dir: 'desc' };
-    const f = SORTS[{real:'realDesc',realPct:'realDesc',total:'totalDesc',totalPct:'totalPctDesc',unreal:'totalDesc',unrealPct:'totalDesc',cagr:'cagrDesc',dd:'ddAsc',martin:'calmar'}[k] || 'newest'];
+    const f = SORTS[{real:'realDesc',realPct:'realDesc',total:'totalDesc',totalPct:'totalPctDesc',unreal:'totalDesc',unrealPct:'totalDesc',cagr:'cagrDesc',dd:'ddAsc',calmar:'calmar'}[k] || 'newest'];
     $('#f-sort').value = tableSort.dir === 'asc' && k === 'total' ? 'totalAsc' : Object.keys(SORTS).find(x => SORTS[x] === f);
     renderRail(); return; }
   const row = e.target.closest('[data-run]');
@@ -775,14 +843,14 @@ function selectRun(id) {
   railState.selected = id;
   const r = RUNS.find(x => x.id === id) || RUNS[1];
   $('#rh-id').textContent = 'Run #' + r.id;
-  $('#rh-win').textContent = `${r.short?'2025-01-01':'2015-01-01'} → 2026-09-05 · ${r.strategy} · ${r.track} · ₹20L`
+  $('#rh-win').textContent = `${WIN} · ${PRESET_BY_ID[r.preset]?.name || r.strategy} · ${inrC(r.cap)}${r.tranches>1?` · ${r.tranches}T`:''}`
     + (r.status === 'RUNNING' ? ` · day ${r.progress}` : '') + (r.status === 'FAILED' ? ` · ${r.notes}` : '');
   $('#rh-stop').innerHTML = r.status === 'RUNNING' ? `<button class="btn btn-sm btn-danger" data-stop="${r.id}">Stop run</button>` : '';
   $('#shortwin').classList.toggle('hidden', !r.short);
-  renderKpis(r); renderStats(r); renderRail();
+  drawEquity(); renderKpis(r); renderStats(r); renderRail();
 }
 function renderKpis(r) {
-  const cagr = r.cagr ?? 22.5;
+  const cagr = r.cagr ?? 23.37;
   // Take MaxDD from the drawn equity path so the KPI and the chart agree.
   const dd = -(window.__maxDD ?? Math.abs(r.dd ?? 17.4));
   const items = [
@@ -791,18 +859,21 @@ function renderKpis(r) {
     ['Max underwater', (window.__uw?.months ?? 14) + ' mo', 'w',
       window.__uw ? `${window.__uw.from} → ${window.__uw.to}` : ''],
     ['Calmar', (cagr / Math.abs(dd)).toFixed(2), '', 'CAGR ÷ MaxDD'],
-    ['Win rate', '41%', 'i', (r.trades ?? 1284).toLocaleString('en-IN') + ' closed'],
+    ['Win rate', '41%', 'i', (r.trades ?? 6371).toLocaleString('en-IN') + ' closed'],
   ];
   $('#kpibar').innerHTML = items.map(([k, v, c, h]) =>
     `<div class="kpi"><div class="v ${c}">${v}</div><div class="k">${k}</div><div class="h">${h}</div></div>`).join('');
 }
 function renderStats(r) {
   const s = [
-    [(r.w12 ?? -12.8).toFixed(1) + '%', 'Worst 12 months', 'l'],
-    ['14.2', 'Ulcer index', ''], [(r.martin ?? 1.29).toFixed(2), 'Martin ratio', ''],
-    ['3.8×', 'Turnover / yr', ''], [inr(r.total ?? 19540000), 'Total P&L', 'g'],
-    [pctS(r.totalPct ?? 977.0), 'Total P&L % of capital', 'g'],
-    [pctS(r.realPct ?? 892.0), 'Realized % of capital', 'g'],
+    [(r.w12 ?? -10.59).toFixed(1) + '%', 'Worst 12 months', 'l'],
+    ['14.2', 'Ulcer index', ''],
+    [(r.tranches ?? 1) + (r.tranches > 1 ? ' × ' + inrC(r.cap / r.tranches) : ''),
+      r.tranches > 1 ? 'Tranches (per book)' : 'Tranches', ''],
+    [inrC(r.cap), 'Starting capital', ''],
+    ['3.8×', 'Turnover / yr', ''], [inrC(r.total ?? 28050000), 'Total P&L', 'g'],
+    [pctS(r.totalPct ?? 935.0), 'Total P&L % of capital', 'g'],
+    [pctS(r.realPct ?? 854.7), 'Realized % of capital', 'g'],
     ['+0.41 R', 'Avg R', ''], ['−₹8,42,100', 'Cost drag', ''],
     [r.exec ? (r.exec / 60).toFixed(1) + ' m' : '—', 'Exec time', ''],
   ];
@@ -825,7 +896,9 @@ $('#eq-modes').addEventListener('click', e => {
 });
 $('#eq-dd').addEventListener('change', drawEquity);
 
-const CAP = 2000000;
+// The weekly series is generated at ₹20L; every run is drawn by scaling it to
+// that run's own starting capital, so the chart and the P&L tiles agree.
+const BASE_CAP = 2000000;
 // Equity on top, drawdown as its own underwater panel beneath it, sharing one
 // time axis. The overlay used to be drawn inside the price plot, where a weekly
 // series covered the curve it was meant to explain.
@@ -837,8 +910,10 @@ function drawEquity() {
   const pw = W - M.l - M.r;
   const xi = i => M.l + (i / (P.length - 1)) * pw;
 
-  const vals = P.map(p => CAP + p.quantRealizedCumPnl + p.aiRealizedCumPnl
-    + (eqMode === 'mtm' ? p.quantUnrealizedPnl + p.aiUnrealizedPnl : 0));
+  const CAP = RUNS.find(r => r.id === railState.selected)?.cap || BASE_CAP;
+  const k = CAP / BASE_CAP;
+  const vals = P.map(p => CAP + k * (p.quantRealizedCumPnl + p.aiRealizedCumPnl
+    + (eqMode === 'mtm' ? p.quantUnrealizedPnl + p.aiUnrealizedPnl : 0)));
   let pk = -Infinity; const peaks = vals.map(v => (pk = Math.max(pk, v)));
   const dds = vals.map((v, i) => (peaks[i] - v) / peaks[i] * 100);
   const maxDD = Math.max(...dds), final = vals[vals.length - 1], peak = Math.max(...vals);
@@ -871,7 +946,7 @@ function drawEquity() {
     ${ticks.map(v => `<line x1="${M.l}" y1="${y(v).toFixed(1)}" x2="${W-M.r}" y2="${y(v).toFixed(1)}" stroke="var(--c-grid)" stroke-dasharray="3,3"/>
       <text x="${M.l-8}" y="${(y(v)+3.5).toFixed(1)}" fill="var(--c-axis)" font-size="10" font-family="JetBrains Mono, monospace" text-anchor="end">${inrC(v)}</text>`).join('')}
     <line x1="${M.l}" y1="${y(CAP).toFixed(1)}" x2="${W-M.r}" y2="${y(CAP).toFixed(1)}" stroke="var(--c-hwm)" stroke-width="1.4"/>
-    <text x="${M.l+5}" y="${(y(CAP)-5).toFixed(1)}" fill="var(--c-axis)" font-size="9" font-family="JetBrains Mono, monospace">start ₹20L</text>
+    <text x="${M.l+5}" y="${(y(CAP)-5).toFixed(1)}" fill="var(--c-axis)" font-size="9" font-family="JetBrains Mono, monospace">start ${inrC(CAP)}</text>
     <path d="${line} L${xi(P.length-1).toFixed(1)},${(M.t+eqH).toFixed(1)} L${M.l},${(M.t+eqH).toFixed(1)} Z" fill="url(#eqf)"/>
     <path d="${peakLine}" fill="none" stroke="var(--c-hwm)" stroke-width="1" stroke-dasharray="4,3"/>
     <path d="${line}" fill="none" stroke="var(--c-line)" stroke-width="1.8" stroke-linejoin="round"/>
@@ -1238,7 +1313,7 @@ $('#theme').addEventListener('click', e => {
 (() => { let t = 'auto'; try { t = localStorage.getItem(THEME_KEY) || 'auto'; } catch (e) {} setTheme(t); })();
 
 /* ═══ boot ══════════════════════════════════════════════════════════ */
-renderRail(); drawEquity(); selectRun(31615); renderDay(); renderTrades();
+renderRail(); drawEquity(); selectRun(31618); renderDay(); renderTrades();
 </script>
 
 </body>
