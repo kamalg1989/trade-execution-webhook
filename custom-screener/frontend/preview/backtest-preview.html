@@ -134,6 +134,12 @@ input.ctl::placeholder{color:var(--ink-tert);}
 .chip[aria-pressed="true"]{border-color:var(--accent);color:var(--ink);background:color-mix(in srgb, var(--accent) 13%, transparent);}
 .chip .tick{width:5px;height:5px;border-radius:50%;background:var(--accent);}
 .launch-meta{display:flex;gap:6px;flex-wrap:wrap;}
+.range{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+  padding-top:10px;border-top:1px solid var(--hair);}
+.range label{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-tert);}
+.range .span{font-family:var(--mono);font-size:11.5px;color:var(--ink-subtle);}
+.range .span.bad{color:var(--loss);}
+.range .span.warnt{color:var(--warn);background:none;border:none;padding:0;}
 .tag{font-family:var(--mono);font-size:11px;color:var(--ink-subtle);background:var(--s2);
   border:1px solid var(--hair);border-radius:var(--r-xs);padding:1px 6px;white-space:nowrap;}
 .tag.warnt{color:var(--warn);border-color:color-mix(in srgb, var(--warn) 34%, transparent);background:color-mix(in srgb, var(--warn) 10%, transparent);}
@@ -316,9 +322,15 @@ td.sym{color:var(--ink);font-weight:500;}
         <div class="panel-head"><h2>Launch</h2><span class="eyebrow" style="margin-left:auto;">preset</span></div>
         <div class="launcher">
           <div class="preset-row" id="presets"></div>
+          <div class="range">
+            <label>From <input class="ctl" type="date" id="r-from" min="2011-01-01" max="2026-09-04" value="2011-01-01"></label>
+            <label>To <input class="ctl" type="date" id="r-to" min="2011-01-01" max="2026-09-04" value="2026-09-04"></label>
+            <div class="seg" id="r-quick" role="group" aria-label="Quick date ranges"></div>
+            <span class="span" id="r-span"></span>
+          </div>
           <div class="launch-meta" id="launch-meta"></div>
           <div class="launch-actions">
-            <button class="btn btn-primary" disabled>Run backtest</button>
+            <button class="btn btn-primary" id="run-btn" disabled>Run backtest</button>
             <button class="btn">Edit 34 parameters</button>
             <span class="w" style="font-size:12px;">Queued behind #31620</span>
           </div>
@@ -507,7 +519,11 @@ const PRESETS = [
   { id:'PROD',   name:'Production today', sub:'', tags:['₹20,00,000','daily cadence','A/B control'] },
 ];
 const PRESET_BY_ID = Object.fromEntries(PRESETS.map(p => [p.id, p]));
-const WIN = '2011-01-01 → 2026-09-04';
+const DATA_FROM = '2011-01-01', DATA_TO = '2026-09-04';
+// The launch window. `WIN` is what the seeded runs were executed over; the
+// picker below drives only what the next run would be launched with.
+const WIN = DATA_FROM + ' → ' + DATA_TO;
+const QUICK = [['Full', null], ['15Y', 15], ['10Y', 10], ['5Y', 5], ['3Y', 3], ['1Y', 1], ['YTD', 'ytd']];
 
 // #31609–#31619 are the real 3-tranche / start-phase study, with that study's
 // own figures — the prototype should not put invented numbers on real run ids.
@@ -660,14 +676,63 @@ function showPreset(id) {
     c.querySelector('.tick')?.remove();
     if (on) c.insertAdjacentHTML('afterbegin', '<span class="tick"></span>');
   });
-  $('#launch-meta').innerHTML = [`<span class="tag">${WIN}</span>`]
+  const win = `${$('#r-from').value} → ${$('#r-to').value}`;
+  $('#launch-meta').innerHTML = [`<span class="tag">${win}</span>`]
     .concat(p.tags.map(t => `<span class="tag">${esc(t)}</span>`))
     .concat('<span class="tag warnt">⚠ next_open_exit</span>').join('');
 }
 $('#presets').addEventListener('click', e => {
   const b = e.target.closest('[data-preset]'); if (b) showPreset(b.dataset.preset);
 });
+
+/* ── launch date range ─────────────────────────────────────────────── */
+$('#r-quick').innerHTML = QUICK.map(([l], i) =>
+  `<button data-q="${l}" aria-pressed="${i === 0}">${l}</button>`).join('');
+
+function setQuick(label) {
+  const [, span] = QUICK.find(q => q[0] === label);
+  const to = DATA_TO;
+  let from;
+  if (span == null) from = DATA_FROM;
+  else if (span === 'ytd') from = to.slice(0, 4) + '-01-01';
+  else { const d = new Date(to + 'T00:00:00'); d.setFullYear(d.getFullYear() - span); from = d.toISOString().slice(0, 10); }
+  $('#r-from').value = from < DATA_FROM ? DATA_FROM : from;
+  $('#r-to').value = to;
+  syncRange();
+}
+$('#r-quick').addEventListener('click', e => {
+  const b = e.target.closest('[data-q]'); if (b) setQuick(b.dataset.q);
+});
+
+function syncRange() {
+  const from = $('#r-from').value, to = $('#r-to').value;
+  const days = (new Date(to) - new Date(from)) / 86400000;
+  const yrs = days / 365.25;
+  const bad = !from || !to || days <= 0;
+  const short = !bad && days < 730;   // under two years annualises noise
+  const el = $('#r-span');
+  el.className = 'span' + (bad ? ' bad' : short ? ' warnt' : '');
+  el.textContent = bad ? 'End date must be after the start date'
+    : `${yrs.toFixed(1)} yrs` + (short ? ' · under 2 yrs, CAGR annualises one short window' : '');
+  // A quick-range button stays lit only while the dates still match it.
+  $('#r-quick').querySelectorAll('[data-q]').forEach(b => {
+    const [, span] = QUICK.find(q => q[0] === b.dataset.q);
+    let want;
+    if (span == null) want = DATA_FROM;
+    else if (span === 'ytd') want = DATA_TO.slice(0, 4) + '-01-01';
+    else { const d = new Date(DATA_TO + 'T00:00:00'); d.setFullYear(d.getFullYear() - span);
+           want = d.toISOString().slice(0, 10); if (want < DATA_FROM) want = DATA_FROM; }
+    b.setAttribute('aria-pressed', String(from === want && to === DATA_TO));
+  });
+  // Still queued behind the in-flight run, so a valid range alone doesn't
+  // make it launchable.
+  $('#run-btn').disabled = bad || RUNS.some(r => r.status === 'RUNNING');
+  showPreset(document.querySelector('#presets [aria-pressed="true"]')?.dataset.preset || 'A5_T3');
+}
+['#r-from','#r-to'].forEach(x => $(x).addEventListener('change', syncRange));
+
 showPreset('A5_T3');
+syncRange();
 
 /* ═══ run rail ══════════════════════════════════════════════════════ */
 const SORTS = {
