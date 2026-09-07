@@ -25,6 +25,56 @@ const BASE_RANGE_OPTIONS = [40, 50, 60, 70, 80, 90, 100];
 // Each maps 1:1 to an engine-validated run so what the button launches is
 // exactly what the research measured — not an approximate reconstruction.
 const QUICK_PRESETS = {
+  'POSITIONAL A5 \u00d7 3 Tranches (lowest drawdown)': {
+    hint: 'A5 split into 3 sub-books on staggered rebalance calendars, each at capital/3 \u00b7 cuts start-date luck and drawdown \u00b7 all 3 write under ONE run id so the trade log / equity / P&L are the combined book \u00b7 gate 0',
+    data: {
+      strategy: 'POSITIONAL', capital: 2000000,
+      startDate: '2011-01-01', endDate: '2026-09-04',
+      posMomentum: 'composite_rs', posRebalanceDays: 21,
+      posTopN: 30, posBufferN: 60,
+      posMinTurnoverCr: 6.0, posAtrMaxPct: 5.0, posAtrPersistDays: 2,
+      posAtrRelMult: 1.5, posAtrTrimPct: 100,
+      posB200MidCut: 0.40, posB200BandLo: 45, posB200BandHi: 70,
+      posW52wh: 1.0, posEarnGateDays: '', posCashAnnualPct: 6.0,
+      posMinIfpScore: 0.38, posMinClose: 20.0, posBaseRangeScoreW: 1.0,
+      posSizeMode: 'inverse_vol', posSlMode: 'none', posSlPct: 0,
+      posCovGuardFrac: 0.5, posChargeBuyCosts: true,
+      posIdScoreW: 0.5, trackMode: 'QUANT',
+      // 2026-09-05: only difference from the A5 preset below is the split.
+      // Earnings gate deliberately BLANK = gate 0 (live reality). The 14-day
+      // gate is look-ahead contaminated - runs #31565/66/67 used it, so their
+      // numbers are NOT comparable to a gate-0 baseline.
+      posTranches: 3, posPhaseDays: 0,
+      compoundingEnabled: true, compoundingMode: 'profit_only',
+      compoundingMinCapital: 2000000, compoundingMaxCapital: 100000000,
+      slippagePct: 0.20, exitSlippagePct: '', advPositionCapPct: 2.0,
+      notes: 'UI quick preset: A5 x 3 tranches, gate 0. Engine splits capital/3 across staggered rebalance calendars; combined stats rebuilt from the union of trade rows under this run id.',
+    },
+  },
+  'POSITIONAL Combo v3 A5 (recommended)': {
+    hint: 'Frozen + A5 \u00b7 22.8% CAGR / 17.8% MaxDD / Calmar 1.27 (21-phase median, 2011-2026) \u00b7 breadth band 45-70, mid-cut 0.40, full ATR exit',
+    data: {
+      strategy: 'POSITIONAL', capital: 2000000,
+      startDate: '2011-01-01', endDate: '2026-08-16',
+      posMomentum: 'composite_rs', posRebalanceDays: 21,
+      posTopN: 30, posBufferN: 60,
+      posMinTurnoverCr: 6.0, posAtrMaxPct: 5.0, posAtrPersistDays: 2,
+      posAtrRelMult: 1.5, posAtrTrimPct: 100,
+      posB200MidCut: 0.40, posB200BandLo: 45, posB200BandHi: 70,
+      posW52wh: 1.0, posEarnGateDays: 14, posCashAnnualPct: 6.0,
+      posMinIfpScore: 0.38, posMinClose: 20.0, posBaseRangeScoreW: 1.0,
+      posSizeMode: 'inverse_vol', posSlMode: 'none', posSlPct: 0,
+      posCovGuardFrac: 0.5, posChargeBuyCosts: true,
+      // 2026-08-27 pre-live audit: these two were missing and the run was NOT
+      // the frozen strategy - posIdScoreW 0.5 is the frog-in-the-pan factor
+      // weight in the validated 7-factor composite.
+      posIdScoreW: 0.5, trackMode: 'QUANT',
+      compoundingEnabled: true, compoundingMode: 'profit_only',
+      compoundingMinCapital: 2000000, compoundingMaxCapital: 100000000,
+      slippagePct: 0.20, exitSlippagePct: '', advPositionCapPct: 2.0,
+      notes: 'UI quick preset: Combo v3 A5 - baseline #31107 with band 45-70 and mid_cut 0.40, ATR full exit. Validated 2026-08-27 drawdown campaign: 22.82 CAGR / 17.77 MaxDD / 1.268 Calmar, 21/21 phases on both axes.',
+    },
+  },
   'POSITIONAL Momentum (recommended)': {
     hint: 'Run #909 · 16.9% CAGR / 25.4% MaxDD / Calmar 0.67 over 15yr · persist-2 exit',
     data: {
@@ -77,7 +127,7 @@ const QUICK_PRESETS = {
     },
   },
   'COMBO 80/20 + ETF Blend': {
-    hint: 'Live allocation \u00b7 blend of runs #1117 \u00d7 #1440 (GOLDBEES): 21.0% CAGR / 19.9% MaxDD / Calmar 1.06 over the FULL 15.6yr \u00b7 launches the Combo equity sleeve; hold 20% in GOLDBEES (200-DMA long/flat) alongside',
+    hint: 'Live allocation \u00b7 blend of runs #1117 \u00d7 #1106 (GOLDBEES): 28.9% CAGR / 19.9% MaxDD / Calmar 1.45 (2019-26) \u00b7 launches the Combo equity sleeve; hold 20% in GOLDBEES (200-DMA long/flat) alongside',
     data: {
       strategy: 'POSITIONAL', capital: 320000,
       startDate: '2011-01-01', endDate: '2026-08-16',
@@ -91,26 +141,7 @@ const QUICK_PRESETS = {
       compoundingEnabled: true, compoundingMode: 'profit_only',
       compoundingMinCapital: 320000, compoundingMaxCapital: 16000000,
       slippagePct: 0.20, exitSlippagePct: '', advPositionCapPct: '',
-      notes: 'UI quick preset: 80% Combo equity sleeve of the 80/20 ETF blend (pair with 20% GOLDBEES 200-DMA; 15.6yr sleeve bake-off runs #1440/#1601/#1762/#1923/#2084 after the 2011 ETF history backfill; blend via /backtest/blend run_a=1440 run_b=1117 w=0.2; the earlier 28.9% figure was a 7.6yr window and is superseded; paper book etf_blend)',
-    },
-  },
-  'COMBO v2 (liquidity + FIP)': {
-    hint: 'Runs #30420 vs #2889 at \u20b920L over 15.6yr: 25.19% CAGR / 22.90% MaxDD / Calmar 1.100 vs Combo\u2019s 23.11 / 24.51 / 0.943 \u00b7 worst 12m \u221214.5% vs \u221217.6% \u00b7 493 vs 752 days underwater. Two changes only: turnover floor \u20b98cr\u2192\u20b96cr and frog-in-the-pan weight 0.5',
-    data: {
-      strategy: 'POSITIONAL', capital: 2000000,
-      startDate: '2011-01-01', endDate: '2026-08-16',
-      posMomentum: 'composite_rs', posRebalanceDays: 21,
-      posTopN: 30, posBufferN: 60,
-      posMinTurnoverCr: 6.0, posAtrMaxPct: 5.0, posAtrPersistDays: 2,
-      posAtrRelMult: 1.5, posAtrTrimPct: 33, posB200MidCut: 0.5,
-      posW52wh: 1.0, posEarnGateDays: 14, posCashAnnualPct: 6.0,
-      posIdScoreW: 0.5,
-      posMinIfpScore: 0.38, posMinClose: 20.0, posBaseRangeScoreW: 1.0,
-      posSizeMode: 'inverse_vol', posSlMode: 'none', posSlPct: 0,
-      compoundingEnabled: true, compoundingMode: 'profit_only',
-      compoundingMinCapital: 2000000, compoundingMaxCapital: 100000000,
-      slippagePct: 0.20, exitSlippagePct: '', advPositionCapPct: 2.0,
-      notes: 'UI quick preset: Combo v2 = Combo + turnover floor 6cr + frog-in-pan (information discreteness) w0.5. Screened on BOTH disjoint windows (H1 2011-18 / H2 2019-26) then validated at \u20b920L with the ADV cap on: run #30420. Decomposition #30098 (FIP alone, Calmar 1.003 - pure risk reducer) and #30259 (turnover alone, 1.050 - supplies the return). Survives 0.50% slippage (#29615, Calmar 0.983 > baseline 0.943). CAVEAT: the turnover half selects less liquid names, where the 269 missing delisted stocks lived - part of that gain may be survivorship bias. Forward-test on a paper book before moving real capital.',
+      notes: 'UI quick preset: 80% Combo equity sleeve of the 80/20 ETF blend (pair with 20% GOLDBEES 200-DMA; sleeve bake-off runs #1105-#1112, blend via /backtest/blend run_a=1106 run_b=1117 w=0.2, paper book etf_blend)',
     },
   },
   'Preset #14 Static': {
@@ -199,17 +230,11 @@ const DEFAULTS = {
   posAtrMaxPct: '', posMinIfpScore: '', posMinClose: '',
   posBaseRangeScoreW: '', posSizeMode: '', posAtrPersistDays: '',
   posAtrRelMult: '', posAtrTrimPct: '', posB200MidCut: '',
+  posB200BandLo: '', posB200BandHi: '',
+  posCovGuardFrac: '', posChargeBuyCosts: false,
+  posTranches: '', posPhaseDays: '',
+  posIdScoreW: '', trackMode: 'BOTH',
   posW52wh: '', posEarnGateDays: '', posCashAnnualPct: '',
-  // 2026-08-24: frog-in-the-pan (information discreteness). Engine supported it
-  // via pos_id_score_w but the form never tracked or sent it, so a preset
-  // setting it was silently ignored -- same class of defect as the 2026-08-19
-  // note above, and as adv_position_cap_pct in positional_engine.py.
-  posIdScoreW: '',
-  // 2026-08-25: residual momentum (Hanauer & Windmueller). Tracked here from
-  // the start so it can never repeat the posIdScoreW defect above -- an engine
-  // param the form neither stored nor sent, which made every preset that set
-  // it a silent no-op.
-  posResmomScoreW: '', posResmomCol: '',
   // index tf
   itfProxy: 'JUNIORBEES', itfMaDays: 200,
   // risk guards (audit defaults ON for new runs)
@@ -304,9 +329,15 @@ export default function CompactBacktestForm({ onCreated, blocked, blockedReason,
         pos_size_mode: 'posSizeMode', pos_atr_persist_days: 'posAtrPersistDays',
         pos_atr_rel_mult: 'posAtrRelMult', pos_atr_trim_pct: 'posAtrTrimPct',
         pos_b200_mid_cut: 'posB200MidCut',
-        pos_w_52wh: 'posW52wh', pos_earn_gate_days: 'posEarnGateDays',
+        pos_b200_band_lo: 'posB200BandLo',
+        pos_b200_band_hi: 'posB200BandHi',
+        pos_cov_guard_frac: 'posCovGuardFrac',
+        pos_charge_buy_costs: 'posChargeBuyCosts',
+        pos_tranches: 'posTranches',
+        pos_phase_days: 'posPhaseDays',
         pos_id_score_w: 'posIdScoreW',
-        pos_resmom_score_w: 'posResmomScoreW', pos_resmom_col: 'posResmomCol',
+        track_mode: 'trackMode',
+        pos_w_52wh: 'posW52wh', pos_earn_gate_days: 'posEarnGateDays',
         pos_cash_annual_pct: 'posCashAnnualPct',
       };
       Object.entries(M).forEach(([snake, camel]) => {
@@ -340,7 +371,7 @@ export default function CompactBacktestForm({ onCreated, blocked, blockedReason,
         capital: Number(formData.capital),
         start_date: formData.startDate,
         end_date: formData.endDate,
-        track_mode: 'BOTH',
+        track_mode: formData.trackMode || 'BOTH',
         // core
         max_picks_per_track: num(formData.maxPicksPerTrack),
         weekly_risk_pct: num(formData.weeklyRiskPct),
@@ -404,10 +435,17 @@ export default function CompactBacktestForm({ onCreated, blocked, blockedReason,
           pos_atr_rel_mult: num(formData.posAtrRelMult),
           pos_atr_trim_pct: num(formData.posAtrTrimPct),
           pos_b200_mid_cut: num(formData.posB200MidCut),
-          pos_w_52wh: num(formData.posW52wh),
+          pos_b200_band_lo: num(formData.posB200BandLo),
+          pos_b200_band_hi: num(formData.posB200BandHi),
+          // infrastructure fixes: without these the run does not
+          // reproduce the validated research numbers
+          pos_cov_guard_frac: num(formData.posCovGuardFrac),
           pos_id_score_w: num(formData.posIdScoreW),
-          pos_resmom_score_w: num(formData.posResmomScoreW),
-          pos_resmom_col: formData.posResmomCol || undefined,
+          ...(formData.posChargeBuyCosts
+            && { pos_charge_buy_costs: true }),
+          pos_tranches: num(formData.posTranches),
+          pos_phase_days: num(formData.posPhaseDays),
+          pos_w_52wh: num(formData.posW52wh),
           pos_earn_gate_days: num(formData.posEarnGateDays),
           pos_cash_annual_pct: num(formData.posCashAnnualPct),
         }),

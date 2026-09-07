@@ -936,10 +936,13 @@ function DayDrilldown({ runId, minDate, maxDate }) {
 // for an open one. This is what the rupee columns cannot tell you: a ₹1.7L gain
 // on ₹3L committed and on ₹12L committed are not the same trade.
 const retPct = (t) => {
-  if (!t.allocation) return null;
-  if (t.realizedPnl != null) return (100 * t.realizedPnl) / t.allocation;
-  if (t.status === 'OPEN' && t.unrealizedPnl != null) return (100 * t.unrealizedPnl) / t.allocation;
-  return null;
+  const pnl = t.realizedPnl ?? t.unrealizedPnl;
+  if (pnl == null) return null;
+  const cost = (t.entryFillPrice != null && t.quantity != null)
+    ? t.entryFillPrice * t.quantity
+    : t.allocation;
+  if (!cost) return null;
+  return (100 * pnl) / cost;
 };
 const TRADE_SORT = {
   realizedPnl: (t) => t.realizedPnl ?? t.unrealizedPnl ?? 0,
