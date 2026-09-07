@@ -123,6 +123,9 @@ class RunCreate(BaseModel):
     pos_vadj_base: str | None = Field(None, pattern="^(mom6|mom12|mom3)$")
     pos_trend_ir_w: float | None = Field(None, ge=0, le=5)
     pos_trend_ir_col: str | None = Field(None, pattern="^(126|63)$")
+    # Residual momentum (Hanauer & Windmueller), 2026-08-25. 0/None = inert.
+    pos_resmom_score_w: float | None = Field(None, ge=0, le=3)
+    pos_resmom_col: str | None = Field(None, pattern="^(252|126)$")
     pos_atr_rel_mult: float | None = Field(None, ge=1.0, le=5.0)
     pos_atr_trim_pct: float | None = Field(None, ge=1, le=100)
     pos_struct_low_days: int | None = Field(None, ge=2, le=60)
@@ -466,7 +469,8 @@ async def create_run(body: RunCreate, request: Request):
            pos_trend_ir_w, pos_trend_ir_col,
            pos_sl_arm_pct, pos_eq_throttle_dd_pct, pos_eq_throttle_cut,
            pos_eq_throttle_mode, pos_b200_mid_cut, pos_b200_band_lo, pos_b200_band_hi,
-           pos_w_52wh, pos_earn_gate_days)
+           pos_w_52wh, pos_earn_gate_days,
+           pos_resmom_score_w, pos_resmom_col)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
                 $21,$22,$23,$24,$25,$26,$27,$28,
                 $29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,
@@ -475,7 +479,8 @@ async def create_run(body: RunCreate, request: Request):
                 $87,$88,$89,$90,$91,$92,$93,$94,$95,$96,$97,$98,$99,$100,
                 $101,$102,$103,$104,$105,$106,$107,$108,$109,$110,$111,$112,
                 $113,$114,$115,$116,$117,$118,$119,$120,$121,
-                $122,$123,$124,$125,$126,$127,$128,$129,$130,$131,$132,$133,$134,$135,$136,$137)
+                $122,$123,$124,$125,$126,$127,$128,$129,$130,$131,$132,$133,$134,$135,$136,$137,
+                $138,$139)
         RETURNING id
         """,
         body.start_date, body.end_date, body.track_mode, body.capital,
@@ -536,6 +541,7 @@ async def create_run(body: RunCreate, request: Request):
         body.pos_eq_throttle_mode,
         body.pos_b200_mid_cut, body.pos_b200_band_lo, body.pos_b200_band_hi,
         body.pos_w_52wh, body.pos_earn_gate_days,
+        body.pos_resmom_score_w, body.pos_resmom_col,
     )
     run_id = row["id"]
 

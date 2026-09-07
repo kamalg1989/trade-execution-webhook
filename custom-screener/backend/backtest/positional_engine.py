@@ -111,6 +111,24 @@ async def run_positional(run: dict, pool) -> None:
     trend_ir_col = str(run.get("pos_trend_ir_col") or "126")
     if trend_ir_col not in ("126", "63"):
         raise ValueError(f"pos_trend_ir_col must be 126 or 63, got {trend_ir_col!r}")
+    # RESIDUAL MOMENTUM (Hanauer & Windmueller, "Enhanced Momentum Strategies"),
+    # 2026-08-25. Momentum of single-factor-model RESIDUALS rather than of raw
+    # returns: resmom_L = sum(resid over [t-L, t-22]) / std(resid same span),
+    # residuals from a rolling 252d OLS of the name against NIFTYBEES. Stripping
+    # the market component is meant to remove the beta/industry tilt that makes
+    # raw momentum crash on reversals.
+    # Higher = better, so the raw value is used WITHOUT negation (unlike ID).
+    # 0 = inert, so every prior POSITIONAL run reproduces byte-identically.
+    # NOTE the join key: this table's PK is (symbol, DATE) — *not*
+    # `indicator_date` as in stock_information_discreteness and stock_trend_ir.
+    # Copying either of those joins verbatim yields a 0% match, all-NULL values,
+    # neutralisation at the cross-sectional mean, and a factor that silently
+    # does nothing. Coverage is logged at the first rebalance for exactly that
+    # reason (the table also only starts 2013-01-10 — see the log line).
+    resmom_w = float(run.get("pos_resmom_score_w") or 0.0)
+    resmom_col = str(run.get("pos_resmom_col") or "252")
+    if resmom_col not in ("252", "126"):
+        raise ValueError(f"pos_resmom_col must be 252 or 126, got {resmom_col!r}")
     # H4 — INFORMATION DISCRETENESS (Da, Gurun & Warachka 2014), 2026-08-19.
     #   ID = sign(PRET) * (%neg - %pos) over the formation window.
     #   ID < 0 = continuous information (many small up-days)  -> momentum persists
@@ -308,13 +326,21 @@ async def run_positional(run: dict, pool) -> None:
         tir_join = ("LEFT JOIN stock_trend_ir t "
                     "  ON t.symbol = s.symbol AND t.indicator_date = s.indicator_date"
                     if trend_ir_w else "")
+        # Residual momentum. LEFT JOIN so a missing value can never drop a
+        # candidate. JOIN KEY IS r.date, NOT r.indicator_date — this table does
+        # not follow the naming of the two above it.
+        rm_select = (f", r.resmom_{resmom_col} AS resmom_val" if resmom_w else "")
+        rm_join = ("LEFT JOIN stock_residual_momentum r "
+                   "  ON r.symbol = s.symbol AND r.date = s.indicator_date"
+                   if resmom_w else "")
         rank_sql = f"""
             SELECT s.symbol, s.close, s.sma_200, s.atr_pct, s.base_range_20d_pct,
                    s.dist_52w_high_pct,
-                   s.pct_chg_1m, s.pct_chg_3m, s.pct_chg_6m, s.pct_chg_1y{id_select}{tir_select}
+                   s.pct_chg_1m, s.pct_chg_3m, s.pct_chg_6m, s.pct_chg_1y{id_select}{tir_select}{rm_select}
             FROM stock_indicators s
             {id_join}
             {tir_join}
+            {rm_join}
             WHERE s.indicator_date = $1 AND s.turnover_1m_avg_cr >= $2
               AND s.close > s.sma_200 AND s.pct_chg_1y IS NOT NULL
               AND s.pct_chg_6m IS NOT NULL AND s.pct_chg_3m IS NOT NULL
@@ -364,6 +390,13 @@ async def run_positional(run: dict, pool) -> None:
                 if trend_ir_w:
                     tv = r["tir_val"]
                     f.append(float(tv) if tv is not None else None)
+                # Residual momentum: higher = stronger residual trend, so the
+                # value goes in as-is. Missing -> None -> neutralised at the
+                # cross-sectional mean by the loop below, same as every other
+                # optional factor.
+                if resmom_w:
+                    rv = r["resmom_val"]
+                    f.append(float(rv) if rv is not None else None)
                 if w_52wh:
                     dh = r["dist_52w_high_pct"]
                     f.append(float(dh) if dh is not None else None)
@@ -384,6 +417,10 @@ async def run_positional(run: dict, pool) -> None:
             weights.append(id_score_w)
         if trend_ir_w:
             weights.append(trend_ir_w)
+        # MUST stay in the same position as the resmom append in the `f` tuple
+        # above — the weights list is positional.
+        if resmom_w:
+            weights.append(resmom_w)
         if w_52wh:
             weights.append(w_52wh)
         n_factors = len(weights)
@@ -444,6 +481,11 @@ async def run_positional(run: dict, pool) -> None:
                     run_id, regime_ma, len(regime_on))
 
     holdings: dict[str, dict] = {}
+
+    # Guards the one-shot residual-momentum coverage log below. A factor whose
+    # join misses is indistinguishable from an unset factor in the result table,
+    # so the run states its own coverage instead of being assumed active.
+    resmom_cov_logged = False
 
     # Per-symbol close+MA series, fetched ONCE when a name is first bought and
     # reused for every subsequent daily stop check. The naive alternative — one
@@ -791,6 +833,19 @@ async def run_positional(run: dict, pool) -> None:
         # candidate set before the top-buffer_n slice is taken in Python.
         raw = (await pool.fetch(rank_sql, day, min_turnover) if composite
                else await pool.fetch(rank_sql, day, min_turnover, buffer_n))
+        # One-shot proof that the residual-momentum join actually matched. 0%
+        # here means every value is NULL, every name is neutralised to the same
+        # cross-sectional mean, and the factor is doing nothing whatever the
+        # weight says. stock_residual_momentum starts 2013-01-10, so a run
+        # beginning earlier is legitimately uncovered at its first rebalance —
+        # the count is logged rather than asserted for that reason.
+        if resmom_w and composite and raw and not resmom_cov_logged:
+            _hit = sum(1 for _r in raw if _r["resmom_val"] is not None)
+            logger.info("run %s: resmom_%s w=%.2f — first rebalance %s: "
+                        "%d/%d candidates carry a value (%.1f%% coverage)",
+                        run_id, resmom_col, resmom_w, day, _hit, len(raw),
+                        100.0 * _hit / len(raw))
+            resmom_cov_logged = True
         # ATR as-of this rebalance, for inverse-vol sizing (HYP B). The
         # composite SELECT already carries atr_pct; the single-column path
         # does not, so fetch it only when actually needed.
