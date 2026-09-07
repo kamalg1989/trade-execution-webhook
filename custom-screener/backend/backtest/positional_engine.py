@@ -83,6 +83,15 @@ async def run_positional(run: dict, pool) -> None:
                if run.get("pos_min_ifp_score") is not None else None)
     min_close = (float(run["pos_min_close"])
                  if run.get("pos_min_close") is not None else None)
+    # Volume-surge gate (2026-08-29). 21d avg traded value / 252d avg traded
+    # value, from stock_volume_surge (helper table, same pattern as the ID /
+    # trend-IR / residual-momentum joins below). None => inert, SQL unchanged.
+    # Cross-market validated: improves Calmar in BOTH the US and NSE books.
+    # NOTE rows with NULL vol_surge (<252 bars of history) are EXCLUDED when the
+    # gate is on -- this deliberately matches the research harness, where the
+    # comparison `vsurge >= x` is False for NaN.
+    vol_surge_min = (float(run["pos_vol_surge_min"])
+                     if run.get("pos_vol_surge_min") is not None else None)
     base_score_w = float(run.get("pos_base_range_score_w") or 0.0)
     # 2026-08-20 — PER-FACTOR COMPOSITE WEIGHTS. Diagnostics on 44,495 eligible
     # rows showed the "5-factor" composite carries only ~2.96 independent
@@ -109,8 +118,8 @@ async def run_positional(run: dict, pool) -> None:
     # Lives in its own table so BAU is untouched. 0 = inert.
     trend_ir_w = float(run.get("pos_trend_ir_w") or 0.0)
     trend_ir_col = str(run.get("pos_trend_ir_col") or "126")
-    if trend_ir_col not in ("126", "63"):
-        raise ValueError(f"pos_trend_ir_col must be 126 or 63, got {trend_ir_col!r}")
+    if trend_ir_col not in ("126", "63", "sh252", "sh189", "sh378"):
+        raise ValueError(f"pos_trend_ir_col must be 126, 63, sh252, sh189 or sh378, got {trend_ir_col!r}")
     # RESIDUAL MOMENTUM (Hanauer & Windmueller, "Enhanced Momentum Strategies"),
     # 2026-08-25. Momentum of single-factor-model RESIDUALS rather than of raw
     # returns: resmom_L = sum(resid over [t-L, t-22]) / std(resid same span),
@@ -198,6 +207,46 @@ async def run_positional(run: dict, pool) -> None:
     rs_exit_pct = (float(run["pos_rs_exit_pct"])
                    if run.get("pos_rs_exit_pct") is not None else None)
     cash_buffer_pct = float(run.get("pos_cash_buffer_pct") or 0.0)
+    # ---- EXPOSURE TARGETING (2026-08-29) ----------------------------------
+    # Diagnosed defect: this engine only ever fills EMPTY slots, so gross
+    # exposure is a free variable. Positions are never re-sized as equity
+    # compounds, and the breadth band scales NEW BUYS only -- it never trims
+    # what is already held. Measured across the 21 rebalance phases: invested%
+    # drifted 41%-105%, and invested% entering 2020-02 correlates -0.79 with
+    # the COVID drawdown. A5's 16.9% headline drawdown was earned ~50-69%
+    # invested, which nobody chose.
+    # When set, the book is re-sized to base_capital (= running equity x the
+    # exposure multiplier already computed above) at each rebalance, trimming
+    # or topping up ACROSS EXISTING HOLDINGS. None = inert; with it unset the
+    # trade sequence is byte-identical to before.
+    target_exposure = (float(run["pos_target_exposure_pct"])
+                       if run.get("pos_target_exposure_pct") is not None else None)
+    # deadband, so a 1% drift does not churn the whole book every cycle
+    exposure_tol = float(run.get("pos_exposure_tol_pct") or 5.0) / 100.0
+    # Restrict TOP-UPS to holdings currently inside this rank. None = top up
+    # every holding pro-rata (the original behaviour). Set to e.g. 10/15/30 to
+    # reinforce only the leaders and let laggards drift down in weight instead
+    # of being averaged up. Trims stay pro-rata across the whole book.
+    topup_rank_max = (int(run["pos_topup_rank_max"])
+                      if run.get("pos_topup_rank_max") is not None else None)
+    # Counterpart to topup_rank_max: take TRIMS from the weakest holdings first
+    # (rank position >= this) instead of pro-rata across the book. If the
+    # laggards cannot absorb the whole reduction the remainder falls back to
+    # pro-rata over everything, so the exposure target is always met.
+    trim_rank_min = (int(run["pos_trim_rank_min"])
+                     if run.get("pos_trim_rank_min") is not None else None)
+    # ---- DEFERRED ENTRY-TECHNIQUE FILL (2026-08-29) ---------------------
+    # Instead of buying every selected name at the next open, wait inside the
+    # rebalance window for screen_gpt.py's entry technique to trigger: a
+    # HH_HL / INSIDE_BAR / PIN_BAR / TREND_BAR bar, then a STOP-BUY above that
+    # bar's high (stock_entry_patterns.entry_lvl). A name whose trigger never
+    # fires simply is not bought and its slot stays empty for the cycle.
+    # NOTE the patterns themselves are common (60% of all bars print one), so
+    # the selectivity comes almost entirely from the breakout level, not the
+    # pattern. None = inert.
+    entry_pattern = (str(run["pos_entry_pattern"]).strip()
+                     if run.get("pos_entry_pattern") else None)
+    entry_wait_days = int(run.get("pos_entry_wait_days") or 0) or None
     sector_of: dict = {}
     if max_sector_pct:
         sector_of = {r["symbol"]: r["sector"] for r in await pool.fetch(
@@ -211,6 +260,17 @@ async def run_positional(run: dict, pool) -> None:
     comp_ceiling = (float(run["compounding_max_capital"])
                     if run.get("compounding_max_capital") is not None else None)
     rebalance_days = int(run.get("pos_rebalance_days") or 21)
+    # 2026-08-31 TRANCHES: calendar phase offset in sessions. 0/None = inert,
+    # every prior run reproduces byte-identically. Set by engine.py when a
+    # run declares pos_tranches>1 so each sub-book rebalances on its own
+    # staggered grid (validated in /root/rsx/vsim.py + fp before porting).
+    phase_days = int(run.get("pos_phase_days") or 0) % rebalance_days
+    rebal_avoid_days = (int(run["pos_rebal_avoid_days"])
+                        if run.get("pos_rebal_avoid_days") is not None else None)
+    exit_check_days = (int(run["pos_exit_check_days"])
+                       if run.get("pos_exit_check_days") else None)
+    rank_persist = (int(run["pos_rank_persist_days"])
+                    if run.get("pos_rank_persist_days") else None)
     top_n = int(run.get("pos_top_n") or 10)
     buffer_n = max(int(run.get("pos_buffer_n") or 20), top_n)
     min_turnover = float(run.get("pos_min_turnover_cr") or 5.0)
@@ -267,6 +327,26 @@ async def run_positional(run: dict, pool) -> None:
     earn_gate_days = (int(run["pos_earn_gate_days"])
                       if run.get("pos_earn_gate_days") is not None else None)
 
+    # 2026-08-26 PARTIAL-COMPUTE-DAY GUARD. stock_indicators occasionally holds a
+    # near-empty day -- every 31-Dec in the sample (17 rows in 2024, 22 in 2025,
+    # 28 in 2021 ... against trailing means of 1,100-2,500) plus 2025-07-16. On
+    # such a day the funnel returns <5 candidates, _score_composite() returns [],
+    # `keep` is the empty set and EVERY holding is sold as RANK_DROP. Run #31077
+    # liquidated all 30 positions on 2016-01-01 and sat in cash until 2016-02-02;
+    # it did the same on 2026-01-01 (29 positions). A data-coverage hole must
+    # never be read as "sell everything" -- least of all in the live book.
+    # None = inert, so every prior run reproduces byte-identically.
+    cov_guard_frac = (float(run["pos_cov_guard_frac"])
+                      if run.get("pos_cov_guard_frac") is not None else None)
+    # 2026-08-26 BUY-LEG CHARGES. The INSERT below writes realized_pnl as the
+    # negative entry-leg cost, then close_out() OVERWRITES realized_pnl with the
+    # trade result -- which carries only the sell leg. The ~0.118% buy-side STT +
+    # exchange + stamp charge was therefore never deducted for a closed trade
+    # (worth 0.28pp of CAGR over 15.6 years). True = charge it properly, carried
+    # per share so partial exits pay their own share. None/False = the old
+    # behaviour, kept so historical runs still reproduce.
+    charge_buy_costs = bool(run.get("pos_charge_buy_costs"))
+
     cfg = {
         "slippage_pct": float(run["slippage_pct"]),
         "stt_pct": float(run["stt_pct"]),
@@ -286,6 +366,37 @@ async def run_positional(run: dict, pool) -> None:
         "WHERE time::date BETWEEN $1 AND $2 ORDER BY d", start_date, end_date)]
     await pool.execute("UPDATE backtest_runs SET progress_total_days=$1 WHERE id=$2",
                        len(days), run_id)
+    # --- 2026-08-30 month-end / F&O-expiry avoidance (inert unless
+    # pos_rebal_avoid_days is set). Hypothesis under test: rebalances landing in
+    # the crowded month-end / expiry window pay worse execution. Anchors do NOT
+    # drift - only the individual scheduled day shifts forward, so the average
+    # cycle length stays at rebalance_days.
+    rebal_shift = {}
+    if rebal_avoid_days and days:
+        from collections import defaultdict as _dd
+        _bym = _dd(list)
+        for _j, _d in enumerate(days):
+            _bym[(_d.year, _d.month)].append(_j)
+        _bad = set()
+        for _k, _idx in _bym.items():
+            _me = _idx[-1]
+            _th = [j for j in _idx if days[j].weekday() == 3]
+            _ex = _th[-1] if _th else _me
+            for _c in (_me, _ex):
+                for _o in range(-rebal_avoid_days, rebal_avoid_days + 1):
+                    _bad.add(_c + _o)
+        for _base in range(phase_days, len(days), rebalance_days):
+            _t = _base
+            _n = 0
+            while _t in _bad and _n < 4 and _t + 1 < len(days):
+                _t += 1
+                _n += 1
+            rebal_shift[_base] = _t if _t not in _bad else _base
+        logger.info("run %s: rebal_avoid_days=%s shifted %d of %d scheduled rebalances",
+                    run_id, rebal_avoid_days,
+                    sum(1 for k, v in rebal_shift.items() if k != v), len(rebal_shift))
+    rebal_days_set = set(rebal_shift.values()) if rebal_shift else None
+
     if not days:
         await pool.execute("UPDATE backtest_runs SET status='COMPLETED', completed_at=NOW() "
                            "WHERE id=$1", run_id)
@@ -322,10 +433,18 @@ async def run_positional(run: dict, pool) -> None:
         id_join = ("LEFT JOIN stock_information_discreteness d "
                    "  ON d.symbol = s.symbol AND d.indicator_date = s.indicator_date"
                    if id_score_w else "")
-        tir_select = (f", t.trend_ir_{trend_ir_col} AS tir_val" if trend_ir_w else "")
-        tir_join = ("LEFT JOIN stock_trend_ir t "
-                    "  ON t.symbol = s.symbol AND t.indicator_date = s.indicator_date"
-                    if trend_ir_w else "")
+        if trend_ir_col.startswith("sh"):
+            # 2026-08-30 campaign: Sharpe-ratio momentum (mean/std of daily returns over N sessions,
+            # annualised) from the additive table stock_sharpe_mom. Inert unless pos_trend_ir_col='shNNN'.
+            tir_select = (f", t.{trend_ir_col} AS tir_val" if trend_ir_w else "")
+            tir_join = ("LEFT JOIN stock_sharpe_mom t "
+                        "  ON t.symbol = s.symbol AND t.indicator_date = s.indicator_date"
+                        if trend_ir_w else "")
+        else:
+            tir_select = (f", t.trend_ir_{trend_ir_col} AS tir_val" if trend_ir_w else "")
+            tir_join = ("LEFT JOIN stock_trend_ir t "
+                        "  ON t.symbol = s.symbol AND t.indicator_date = s.indicator_date"
+                        if trend_ir_w else "")
         # Residual momentum. LEFT JOIN so a missing value can never drop a
         # candidate. JOIN KEY IS r.date, NOT r.indicator_date — this table does
         # not follow the naming of the two above it.
@@ -333,6 +452,11 @@ async def run_positional(run: dict, pool) -> None:
         rm_join = ("LEFT JOIN stock_residual_momentum r "
                    "  ON r.symbol = s.symbol AND r.date = s.indicator_date"
                    if resmom_w else "")
+        vs_join = ("LEFT JOIN stock_volume_surge v "
+                   "  ON v.symbol = s.symbol AND v.indicator_date = s.indicator_date"
+                   if vol_surge_min is not None else "")
+        vs_clause = ("AND v.vol_surge >= " + str(vol_surge_min)
+                     if vol_surge_min is not None else "")
         rank_sql = f"""
             SELECT s.symbol, s.close, s.sma_200, s.atr_pct, s.base_range_20d_pct,
                    s.dist_52w_high_pct,
@@ -341,6 +465,7 @@ async def run_positional(run: dict, pool) -> None:
             {id_join}
             {tir_join}
             {rm_join}
+            {vs_join}
             WHERE s.indicator_date = $1 AND s.turnover_1m_avg_cr >= $2
               AND s.close > s.sma_200 AND s.pct_chg_1y IS NOT NULL
               AND s.pct_chg_6m IS NOT NULL AND s.pct_chg_3m IS NOT NULL
@@ -348,6 +473,7 @@ async def run_positional(run: dict, pool) -> None:
               {atr_clause.replace('atr_pct', 's.atr_pct')}
               {ifp_clause.replace('ifp_score', 's.ifp_score')}
               {close_clause.replace('close', 's.close')}
+              {vs_clause}
         """
     else:
         rank_sql = f"""
@@ -480,6 +606,15 @@ async def run_positional(run: dict, pool) -> None:
         logger.info("run %s: regime shield ma=%d over %d proxy days",
                     run_id, regime_ma, len(regime_on))
 
+    # daily stock_indicators row counts, for the partial-compute-day guard
+    cov_rows: dict = {}
+    if cov_guard_frac is not None:
+        cov_rows = {r["d"]: int(r["n"]) for r in await pool.fetch(
+            "SELECT indicator_date AS d, count(*) AS n FROM stock_indicators "
+            "WHERE indicator_date BETWEEN $1 AND $2 GROUP BY 1", start_date, end_date)}
+        logger.info("run %s: coverage guard armed at %.2f over %d sessions",
+                    run_id, cov_guard_frac, len(cov_rows))
+
     holdings: dict[str, dict] = {}
 
     # Guards the one-shot residual-momentum coverage log below. A factor whose
@@ -536,6 +671,7 @@ async def run_positional(run: dict, pool) -> None:
     # Running realized P&L, for opt-in compounding (see alloc below). Kept as a
     # one-element list so the nested close_out() can mutate it without nonlocal
     # gymnastics. Unused when compounding_enabled is false.
+    pending = {}          # deferred pattern-entry candidates: sym -> dict
     realized_total = [0.0]
     # Accrued interest on idle cash, and the previous session's regime state
     # (for edge detection). Lists so nested scopes can mutate them.
@@ -561,11 +697,28 @@ async def run_positional(run: dict, pool) -> None:
             RETURNING id
             """, h["db_id"], qty)
 
+    async def last_close_on_or_before(sym: str, when) -> float | None:
+        """Last traded close at or before `when`. 2026-08-26: the sell paths all
+        did `if f is None: continue` when a symbol had no bar on the fill date,
+        which silently left the name in `holdings` FOREVER — it could never be
+        rotated out and was marked to a stale price for the rest of the run.
+        Run #31077 carried HEXAWARE from 2020-10-05 to the 2026-08-16 window end
+        on a final close of 2020-10-30. Small here (Rs 6,632), but a name
+        suspended mid-crash would be carried at its pre-halt price indefinitely.
+        A delisted holding must be closed at the last price it actually traded."""
+        v = await pool.fetchval(
+            "SELECT close FROM ohlcv_data WHERE symbol=$1 AND time::date <= $2 "
+            "ORDER BY time DESC LIMIT 1", sym, when)
+        return float(v) if v is not None else None
+
     async def close_out(sym: str, h: dict, when, exit_px: float, reason: str) -> None:
         """Single exit path for both stops and rotations, so a stopped trade is
         costed, R-scored and recorded exactly like any other."""
         net = round(exit_px * (1 - exit_slip / 100), 2)
         pnl = (net - h["entry"]) * h["qty"] - _leg_cost(net * h["qty"], True, cfg)
+        # buy-leg charges, carried per share so a partial exit pays only its own
+        # share and the remainder still owes the rest (2026-08-26 fix)
+        pnl -= h.get("bc_ps", 0.0) * h["qty"]
         # gross_pnl is the FRICTIONLESS result — raw price to raw price, no
         # slippage and no charges — which is what the summary subtracts net from
         # to report cost drag. Omitting it (as an earlier version did) leaves
@@ -597,6 +750,7 @@ async def run_positional(run: dict, pool) -> None:
             round(gross, 2), reason)
         realized_total[0] += pnl
 
+    rank_miss: dict = {}   # sym -> consecutive checks spent outside the buffer
     for i, day in enumerate(days):
         if i % 25 == 0:
             await pool.execute("UPDATE backtest_runs SET progress_day=$1 WHERE id=$2",
@@ -822,12 +976,91 @@ async def run_positional(run: dict, pool) -> None:
             if rs:
                 book_daily_rets.append(sum(rs) / len(rs))
 
+        # ---- DEFERRED PATTERN ENTRY: try to fill anything still pending.
+        # Runs every session, before the rebalance guard.
+        if entry_pattern is not None and pending and i > 0:
+            prev_day = days[i - 1]
+            want_pat = ([p.strip() for p in entry_pattern.split(",")]
+                        if entry_pattern.lower() != "any" else None)
+            rows_p = await pool.fetch(
+                "SELECT o.symbol, o.open AS o_open, o.high AS o_high, "
+                "       p.pattern, p.entry_lvl "
+                "FROM ohlcv_data o "
+                "JOIN stock_entry_patterns p "
+                "  ON p.symbol = o.symbol AND p.signal_date = $2 "
+                "WHERE o.symbol = ANY($1) AND o.time::date = $3",
+                list(pending), prev_day, day)
+            for rp in rows_p:
+                sym = rp["symbol"]
+                if sym not in pending or sym in holdings:
+                    continue
+                if want_pat and rp["pattern"] not in want_pat:
+                    continue
+                lvl = float(rp["entry_lvl"] or 0)
+                hi = float(rp["o_high"] or 0)
+                op_ = float(rp["o_open"] or 0)
+                if lvl <= 0 or hi < lvl:
+                    continue          # breakout level never traded
+                gross = max(lvl, op_) if op_ > lvl else lvl
+                pd_ = pending.pop(sym)
+                entry = round(gross * (1 + slip / 100), 2)
+                qty = int(pd_["alloc"] / entry) if entry > 0 else 0
+                if qty <= 0:
+                    continue
+                risk = max(entry - pd_["sma"], 0.01)
+                row = await pool.fetchrow(
+                    """
+                    INSERT INTO backtest_trades
+                      (run_id, symbol, quant_rank, signal_date, entry_trigger_price,
+                       structural_sl, risk_per_share, quantity, entry_type, status,
+                       entry_fill_date, entry_fill_price, realized_pnl, gross_pnl)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'PATTERN_ENTRY','OPEN',$9,$10,$11,0)
+                    RETURNING id
+                    """,
+                    run_id, sym, pd_["rank"], pd_["signal_day"], round(gross, 2),
+                    round(pd_["sma"], 2), round(risk, 2), qty, day, entry,
+                    round(-_leg_cost(entry * qty, False, cfg), 2))
+                holdings[sym] = {"entry": entry, "gross_entry": gross, "qty": qty,
+                                 "date": day, "risk": risk, "db_id": row["id"],
+                                 "peak": entry,
+                                 "bc_ps": (_leg_cost(entry * qty, False, cfg) / qty
+                                           if charge_buy_costs and qty else 0.0)}
+                await warm_series(sym)
+                await warm_atr(sym)
+            # expire stale candidates
+            for sym in [k for k, v in pending.items() if v["expires"] <= day]:
+                pending.pop(sym, None)
+
         # ---- selection cadence: scheduled every rebalance_days, OR forced by
         # a risk-on transition. Frozen entirely while risk-off.
         if risk_off_today or nxt is None:
             continue
-        if not force_rebalance and i % rebalance_days != 0:
-            continue
+        if cov_guard_frac is not None:
+            _hist = [cov_rows.get(days[k]) for k in range(max(i - 20, 0), i)]
+            _hist = [x for x in _hist if x]
+            _today = cov_rows.get(day)
+            if _today is not None and _hist and _today < cov_guard_frac * (sum(_hist) / len(_hist)):
+                logger.warning("run %s: %s has %d indicator rows vs %.0f trailing mean "
+                               "- REBALANCE SKIPPED, book carried unchanged",
+                               run_id, day, _today, sum(_hist) / len(_hist))
+                continue
+        if not force_rebalance:
+            if rebal_days_set is not None:
+                if i not in rebal_days_set:
+                    continue
+            elif exit_check_days is not None:
+                # 2026-08-30 DECOUPLED CADENCE. The rebalance cycle was doing two
+                # jobs at once: refreshing the ranking (buys) and firing rank-drop
+                # exits. The frequency sweep showed the EXIT job is what sets the
+                # optimum at 21 - the ranking signal itself does not decay to 126
+                # sessions. This lets exits run on their own faster grid while buys
+                # stay on the slower, cheaper one.
+                if (i - phase_days) % rebalance_days != 0 and (i - phase_days) % exit_check_days != 0:
+                    continue
+            elif (i - phase_days) % rebalance_days != 0:
+                continue
+        buy_today = (force_rebalance or exit_check_days is None
+                     or rebal_days_set is not None or (i - phase_days) % rebalance_days == 0)
 
         # composite path takes no LIMIT param — ranking must see the whole
         # candidate set before the top-buffer_n slice is taken in Python.
@@ -870,6 +1103,19 @@ async def run_positional(run: dict, pool) -> None:
         # reaching here already implies risk-on. The old rebalance-day-only
         # check that used to live here is gone — it was the 19-session lag.
         keep = {r["symbol"] for r in ranked}
+        if rank_persist:
+            for _s in list(rank_miss):
+                if _s not in holdings:
+                    rank_miss.pop(_s, None)
+            _spared = set()
+            for _s in holdings:
+                if _s in keep:
+                    rank_miss.pop(_s, None)
+                else:
+                    rank_miss[_s] = rank_miss.get(_s, 0) + 1
+                    if rank_miss[_s] < rank_persist:
+                        _spared.add(_s)
+            keep |= _spared
 
         # ---- HYP C: internal FACTOR BREADTH scaling (2026-08-18). Macro
         # index trend missed the 2025 momentum-factor crash entirely; this
@@ -976,13 +1222,20 @@ async def run_positional(run: dict, pool) -> None:
             for sym in drop:
                 f = px.get(sym)
                 if f is None:
+                    stale = await last_close_on_or_before(sym, nxt)
+                    if stale is None or stale <= 0:
+                        continue            # never traded at all — nothing to mark
+                    await close_out(sym, holdings.pop(sym), nxt, stale, "DELISTED")
+                    logger.info("run %s: %s has no bar on %s — closed at its last "
+                                "traded close %.2f rather than carried forever",
+                                run_id, sym, nxt, stale)
                     continue
                 await close_out(sym, holdings.pop(sym), nxt, float(f["open"]),
                                 "RANK_DROP")
 
         # ---- BUY into free slots from the top of the ranking
         slots = top_n - len(holdings)
-        if slots > 0:
+        if slots > 0 and buy_today:
             buyable_syms = [s for s in want if s not in holdings]
             if earn_gate_days and buyable_syms and nxt is not None:
                 from datetime import timedelta as _etd
@@ -993,6 +1246,8 @@ async def run_positional(run: dict, pool) -> None:
                     buyable_syms, nxt, nxt + _etd(days=earn_gate_days))
                 blocked = {r["symbol"] for r in blocked_rows}
                 buyable_syms = [s for s in buyable_syms if s not in blocked]
+            if entry_pattern is not None:
+                pending.clear()
             adds = buyable_syms[:slots]
             if adds:
                 fills = {r["symbol"]: r for r in await pool.fetch(
@@ -1054,6 +1309,14 @@ async def run_positional(run: dict, pool) -> None:
                     if qty <= 0:
                         continue
                     sma = float(sma_by_sym.get(sym) or 0)
+                    if entry_pattern is not None:
+                        # queue it instead of buying; the daily block above fills
+                        # it when the entry technique triggers within the window
+                        _k = min(i + (entry_wait_days or rebalance_days), len(days) - 1)
+                        pending[sym] = {"alloc": alloc, "sma": sma,
+                                        "rank": want.index(sym) + 1,
+                                        "signal_day": day, "expires": days[_k]}
+                        continue
                     risk = max(entry - sma, 0.01)   # SMA200 is the invalidation level
                     row = await pool.fetchrow(
                         """
@@ -1064,7 +1327,11 @@ async def run_positional(run: dict, pool) -> None:
                         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'MOMENTUM_RANK','OPEN',$9,$10,$11,0)
                         RETURNING id
                         """,
-                        run_id, sym, want.index(sym) + 1, nxt, round(gross, 2),
+                        # signal_date is the day the RANKING was taken (day t close);
+                        # entry_fill_date is the execution session (t+1 open). These
+                        # used to both be `nxt`, which made the trade log unable to
+                        # evidence the t -> t+1 discipline it actually follows.
+                        run_id, sym, want.index(sym) + 1, day, round(gross, 2),
                         round(sma, 2), round(risk, 2), qty, nxt, entry,
                         round(-_leg_cost(entry * qty, False, cfg), 2))
                     # gross_entry is the RAW open, kept separately from `entry`
@@ -1072,9 +1339,103 @@ async def run_positional(run: dict, pool) -> None:
                     # P&L can be computed at exit.
                     holdings[sym] = {"entry": entry, "gross_entry": gross, "qty": qty,
                                      "date": nxt, "risk": risk, "db_id": row["id"],
-                                     "peak": entry}
+                                     "peak": entry,
+                                     "bc_ps": (_leg_cost(entry * qty, False, cfg) / qty
+                                               if charge_buy_costs and qty else 0.0)}
                     await warm_series(sym)
                     await warm_atr(sym)
+
+        # ---- EXPOSURE TARGETING. Deliberately OUTSIDE `if slots > 0:` -- the
+        # under-investment case is precisely when no slot is free, so a block
+        # nested there would never fire when it is needed.
+        if (target_exposure is not None and holdings and nxt is not None
+                and buy_today):
+            bc = capital
+            if compounding:
+                bc = max(comp_floor, capital + realized_total[0] + cash_credit[0])
+                if comp_ceiling is not None:
+                    bc = min(bc, comp_ceiling)
+            bc *= exposure
+            tgt = bc * (target_exposure / 100.0)
+            px_all = {r["symbol"]: float(r["open"]) for r in await pool.fetch(
+                "SELECT symbol, open FROM ohlcv_data "
+                "WHERE symbol = ANY($1) AND time::date=$2", list(holdings), nxt)}
+            mv = {s2: h2["qty"] * px_all[s2] for s2, h2 in holdings.items()
+                  if s2 in px_all and px_all[s2] > 0}
+            cur = sum(mv.values())
+            if cur > 0 and tgt > 0:
+                ratio = tgt / cur
+                if ratio < 1.0 - exposure_tol:
+                    # ---- TRIM. Optionally take it from the laggards first.
+                    rank_pos_t = {r["symbol"]: i for i, r in enumerate(ranked)}
+                    order = list(mv)
+                    frac = {s3: (1.0 - ratio) for s3 in order}
+                    if trim_rank_min is not None:
+                        weak = [s3 for s3 in order
+                                if rank_pos_t.get(s3, 10**9) >= trim_rank_min]
+                        weak_mv = sum(mv[s3] for s3 in weak)
+                        excess = cur - tgt
+                        if weak_mv > 0:
+                            if excess <= weak_mv:
+                                frac = {s3: (excess / weak_mv if s3 in weak else 0.0)
+                                        for s3 in order}
+                            else:
+                                rest = [s3 for s3 in order if s3 not in weak]
+                                rest_mv = sum(mv[s3] for s3 in rest)
+                                rem = excess - weak_mv
+                                fr = (rem / rest_mv) if rest_mv > 0 else 0.0
+                                frac = {s3: (1.0 if s3 in weak else fr) for s3 in order}
+                    for s2, h2 in list(holdings.items()):
+                        if s2 not in mv:
+                            continue
+                        sell_qty = int(h2["qty"] * frac.get(s2, 0.0))
+                        if sell_qty < 1:
+                            continue
+                        if sell_qty >= h2["qty"]:
+                            await close_out(s2, holdings.pop(s2), nxt, px_all[s2],
+                                            "EXPO_TRIM")
+                            continue
+                        part = dict(h2)
+                        part["qty"] = sell_qty
+                        part["db_id"] = await _clone_trade_row(h2, sell_qty)
+                        await close_out(s2, part, nxt, px_all[s2], "EXPO_TRIM")
+                        h2["qty"] -= sell_qty
+                        await pool.execute(
+                            "UPDATE backtest_trades SET quantity=$2 WHERE id=$1",
+                            h2["db_id"], h2["qty"])
+                elif ratio > 1.0 + exposure_tol:
+                    # ---- TOP UP pro-rata. Extra shares are blended into the
+                    # existing row at a weighted-average cost basis, which keeps
+                    # aggregate realised P&L exact (close_out computes
+                    # (net - entry) * qty - bc_ps * qty, all three blended here).
+                    rank_pos = {r["symbol"]: i for i, r in enumerate(ranked)}
+                    elig = [s3 for s3 in mv
+                            if topup_rank_max is None
+                            or rank_pos.get(s3, 10**9) < topup_rank_max]
+                    base_mv = sum(mv[s3] for s3 in elig)
+                    shortfall = tgt - cur
+                    for s2 in elig:
+                        if base_mv <= 0:
+                            break
+                        h2 = holdings[s2]
+                        add_qty = int((shortfall * (mv[s2] / base_mv))
+                                      / max(px_all[s2] * (1 + slip / 100), 0.01))
+                        if add_qty < 1:
+                            continue
+                        gross_px = px_all[s2]
+                        entry_px = round(gross_px * (1 + slip / 100), 2)
+                        oq = h2["qty"]; nq = oq + add_qty
+                        h2["entry"] = round(
+                            (h2["entry"] * oq + entry_px * add_qty) / nq, 4)
+                        h2["gross_entry"] = round(
+                            (float(h2["gross_entry"]) * oq + gross_px * add_qty) / nq, 4)
+                        add_cost = (_leg_cost(entry_px * add_qty, False, cfg)
+                                    if charge_buy_costs else 0.0)
+                        h2["bc_ps"] = (h2.get("bc_ps", 0.0) * oq + add_cost) / nq
+                        h2["qty"] = nq
+                        await pool.execute(
+                            "UPDATE backtest_trades SET quantity=$2, entry_fill_price=$3 "
+                            "WHERE id=$1", h2["db_id"], nq, h2["entry"])
 
     # Positions still open at the window end stay OPEN — the summary endpoint
     # marks them to the last close as unrealized, exactly like the breakout book.

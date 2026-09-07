@@ -112,6 +112,12 @@ class RunCreate(BaseModel):
     pos_vol_max_lev: float | None = Field(None, ge=0.1, le=2.0)
     # separates the ATR entry filter from the ATR daily exit. None = True = current
     pos_atr_daily_exit: bool | None = Field(None)
+    # 2026-09-05 TRANCHES exposed to the API/UI. The engine has supported this
+    # since 2026-08-31 (backtest/engine.py splits the book into N sub-books on
+    # staggered rebalance calendars, each at capital/N, all writing trades under
+    # THIS run_id). None/1 = inert; every prior run reproduces byte-identically.
+    pos_tranches: int | None = Field(None, ge=1, le=21)
+    pos_phase_days: int | None = Field(None, ge=0, le=250)
     pos_atr_exempt_gain_pct: float | None = Field(None, ge=0, le=200)
     # middle-ground exit architectures (A/B/C/D), all default-inert
     pos_atr_persist_days: int | None = Field(None, ge=1, le=10)
@@ -158,6 +164,10 @@ class RunCreate(BaseModel):
     pos_b200_band_hi: float | None = Field(None, ge=0, le=100)
     pos_w_52wh: float | None = Field(None, ge=0, le=5)
     pos_earn_gate_days: int | None = Field(None, ge=1, le=30)
+    # 2026-08-26 infrastructure fixes, both inert by default so every prior
+    # run reproduces byte-identically. See positional_engine.py for why.
+    pos_cov_guard_frac: float | None = Field(None, ge=0.0, le=1.0)
+    pos_charge_buy_costs: bool | None = None
     pos_sl_pct: float = Field(0.0, ge=0, le=50)
     # sql/022 — PORTFOLIO-only. All default to INERT: a risk control that is on
     # by default cannot be measured against a baseline (see BACKTEST_REPORT §9.7).
@@ -419,6 +429,8 @@ async def create_run(body: RunCreate, request: Request):
         "exit_slippage_pct": body.exit_slippage_pct,
         "adv_position_cap_pct": body.adv_position_cap_pct,
         "compounding_max_capital": body.compounding_max_capital,
+        "pos_tranches": body.pos_tranches,
+        "pos_phase_days": body.pos_phase_days,
     }
 
     row = await pool.fetchrow(
@@ -470,7 +482,9 @@ async def create_run(body: RunCreate, request: Request):
            pos_sl_arm_pct, pos_eq_throttle_dd_pct, pos_eq_throttle_cut,
            pos_eq_throttle_mode, pos_b200_mid_cut, pos_b200_band_lo, pos_b200_band_hi,
            pos_w_52wh, pos_earn_gate_days,
-           pos_resmom_score_w, pos_resmom_col)
+           pos_resmom_score_w, pos_resmom_col,
+           pos_cov_guard_frac, pos_charge_buy_costs,
+           pos_tranches, pos_phase_days)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'RUNNING',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
                 $21,$22,$23,$24,$25,$26,$27,$28,
                 $29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,
@@ -480,7 +494,7 @@ async def create_run(body: RunCreate, request: Request):
                 $101,$102,$103,$104,$105,$106,$107,$108,$109,$110,$111,$112,
                 $113,$114,$115,$116,$117,$118,$119,$120,$121,
                 $122,$123,$124,$125,$126,$127,$128,$129,$130,$131,$132,$133,$134,$135,$136,$137,
-                $138,$139)
+                $138,$139,$140,$141,$142,$143)
         RETURNING id
         """,
         body.start_date, body.end_date, body.track_mode, body.capital,
@@ -542,6 +556,8 @@ async def create_run(body: RunCreate, request: Request):
         body.pos_b200_mid_cut, body.pos_b200_band_lo, body.pos_b200_band_hi,
         body.pos_w_52wh, body.pos_earn_gate_days,
         body.pos_resmom_score_w, body.pos_resmom_col,
+        body.pos_cov_guard_frac, body.pos_charge_buy_costs,
+        body.pos_tranches, body.pos_phase_days,
     )
     run_id = row["id"]
 
