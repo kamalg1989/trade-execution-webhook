@@ -1,0 +1,10 @@
+[Unit]
+Description=OHM /ohm/ nightly compute (writes /root/ohm_web/data/ohm.json)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ohm_web
+ExecStart=/root/trade-execution-webhook/venv/bin/python /root/ohm_web/compute.py
+StandardOutput=append:/root/ohm_web/compute.log
+StandardError=append:/root/ohm_web/compute.log

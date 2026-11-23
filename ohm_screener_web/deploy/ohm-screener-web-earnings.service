@@ -1,0 +1,8 @@
+[Unit]
+Description=OHM Screener web: top up quarterly earnings from NSE Integrated Filing (own table ohm_scr_earnings_if)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ohm_screener_web
+ExecStart=/root/trade-execution-webhook/venv/bin/python earnings_if.py --quarters 2 --workers 2 --delay 2

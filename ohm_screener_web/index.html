@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#EEF2F7">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="OHM Screener">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<title>OHM Screener</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#EEF2F7;--panel:#FFFFFF;--inset:#F3F6FA;--border:#D3DCE8;--text:#0F1A2B;--muted:#4F5F77;
+  --accent:#0369A1;--accentText:#075985;--onAccent:#FFFFFF;--up:#15803D;--down:#BE123C;
+  --pivot:#B45309;--pivotText:#92400E;--okBg:#E7F6EC;--okBorder:#9BD3AE;--okText:#166534;
+  --noBg:#FDECEF;--noBorder:#F0A7B4;--noText:#9F1239;--boBorder:#E0B15A;
+  --tagBoBg:#FDF0D5;--tagBoFg:#92400E;--tagSuBg:#E0F0FA;--tagSuFg:#075985;--tagWaBg:#EDF1F6;--tagWaFg:#3D4B61;
+  --canBg:#E0F0FA;--canFg:#075985;--ohmBg:#EFEAFB;--ohmFg:#5B3DB5;--shade:rgba(15,26,43,.45);
+}
+html[data-theme=dark]{
+  --bg:#0B1220;--panel:#121C2E;--inset:#0E1728;--border:#22314A;--text:#E6EDF7;--muted:#93A4BE;
+  --accent:#38BDF8;--accentText:#7DD3FC;--onAccent:#06121F;--up:#22C55E;--down:#F43F5E;
+  --pivot:#F5B83D;--pivotText:#FCD34D;--okBg:#0F2A1E;--okBorder:#1F6B45;--okText:#86EFAC;
+  --noBg:#2A0F17;--noBorder:#7A2433;--noText:#FDA4AF;--boBorder:#6B5216;
+  --tagBoBg:#3A2A07;--tagBoFg:#FCD34D;--tagSuBg:#0C2A3B;--tagSuFg:#7DD3FC;--tagWaBg:#1C2638;--tagWaFg:#B6C3D6;
+  --canBg:#0C2A3B;--canFg:#7DD3FC;--ohmBg:#2A1F3D;--ohmFg:#C4B5FD;--shade:rgba(2,6,14,.6);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,sans-serif;-webkit-text-size-adjust:100%}
+button,select,input{font-family:inherit;color:inherit}
+.mono{font-family:'JetBrains Mono',ui-monospace,monospace}
+.wrap{max-width:1440px;margin:0 auto;padding:20px 24px 40px;display:flex;flex-direction:column;gap:16px}
+header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
+.brand{display:flex;align-items:center;gap:12px}
+.brand h1{margin:0;font-family:'Space Grotesk',Inter,sans-serif;font-size:22px;letter-spacing:.5px}
+.sub{font-size:13px;color:var(--muted)}
+.hact{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.pill{display:flex;align-items:center;gap:8px;padding:9px 13px;border-radius:999px;font-size:13px;font-weight:600;border:1px solid}
+.pill.ok{background:var(--okBg);border-color:var(--okBorder);color:var(--okText)}
+.pill.no{background:var(--noBg);border-color:var(--noBorder);color:var(--noText)}
+.dot{width:9px;height:9px;border-radius:50%;background:currentColor}
+.btn{height:44px;min-width:44px;padding:0 14px;border-radius:10px;border:1px solid var(--border);background:var(--panel);font-weight:600;font-size:13px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px}
+.btn.primary{background:var(--accent);color:var(--onAccent);border-color:var(--accent)}
+.btn.ghost{background:transparent}
+.btn svg{width:18px;height:18px}
+.funnel{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}
+.fbox{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:10px 12px}
+.fbox .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+.fbox .n{font-family:'JetBrains Mono',monospace;font-size:21px;font-weight:600;margin-top:2px}
+.main{display:flex;gap:18px;align-items:flex-start}
+aside.filters{flex:0 0 310px;background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:14px;position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto}
+.fhead{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.fhead h2{margin:0;font-size:16px}
+select.sel{height:38px;border-radius:9px;border:1px solid var(--border);background:var(--inset);padding:0 8px;font-size:13px}
+.grp{display:flex;flex-direction:column;gap:8px}
+.gtitle{display:flex;align-items:center;gap:8px}
+.badge{font-size:11px;font-weight:700;letter-spacing:.8px;padding:3px 8px;border-radius:6px}
+.badge.can{background:var(--canBg);color:var(--canFg)}.badge.ohm{background:var(--ohmBg);color:var(--ohmFg)}
+.gline{flex:1;height:1px;background:var(--border)}
+.frow{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-radius:10px;background:var(--inset)}
+.frow.dis{opacity:.55}
+.ftop{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:30px}
+.ftop label{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}
+.ftop input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent);margin:0}
+.key{font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--accentText)}
+.num{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted)}
+.num input{width:62px;height:32px;border-radius:7px;border:1px solid var(--border);background:var(--panel);text-align:right;padding:0 6px;font:600 13px 'JetBrains Mono',monospace}
+.note{font-size:11px;color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{height:32px;padding:0 10px;border-radius:999px;border:1px solid var(--border);background:transparent;font-size:12px;font-weight:600;cursor:pointer;color:var(--muted)}
+.chip.on{background:var(--tagSuBg);color:var(--tagSuFg);border-color:var(--accent)}
+.factions{display:flex;gap:8px}
+.content{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:14px}
+.bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px}
+.tabs{display:flex;gap:4px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:4px;overflow-x:auto}
+.tab{height:42px;padding:0 14px;border-radius:9px;border:none;background:transparent;color:var(--muted);font-weight:600;font-size:14px;cursor:pointer;white-space:nowrap}
+.tab.on{background:var(--accent);color:var(--onAccent)}
+.tab .c{font-family:'JetBrains Mono',monospace;opacity:.85;margin-left:4px}
+.tools{display:flex;flex-wrap:wrap;align-items:center;gap:10px;font-size:13px;color:var(--muted)}
+.tools input[type=search]{height:40px;border-radius:10px;border:1px solid var(--border);background:var(--panel);padding:0 12px;width:160px;font-size:14px}
+.legend{display:flex;gap:12px;align-items:center}
+.legend span{display:flex;align-items:center;gap:6px}
+.lg{width:18px;height:0;border-top:2px dashed}
+.warn{padding:10px 14px;border-radius:10px;font-size:13px;border:1px solid var(--noBorder);background:var(--noBg);color:var(--noText)}
+.info{padding:10px 14px;border-radius:10px;font-size:13px;border:1px solid var(--border);background:var(--panel);color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:9px;cursor:pointer;text-align:left;width:100%}
+.card.bo{border-color:var(--boBorder)}
+.card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.ctop{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+.sym{font-family:'Space Grotesk',Inter,sans-serif;font-size:18px;font-weight:700}
+.sec{font-size:12px;color:var(--muted);margin-top:2px}
+.tag{font-size:11px;font-weight:700;letter-spacing:.6px;padding:4px 8px;border-radius:6px;white-space:nowrap}
+.tag.pat{display:inline-block;margin-top:4px;background:var(--ohmBg);color:var(--ohmFg)}
+.tag.bo{background:var(--tagBoBg);color:var(--tagBoFg)}.tag.su{background:var(--tagSuBg);color:var(--tagSuFg)}.tag.wa{background:var(--tagWaBg);color:var(--tagWaFg)}
+.px{font-family:'JetBrains Mono',monospace;font-size:13px;text-align:right;margin-top:4px}
+.upc{color:var(--up)}.dnc{color:var(--down)}
+.chart{width:100%;aspect-ratio:420/320;border-radius:8px;background:var(--inset);display:block;object-fit:contain}
+.facts{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}
+.fact{background:var(--inset);border-radius:8px;padding:6px 2px;text-align:center}
+.fact .k{font-size:11px;color:var(--muted)}.fact .v{font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600}
+.fact .v.good{color:var(--up)}
+.levels{display:flex;justify-content:space-between;gap:6px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--muted)}
+.levels b{color:var(--text)}.levels b.p{color:var(--pivotText)}.levels b.s{color:var(--down)}
+.more{display:flex;justify-content:center}
+.empty{padding:40px;text-align:center;color:var(--muted);background:var(--panel);border:1px dashed var(--border);border-radius:14px}
+.foot{font-size:12px;color:var(--muted);text-align:center}
+/* modal */
+.modal{position:fixed;inset:0;background:var(--shade);display:none;align-items:center;justify-content:center;z-index:50;padding:20px}
+.modal.open{display:flex}
+.mbox{background:var(--bg);border:1px solid var(--border);border-radius:16px;width:min(1240px,100%);max-height:100%;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:14px}
+.mhead{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.mhead h2{margin:0;font-family:'Space Grotesk',Inter,sans-serif;font-size:24px;display:flex;align-items:center;gap:10px}
+.mbody{display:flex;flex-wrap:wrap;gap:14px}
+.mcharts{flex:999 1 620px;min-width:0;display:flex;flex-direction:column;gap:12px}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:12px}
+.panel h3{margin:0 0 8px;font-size:14px}
+.panel img{width:100%;display:block;border-radius:8px;background:var(--inset)}
+.mside{flex:1 1 300px;min-width:0;display:flex;flex-direction:column;gap:12px}
+.fb{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+.fb .t{display:flex;justify-content:space-between;font-size:13px}
+.fb .tr{height:6px;border-radius:3px;background:var(--inset)}.fb .tr i{display:block;height:6px;border-radius:3px;background:var(--accent)}
+.plan{display:flex;justify-content:space-between;font-size:13px;padding:7px 0;border-bottom:1px solid var(--border)}
+.plan span:last-child{font-family:'JetBrains Mono',monospace}
+.btn.danger{background:var(--down);color:#fff;border-color:var(--down)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.keyrow{display:flex;gap:8px;margin-top:8px}.keyrow input{flex:1;min-width:0;height:44px;border-radius:10px;border:1px solid var(--border);background:var(--inset);padding:0 10px;font-size:14px}
+.msg{font-size:13px;margin-top:8px}.msg.ok{color:var(--up)}.msg.err{color:var(--down)}
+/* mobile */
+.fbtn{display:none}
+.sheetHead{display:none}
+@media (max-width:900px){
+  .wrap{padding:14px 12px 30px;gap:12px}
+  .brand h1{font-size:19px}
+  .funnel{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .fbox .n{font-size:17px}
+  .fbtn{display:inline-flex}
+  .hide-m{display:none}
+  aside.filters{position:fixed;left:0;right:0;bottom:0;top:auto;max-height:82vh;border-radius:18px 18px 0 0;z-index:40;transform:translateY(105%);transition:transform .25s ease;flex:none;padding-bottom:calc(14px + env(safe-area-inset-bottom))}
+  aside.filters.open{transform:none;box-shadow:0 -10px 40px rgba(0,0,0,.25)}
+  .sheetHead{display:flex}
+  .shade{position:fixed;inset:0;background:var(--shade);z-index:39;display:none}
+  .shade.open{display:block}
+  .grid{grid-template-columns:1fr}
+  .tools input[type=search]{width:120px}
+  .legend{display:none}
+  .modal{padding:0}
+  .mbox{border-radius:0;height:100%;padding:12px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="brand">
+    <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><rect x="1" y="1" width="32" height="32" rx="9" fill="none" stroke="var(--accent)" stroke-width="2"/><path d="M8 23 L14 16 L19 20 L26 10" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <div><h1>OHM SCREENER</h1><div class="sub" id="sub">Loading…</div></div>
+  </div>
+  <div class="hact">
+    <div class="pill ok" id="gate"><span class="dot"></span><span id="gateTxt">Gate</span></div>
+    <button class="btn" id="themeBtn" aria-label="Switch dark or light mode"></button>
+    <button class="btn fbtn" id="openF" aria-label="Open filters"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M2 4h14M5 9h8M7.5 14h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg><span>Filters</span></button>
+  </div>
+</header>
+
+<div class="funnel" id="funnel"></div>
+
+<div class="main">
+  <div class="shade" id="shade"></div>
+  <aside class="filters" id="filters" aria-label="Filters">
+    <div class="fhead sheetHead"><h2>Filters</h2><button class="btn ghost" id="closeF" aria-label="Close filters">✕</button></div>
+    <div class="fhead">
+      <h2 class="hide-m">Filters</h2>
+      <label class="sub" style="display:flex;align-items:center;gap:6px">Preset <select class="sel" id="preset"></select></label>
+    </div>
+    <div id="fgroups"></div>
+    <div class="factions">
+      <button class="btn primary" id="applyM" style="flex:1">Show results</button>
+      <button class="btn" id="savePreset">Save preset</button>
+      <button class="btn ghost" id="resetF">Reset</button>
+    </div>
+    <div class="note">Changes apply instantly and are saved on this device.</div>
+  </aside>
+
+  <section class="content">
+    <div class="bar">
+      <div class="tabs" role="tablist" id="tabs"></div>
+      <div class="tools">
+        <input type="search" id="q" placeholder="Search symbol" aria-label="Search symbol">
+        <label style="display:flex;align-items:center;gap:6px">Sort
+          <select class="sel" id="sort"><option value="score">Score</option><option value="rs">RS</option><option value="ifp">IFP</option><option value="hi">Near high</option><option value="risk">Risk %</option><option value="vx">Volume ×</option></select>
+        </label>
+        <div class="legend"><span><i class="lg" style="border-color:var(--pivot)"></i>Pivot</span><span><i class="lg" style="border-color:var(--down)"></i>Stop</span></div>
+      </div>
+    </div>
+    <div id="notes"></div>
+    <div class="grid" id="grid"></div>
+    <div class="more" id="more"></div>
+    <div class="foot" id="foot"></div>
+  </section>
+</div>
+</div>
+
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+  <div class="mbox">
+    <div class="mhead">
+      <h2 id="mTitle"></h2>
+      <div style="display:flex;align-items:center;gap:10px"><span class="mono" id="mPx" style="font-size:18px"></span><button class="btn" id="mClose" aria-label="Close">✕</button></div>
+    </div>
+    <div class="sub" id="mSub"></div>
+    <div class="mbody">
+      <div class="mcharts">
+        <div class="panel"><h3>Daily · 6 months</h3><img id="mDaily" alt="Daily chart"></div>
+        <div class="panel"><h3>Weekly · 2 years</h3><img id="mWeekly" alt="Weekly chart"></div>
+      </div>
+      <div class="mside">
+        <div class="panel"><h3>CAN SLIM + IFP</h3><div id="mFactors"></div></div>
+        <div class="panel"><h3>Trade plan</h3><div id="mPlan"></div><div class="note" id="mGate" style="margin-top:8px"></div></div>
+        <div class="panel"><h3>Buy · OHM sizing</h3><div id="mBuy"></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+const API = '/ohm-screener/api';
+const $ = id => document.getElementById(id);
+const LS = { get(k, d) { try { const v = localStorage.getItem('ohmscr.' + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
+             set(k, v) { try { localStorage.setItem('ohmscr.' + k, JSON.stringify(v)); } catch (e) {} } };
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = (x, d = 2) => x == null || !isFinite(x) ? '—' : Number(x).toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+// ---------------- filters ----------------
+const ENTS = ['HH-HL', 'Inside bar', 'Pin bar', 'Trend bar'];
+const BASES = [['vS', 'VCP strict'], ['vL', 'VCP loose'], ['h52', '52w high']];
+const PATS = [['vcp', 'VCP'], ['cup', 'Cup & handle'], ['flat', 'Flat base'], ['flag', 'Bull flag'], ['pennant', 'Pennant'],
+  ['htf', 'High tight flag'], ['asc', 'Ascending triangle'], ['dbl', 'Double bottom']];
+const PATN = Object.fromEntries(PATS);
+const ALLPATS = PATS.map(p => p[0]);
+const DEFS = [
+  { g: 'CAN SLIM', id: 'C', label: 'Quarter profit YoY', op: '≥', unit: '%', step: 1, earn: true },
+  { g: 'CAN SLIM', id: 'A', label: 'Yearly profit growth', op: '≥', unit: '%', step: 1, earn: true },
+  { g: 'CAN SLIM', id: 'N', label: 'Below 52w high', op: '≤', unit: '%', step: 1 },
+  { g: 'CAN SLIM', id: 'S', label: 'Breakout volume', op: '≥', unit: '×', step: 0.1, noToggle: true },
+  { g: 'CAN SLIM', id: 'L', label: 'RS rank', op: '≥', unit: '', step: 1 },
+  { g: 'CAN SLIM', id: 'I', label: 'Promoter not cutting stake', bool: true },
+  { g: 'CAN SLIM', id: 'M', label: 'Stocks above SMA200', op: '≥', unit: '%', step: 1 },
+  { g: 'OHM', id: 'LIQ', label: '20d turnover', op: '≥', unit: 'cr', step: 1 },
+  { g: 'OHM', id: 'TRD', label: 'Close > SMA200, SMA50 > SMA200', bool: true },
+  { g: 'OHM', id: 'IFP', label: 'IFP score', op: '≥', unit: '', step: 0.01 },
+  { g: 'OHM', id: 'BASE', label: 'Base type', chips: BASES.map(b => b[0]), names: Object.fromEntries(BASES), noToggle: true },
+  { g: 'OHM', id: 'PAT', label: 'Chart pattern', chips: ALLPATS, names: PATN, counts: true },
+  { g: 'OHM', id: 'DEP', label: 'Base depth', op: '≤', unit: '%', step: 1 },
+  { g: 'OHM', id: 'ENT', label: 'Entry technique', chips: ENTS },
+  { g: 'OHM', id: 'RSK', label: 'Stop distance', op: '≤', unit: '%', step: 0.5 },
+  { g: 'OHM', id: 'REG', label: 'Market regime filter', bool: true },
+  { g: 'OHM', id: 'TOP', label: 'Watchlist size', op: '', unit: '', step: 1, noToggle: true },
+];
+const PRESETS = {
+  'CAN SLIM + OHM': { C: [1, 20], A: [1, 15], N: [1, 25], S: [1, 1.5], L: [1, 80], I: [0], M: [1, 40], LIQ: [1, 10], TRD: [1], IFP: [1, 0.25], BASE: [1, ['vS']], DEP: [1, 35], ENT: [0, ENTS], RSK: [1, 8], REG: [1], TOP: [1, 20] },
+  'CAN SLIM only': { C: [1, 20], A: [1, 15], N: [1, 15], S: [1, 1.5], L: [1, 80], I: [1], M: [1, 40], LIQ: [1, 10], TRD: [0], IFP: [0, 0.25], BASE: [1, ['vS', 'h52']], DEP: [1, 35], ENT: [0, ENTS], RSK: [1, 8], REG: [0], TOP: [1, 20] },
+  'Tested (L+N, VCP strict)': { C: [0, 20], A: [0, 15], N: [1, 25], S: [1, 1.5], L: [0, 80], I: [0], M: [1, 40], LIQ: [1, 10], TRD: [1], IFP: [0, 0.25], BASE: [1, ['vS']], DEP: [1, 35], ENT: [0, ENTS], RSK: [1, 8], REG: [0], TOP: [1, 20] },
+  'Chart patterns': { C: [0, 20], A: [0, 15], N: [0, 25], S: [1, 1.5], L: [0, 80], I: [0], M: [1, 40], LIQ: [1, 10], TRD: [1], IFP: [0, 0.25], BASE: [1, ['vS']], DEP: [0, 35], ENT: [0, ENTS], RSK: [1, 10], REG: [1], TOP: [1, 60], PAT: [1, ALLPATS] },
+  'OHM classic': { C: [0, 20], A: [0, 15], N: [1, 25], S: [1, 1.5], L: [1, 70], I: [0], M: [1, 30], LIQ: [1, 10], TRD: [1], IFP: [1, 0.25], BASE: [1, ['vL', 'h52']], DEP: [1, 40], ENT: [1, ENTS], RSK: [1, 8], REG: [1], TOP: [1, 30] },
+};
+const clone = o => JSON.parse(JSON.stringify(o));
+let userPresets = LS.get('presets', {});
+let F = LS.get('filters', null) || clone(PRESETS['CAN SLIM + OHM']);
+let presetName = LS.get('preset', 'CAN SLIM + OHM');
+if (!F.PAT) F.PAT = [0, ALLPATS.slice()];
+for (const p of Object.values(PRESETS)) if (!p.PAT) p.PAT = [0, ALLPATS.slice()];
+let theme = LS.get('theme', 'light');
+let tab = LS.get('tab', 'watch');
+let sortBy = LS.get('sort', 'score');
+let query = '';
+let DATA = null, earnOK = false, showN = 24, EARN = { C: false, A: false }, COV = { C: 0, A: 0 };
+let CFG = { capital: 400000, riskPct: 0.25, capPct: 10, targetR: 2 };
+
+// ---------------- theme ----------------
+const SUN = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.4 1.4M11.6 11.6L13 13M3 13l1.4-1.4M11.6 4.4L13 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+const MOON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+function applyTheme() {
+  document.documentElement.dataset.theme = theme;
+  document.querySelector('meta[name=theme-color]').content = theme === 'dark' ? '#0B1220' : '#EEF2F7';
+  $('themeBtn').innerHTML = (theme === 'dark' ? SUN : MOON) + '<span class="hide-m">' + (theme === 'dark' ? 'Light' : 'Dark') + '</span>';
+}
+$('themeBtn').onclick = () => { theme = theme === 'dark' ? 'light' : 'dark'; LS.set('theme', theme); applyTheme(); render(); };
+applyTheme();
+
+// ---------------- filter panel ----------------
+function presetOptions() {
+  const all = [...Object.keys(PRESETS), ...Object.keys(userPresets)];
+  $('preset').innerHTML = all.map(n => `<option${n === presetName ? ' selected' : ''}>${esc(n)}</option>`).join('') +
+    (all.includes(presetName) ? '' : `<option selected>${esc(presetName)}</option>`);
+}
+function buildFilters() {
+  const groups = { 'CAN SLIM': [], 'OHM': [] };
+  for (const d of DEFS) {
+    const st = F[d.id] || [0];
+    const dis = d.earn && !EARN[d.id];
+    const on = !!st[0] && !dis;
+    let ctl = '';
+    if (d.chips) {
+      const sel = st[1] || [];
+      const cnt = c => d.counts && DATA ? ' <span class="mono" style="opacity:.7">' + DATA.rows.filter(r => r.tov >= 10 && r.trd && (r.pats || []).some(p => p.t === c)).length + '</span>' : '';
+      ctl = `<div class="chips">${d.chips.map(c => `<button type="button" class="chip${sel.includes(c) ? ' on' : ''}" data-chip="${d.id}" data-v="${esc(c)}">${esc(d.names ? d.names[c] : c)}${cnt(c)}</button>`).join('')}</div>`;
+    }
+    const num = (!d.bool && !d.chips) ? `<span class="num">${d.op}<input type="number" inputmode="decimal" step="${d.step}" value="${st[1]}" data-num="${d.id}" aria-label="${esc(d.label)}"${dis ? ' disabled' : ''}>${d.unit}</span>` : '';
+    const box = d.noToggle ? `<span style="width:18px"></span>` : `<input type="checkbox" data-tog="${d.id}"${on ? ' checked' : ''}${dis ? ' disabled' : ''}>`;
+    groups[d.g].push(`<div class="frow${dis ? ' dis' : ''}"><div class="ftop"><label>${box}<span><span class="key">${d.id}</span> ${esc(d.label)}</span></label>${num}</div>${ctl}${dis ? '<div class="note">Not enough earnings data yet (see note).</div>' : ''}</div>`);
+  }
+  $('fgroups').innerHTML = Object.entries(groups).map(([g, rows]) =>
+    `<div class="grp"><div class="gtitle"><span class="badge ${g === 'OHM' ? 'ohm' : 'can'}">${g}</span><i class="gline"></i></div>${rows.join('')}</div>`).join('<div style="height:10px"></div>');
+}
+function changed() { presetName = 'Custom'; LS.set('filters', F); LS.set('preset', presetName); presetOptions(); showN = 24; render(); }
+$('fgroups').addEventListener('change', e => {
+  const t = e.target;
+  if (t.dataset.tog) { F[t.dataset.tog][0] = t.checked ? 1 : 0; changed(); }
+  if (t.dataset.num) { const v = parseFloat(t.value); if (isFinite(v)) { F[t.dataset.num][1] = v; F[t.dataset.num][0] = F[t.dataset.num][0] ?? 1; changed(); } }
+});
+$('fgroups').addEventListener('click', e => {
+  const b = e.target.closest('[data-chip]'); if (!b) return;
+  const id = b.dataset.chip, v = b.dataset.v, cur = F[id][1] || [];
+  F[id][1] = cur.includes(v) ? cur.filter(x => x !== v) : [...cur, v];
+  if (id === 'BASE' && !F[id][1].length) F[id][1] = [v];
+  buildFilters(); changed();
+});
+$('preset').onchange = () => {
+  const n = $('preset').value; const p = PRESETS[n] || userPresets[n]; if (!p) return;
+  F = clone(p); presetName = n; LS.set('filters', F); LS.set('preset', n); buildFilters(); showN = 24; render();
+};
+$('savePreset').onclick = () => {
+  const n = (prompt('Preset name', presetName === 'Custom' ? 'My preset' : presetName) || '').trim();
+  if (!n || PRESETS[n]) return;
+  userPresets[n] = clone(F); LS.set('presets', userPresets); presetName = n; LS.set('preset', n); presetOptions();
+};
+$('resetF').onclick = () => { F = clone(PRESETS['CAN SLIM + OHM']); presetName = 'CAN SLIM + OHM'; LS.set('filters', F); LS.set('preset', presetName); presetOptions(); buildFilters(); render(); };
+const openSheet = o => { $('filters').classList.toggle('open', o); $('shade').classList.toggle('open', o); };
+$('openF').onclick = () => openSheet(true);
+$('closeF').onclick = $('shade').onclick = $('applyM').onclick = () => openSheet(false);
+
+// ---------------- engine ----------------
+const on = id => !!(F[id] && F[id][0]) && !((id === 'C' || id === 'A') && !EARN[id]);
+const val = id => F[id] ? F[id][1] : null;
+function evaluate() {
+  const rows = DATA.rows, meta = DATA.meta;
+  const uni = rows.filter(r => !on('LIQ') || r.tov >= val('LIQ'));
+  const trend = uni.filter(r => !on('TRD') || r.trd);
+  const pass = trend.filter(r =>
+    (!on('N') || (r.hi != null && r.hi >= 100 - val('N'))) &&
+    (!on('L') || (r.rs != null && r.rs >= val('L'))) &&
+    (!on('IFP') || (r.ifp != null && r.ifp >= val('IFP'))) &&
+    (!on('C') || (r.cq != null && r.cq >= val('C'))) &&
+    (!on('A') || (r.ca != null && r.ca >= val('A'))) &&
+    (!on('I') || r.proD == null || r.proD >= 0) &&
+    (!on('PAT') || (r.pats || []).some(p => (val('PAT') || []).includes(p.t))));
+  for (const r of pass) {
+    const parts = [r.rs, r.nP];
+    if (on('IFP')) parts.push(r.ifpP);
+    if (on('C')) parts.push(r.cP ?? 50);
+    if (on('A')) parts.push(r.aP ?? 50);
+    const p = parts.filter(x => x != null);
+    r._score = p.length ? Math.round(p.reduce((a, b) => a + b, 0) / p.length) : 0;
+    setup(r);
+  }
+  pass.sort((a, b) => b._score - a._score);
+  const N = Math.max(1, Math.round(val('TOP') || 20));
+  const watch = pass.slice(0, N);
+  const gateOpen = !on('M') || meta.breadth >= val('M');
+  const regimeOK = !on('REG') || meta.regime !== 'DECLINE';
+  const setups = watch.filter(r => r._st === 'su');
+  const bos = watch.filter(r => r._st === 'bo');
+  return { uni, trend, pass, watch, setups, bos, gateOpen, regimeOK };
+}
+function setup(r) {
+  r._st = 'wa'; r._piv = null; r._risk = null; r._why = '';
+  const bases = (F.BASE && F.BASE[1]) || ['vS'];
+  const depOK = !on('DEP') || (r.dep != null && r.dep <= val('DEP'));
+  let piv = null, kind = null;
+  r._pat = null;
+  if (on('PAT')) {
+    const p = (r.pats || []).find(x => (val('PAT') || []).includes(x.t));
+    if (p) { r._pat = p; piv = p.piv; kind = PATN[p.t]; }
+  } else if (bases.includes('vS') && r.vS && depOK) { piv = r.piv; kind = 'VCP strict'; }
+  else if (bases.includes('vL') && r.vL && depOK) { piv = r.piv; kind = 'VCP loose'; }
+  else if (bases.includes('h52') && r.piv52 && r.c >= 0.95 * r.piv52) { piv = r.piv52; kind = '52w high'; }
+  if (!piv) return;
+  r._piv = piv; r._kind = kind;
+  const isBO = r.c > piv && (r.vx || 0) >= (val('S') || 1.5);
+  const entry = isBO ? r.c : piv;
+  r._risk = r.stp ? (entry - r.stp) / entry * 100 : null;
+  const entOK = !on('ENT') || (val('ENT') || []).includes(r.ent);
+  const rskOK = !on('RSK') || (r._risk != null && r._risk <= val('RSK'));
+  if (!rskOK) { r._why = 'stop too wide'; return; }
+  if (!entOK) { r._why = 'no matching entry bar'; return; }
+  if (isBO) r._st = 'bo';
+  else if (r.c <= piv && r.c >= piv * (r._pat ? 0.95 : 0.92)) r._st = 'su';
+  else if (r.c > piv) r._why = 'above pivot, volume low';
+}
+
+// ---------------- render ----------------
+const TAGS = { bo: ['bo', 'BREAKOUT'], su: ['su', 'SETTING UP'], wa: ['wa', 'WATCH'] };
+function chartURL(r, w, h, extra = {}) {
+  const p = new URLSearchParams({ symbol: r.s, days: extra.days || 120, theme, w, h, v: DATA.meta.asof });
+  if (r._piv && (r._st !== 'wa' || r._pat)) p.set('pivot', r._piv);
+  if (r._pat && r._pat.ol && r._pat.ol.length) p.set('ol', r._pat.ol.map(line => line.map(([a, pr]) => a + ':' + pr).join(' ')).join('|'));
+  if (r._st !== 'wa' && r.stp) p.set('stop', r.stp);
+  if (r._st === 'bo') p.set('bo', 1);
+  if (extra.stats) p.set('stats', 1);
+  return `${API}/chart?${p}`;
+}
+function card(r) {
+  let [tc, tl] = TAGS[r._st];
+  if (r._pat && r._st === 'wa') tl = 'FORMING';
+  if (r._pat && r._st === 'su') tl = 'NEAR PIVOT';
+  const g = (v, t) => v != null && v >= t ? ' good' : '';
+  const cq = r.cq == null ? '—' : (r.cq > 0 ? '+' : '') + r.cq + '%';
+  const ca = r.ca == null ? '—' : (r.ca > 0 ? '+' : '') + r.ca + '%';
+  const sub = [r.sec, r._kind, r.ent].filter(Boolean).join(' · ');
+  return `<button class="card${r._st === 'bo' ? ' bo' : ''}" data-s="${esc(r.s)}" type="button">
+    <div class="ctop"><div><div class="sym">${esc(r.s)}</div>${r._pat ? `<span class="tag pat">${esc(PATN[r._pat.t].toUpperCase())}</span>` : ''}<div class="sec">${esc(sub || r.nm)}</div></div>
+      <div><span class="tag ${tc}">${tl}</span><div class="px">₹${fmt(r.c)} <span class="${r.chg < 0 ? 'dnc' : 'upc'}">${r.chg > 0 ? '+' : ''}${fmt(r.chg)}%</span></div></div></div>
+    <img class="chart" loading="lazy" decoding="async" src="${chartURL(r, 420, 320)}" alt="${esc(r.s)} daily chart">
+    <div class="facts">
+      <div class="fact"><div class="k">Score</div><div class="v">${r._score ?? '—'}</div></div>
+      <div class="fact"><div class="k">RS</div><div class="v${g(r.rs, 90)}">${r.rs ?? '—'}</div></div>
+      <div class="fact"><div class="k">IFP</div><div class="v${g(r.ifp, 0.45)}">${r.ifp != null ? r.ifp.toFixed(2) : '—'}</div></div>
+      <div class="fact"><div class="k">C</div><div class="v">${cq}</div></div>
+      <div class="fact"><div class="k">A</div><div class="v">${ca}</div></div>
+    </div>
+    <div class="levels"><span>Pivot <b class="p">${r._piv ? fmt(r._piv) : '—'}</b></span><span>Stop <b class="s">${r._piv ? fmt(r.stp) : '—'}</b></span><span>Risk <b>${r._risk != null ? r._risk.toFixed(1) + '%' : '—'}</b></span><span>Vol <b>${r.vx != null ? r.vx.toFixed(1) + '×' : '—'}</b></span></div>
+    ${r._pat ? `<div class="note">${esc(PATN[r._pat.t])} · depth ${r._pat.dep}% · ${r._pat.wk} wk · ${r.c < r._piv ? ((r._piv / r.c - 1) * 100).toFixed(1) + '% below pivot' : 'above pivot'}</div>` : ''}
+    ${r._why ? `<div class="note">${esc(r._why)}</div>` : ''}
+  </button>`;
+}
+function sorter(a, b) {
+  const k = { score: r => r._score, rs: r => r.rs, ifp: r => r.ifp, hi: r => r.hi, vx: r => r.vx, risk: r => r._risk == null ? 1e9 : -r._risk }[sortBy];
+  return (k(b) ?? -1e9) - (k(a) ?? -1e9);
+}
+let LAST = null;
+function render() {
+  if (!DATA) return;
+  const E = evaluate(); LAST = E;
+  const m = DATA.meta;
+  $('sub').textContent = `CAN SLIM + OHM · as of ${m.asof} close · regime ${m.regime}`;
+  const gate = $('gate');
+  gate.className = 'pill ' + (E.gateOpen && E.regimeOK ? 'ok' : 'no');
+  $('gateTxt').textContent = `${E.gateOpen && E.regimeOK ? 'GATE OPEN' : 'GATE CLOSED'} · ${m.breadth}%`;
+  gate.title = `${m.breadth}% of liquid stocks above SMA200 (needs ≥ ${val('M')}%) · regime ${m.regime}`;
+  const fb = [['Universe', E.uni.length], ['Trend OK', E.trend.length], ['Pass filters', E.pass.length], ['Watchlist', E.watch.length], ['Setting up', E.setups.length], ['Breakout', E.bos.length]];
+  $('funnel').innerHTML = fb.map(([l, n], i) => `<div class="fbox"><div class="l">${l}</div><div class="n" style="color:${i >= 5 ? 'var(--pivotText)' : i >= 3 ? 'var(--accentText)' : 'var(--text)'}">${n}</div></div>`).join('');
+  const T = [['watch', 'Watchlist', E.watch], ['setup', 'Setting up', E.setups], ['bo', 'Breakout today', E.bos], ['all', 'All passing', E.pass]];
+  $('tabs').innerHTML = T.map(([id, l, arr]) => `<button class="tab${tab === id ? ' on' : ''}" role="tab" aria-selected="${tab === id}" data-tab="${id}">${l}<span class="c">${arr.length}</span></button>`).join('');
+  let list = (T.find(t => t[0] === tab) || T[0])[2].slice();
+  if (query) {
+    const ps = new Set(E.pass);
+    list = DATA.rows.filter(r => r.s.includes(query.toUpperCase())).slice(0, 48);
+    for (const r of list) if (!ps.has(r)) { r._score = null; setup(r); }
+  }
+  list.sort(sorter);
+  const notes = [];
+  if (!EARN.C || !EARN.A) notes.push(`<div class="info">${[!EARN.C ? 'C' : '', !EARN.A ? 'A' : ''].filter(Boolean).join(' and ')} switched off: earnings data still loading (coverage C ${Math.round(COV.C * 100)}%, A ${Math.round(COV.A * 100)}% of liquid stocks; needs 50%). They switch on by themselves once enough results are in.</div>`);
+  if (tab === 'bo' && (!E.gateOpen || !E.regimeOK)) notes.push(`<div class="warn">Market gate closed (${m.breadth}% above SMA200, regime ${esc(m.regime)}). Breakouts shown for watching only — no buys.</div>`);
+  $('notes').innerHTML = notes.join('');
+  const shown = list.slice(0, showN);
+  $('grid').innerHTML = shown.length ? shown.map(card).join('') : `<div class="empty">No stocks match. Loosen a filter or switch tabs.</div>`;
+  $('more').innerHTML = list.length > showN ? `<button class="btn" id="moreBtn">Show more (${list.length - showN})</button>` : '';
+  if ($('moreBtn')) $('moreBtn').onclick = () => { showN += 24; render(); };
+  $('foot').textContent = `Data ${m.asof} · computed ${m.generated.replace('T', ' ')} · ${m.n} liquid stocks · charts from Stock Vault`;
+}
+$('tabs').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (!b) return; tab = b.dataset.tab; LS.set('tab', tab); showN = 24; render(); });
+$('sort').value = sortBy;
+$('sort').onchange = () => { sortBy = $('sort').value; LS.set('sort', sortBy); render(); };
+$('q').oninput = () => { query = $('q').value.trim(); render(); };
+
+// ---------------- detail ----------------
+$('grid').addEventListener('click', e => { const b = e.target.closest('.card'); if (b) openDetail(b.dataset.s); });
+const KEY = 'trading_api_key';  // same key the main dashboard stores
+const getKey = () => { try { return (localStorage.getItem(KEY) || '').trim(); } catch (e) { return ''; } };
+function buyPlan(r) {
+  if (!r._piv || (r._st !== 'bo' && r._st !== 'su')) return null;
+  const entry = r._st === 'bo' ? (r.h || r.c) : r._piv;
+  const stop = r.stp;
+  const rps = entry - stop;
+  if (!(rps > 0)) return null;
+  const cap = CFG.capital, riskAmt = cap * CFG.riskPct / 100, capAmt = cap * CFG.capPct / 100;
+  const qRisk = Math.floor(riskAmt / rps), qCap = Math.floor(capAmt / entry);
+  const qty = Math.max(0, Math.min(qRisk, qCap));
+  return { entry, stop, rps, qty, qRisk, qCap, riskPct: rps / entry * 100, target: entry + CFG.targetR * rps,
+           amount: qty * entry, totalRisk: qty * rps, riskAmt, capAmt, limitBy: qRisk <= qCap ? 'risk' : 'capital cap' };
+}
+let armTimer = null;
+function renderBuy(r, P, L) {
+  const box = $('mBuy');
+  const row = (k, v) => `<div class="plan"><span>${k}</span><span>${v}</span></div>`;
+  if (!P) { box.innerHTML = `<div class="note">No buy: only Setting up and Breakout stocks with a valid stop can be bought.</div>`; return; }
+  const gateOK = L.gateOpen && L.regimeOK;
+  const key = getKey();
+  let html = row('Capital (server)', '₹' + fmt(CFG.capital, 0)) +
+    row(`Risk ${CFG.riskPct}% / cap ${CFG.capPct}%`, `₹${fmt(P.riskAmt, 0)} / ₹${fmt(P.capAmt, 0)}`) +
+    row('Quantity', `${P.qty} <span class="note">(${P.limitBy})</span>`) +
+    row('Amount', '₹' + fmt(P.amount, 0)) + row('Total risk', '₹' + fmt(P.totalRisk, 0)) +
+    row('Reward : risk', `${CFG.targetR} : 1 → target ₹${fmt(P.target)}`);
+  if (!key) {
+    html += `<div class="note" style="margin-top:8px">Enter the trading API key (same as the main dashboard) to enable Buy.</div>
+      <div class="keyrow"><input type="password" id="keyIn" placeholder="X-API-Key" aria-label="Trading API key" autocomplete="off"><button class="btn" id="keySave">Save</button></div>`;
+  }
+  const why = !gateOK ? 'Market gate closed' : P.qty <= 0 ? 'Quantity is 0' : !key ? 'API key needed' : '';
+  html += `<div style="display:flex;gap:8px;margin-top:10px">
+    <button class="btn primary" id="buyBtn" style="flex:1"${why ? ' disabled' : ''}>${why || `Buy ${P.qty} × ${esc(r.s)} above ₹${fmt(P.entry)}`}</button>
+    ${key ? '<button class="btn ghost" id="keyClear" title="Forget API key on this device">Key ✕</button>' : ''}</div>
+    <div class="note" style="margin-top:6px">Places a Dhan forever order (buy above trigger) via the dashboard API. Set the stop loss from the SL tab after it fills.</div>
+    <div class="msg" id="buyMsg"></div>`;
+  box.innerHTML = html;
+  if ($('keySave')) $('keySave').onclick = () => { const v = $('keyIn').value.trim(); if (v) { try { localStorage.setItem(KEY, v); } catch (e) {} renderBuy(r, P, L); } };
+  if ($('keyClear')) $('keyClear').onclick = () => { try { localStorage.removeItem(KEY); } catch (e) {} renderBuy(r, P, L); };
+  const btn = $('buyBtn');
+  if (btn && !why) btn.onclick = async () => {
+    if (!btn.dataset.armed) {
+      btn.dataset.armed = '1'; btn.classList.replace('primary', 'danger');
+      btn.textContent = `Confirm: buy ${P.qty} × ${r.s} (₹${fmt(P.amount, 0)})`;
+      clearTimeout(armTimer); armTimer = setTimeout(() => renderBuy(r, P, L), 6000);
+      return;
+    }
+    clearTimeout(armTimer);
+    btn.disabled = true; btn.textContent = 'Placing order…';
+    const msg = $('buyMsg');
+    try {
+      const res = await fetch('/api/buy', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': getKey() },
+        body: JSON.stringify({ symbol: r.s, quantity: P.qty, price: +P.entry.toFixed(2), stopLoss: +P.stop.toFixed(2),
+          recommendation: { source: 'ohm-screener', symbol: r.s, entry: P.entry, stopLoss: P.stop, target: +P.target.toFixed(2),
+            riskPerShare: +P.rps.toFixed(2), rrRatio: CFG.targetR, targetStrategy: 'FIXED_R', entryType: r.ent,
+            setup: r._kind, status: r._st === 'bo' ? 'BREAKOUT' : 'SETTING_UP', pivot: r._piv, score: r._score, rs: r.rs,
+            ifp: r.ifp, cq: r.cq, ca: r.ca, liquidityCr: r.tov, volX: r.vx, dataAsOf: DATA.meta.asof,
+            regime: DATA.meta.regime, breadth: DATA.meta.breadth } })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok && body.success) {
+        msg.className = 'msg ok'; msg.textContent = body.message || 'Order placed.';
+        btn.textContent = 'Order placed';
+      } else {
+        if (res.status === 401 || res.status === 403) { try { localStorage.removeItem(KEY); } catch (e) {} }
+        msg.className = 'msg err'; msg.textContent = (body.detail || body.message || ('HTTP ' + res.status));
+        btn.disabled = false; btn.textContent = 'Retry'; delete btn.dataset.armed; btn.classList.replace('danger', 'primary');
+      }
+    } catch (e) {
+      msg.className = 'msg err'; msg.textContent = 'Network error: ' + e.message;
+      btn.disabled = false; btn.textContent = 'Retry'; delete btn.dataset.armed; btn.classList.replace('danger', 'primary');
+    }
+  };
+}
+function openDetail(sym) {
+  const r = DATA.rows.find(x => x.s === sym); if (!r) return;
+  if (r._st === undefined) setup(r);
+  const mobile = innerWidth < 900;
+  let [tc, tl] = TAGS[r._st];
+  if (r._pat && r._st === 'wa') tl = 'FORMING';
+  if (r._pat && r._st === 'su') tl = 'NEAR PIVOT';
+  $('mTitle').innerHTML = `${esc(r.s)} <span class="tag ${tc}">${tl}</span>`;
+  $('mPx').innerHTML = `₹${fmt(r.c)} <span class="${r.chg < 0 ? 'dnc' : 'upc'}">${r.chg > 0 ? '+' : ''}${fmt(r.chg)}%</span>`;
+  $('mSub').textContent = [r.nm, r.sec, r._kind, r.ent ? 'last bar: ' + r.ent : null].filter(Boolean).join(' · ');
+  $('mDaily').src = chartURL(r, mobile ? 400 : 1100, mobile ? 520 : 600, { days: 130, stats: 1 });
+  const to = DATA.meta.asof, from = new Date(new Date(to).getTime() - 730 * 864e5).toISOString().slice(0, 10);
+  $('mWeekly').src = `/api/v1/charts/weekly?symbol=${encodeURIComponent(r.s)}&from_date=${from}&to_date=${to}&theme=${theme}&width=${mobile ? 400 : 1100}&height=${mobile ? 420 : 460}`;
+  const bar = (k, n, v, p) => `<div class="fb"><div class="t"><span><span class="key">${k}</span> ${n}</span><span class="mono">${v}</span></div><div class="tr"><i style="width:${Math.max(0, Math.min(100, p ?? 0))}%"></i></div></div>`;
+  const pc = x => x == null ? '—' : (x > 0 ? '+' : '') + x + '%';
+  $('mFactors').innerHTML =
+    bar('C', 'Quarter profit YoY', pc(r.cq), r.cP) + bar('A', 'Yearly profit growth', pc(r.ca), r.aP) +
+    bar('N', '% of 52w high', r.hi != null ? r.hi + '%' : '—', r.nP) + bar('S', 'Volume vs 50d', r.vx != null ? r.vx + '×' : '—', Math.min(100, (r.vx || 0) / 3 * 100)) +
+    bar('L', 'RS rank', r.rs ?? '—', r.rs) + bar('I', 'Promoter holding', r.pro != null ? r.pro + '% (' + (r.proD >= 0 ? '+' : '') + (r.proD ?? 0) + ')' : '—', r.pro) +
+    bar('IFP', 'Smooth momentum', r.ifp != null ? r.ifp.toFixed(2) : '—', r.ifpP) +
+    (r.ebd ? `<div class="note">Earnings: quarter to ${esc(r.ept)}, filed ${esc(r.ebd)}</div>` : '');
+  const L = LAST || evaluate();
+  const row = (k, v) => `<div class="plan"><span>${k}</span><span>${v}</span></div>`;
+  const P = buyPlan(r);
+  $('mPlan').innerHTML = P ?
+    row(r._st === 'bo' ? 'Entry (buy above last high)' : 'Entry (buy above pivot)', '₹' + fmt(P.entry)) +
+    row('Pivot', '₹' + fmt(r._piv)) + row('Initial stop (lower of last 2 lows)', '₹' + fmt(P.stop)) +
+    row('Risk to stop', P.riskPct.toFixed(1) + '%') + row(`Target (${CFG.targetR}R)`, '₹' + fmt(P.target)) +
+    row('Trail exit', 'Close < peak − 5×ATR (' + fmt(r.atr * 5) + ')')
+    : (r._piv ? row('Setup', r._why || 'Not actionable') : row('Setup', 'No base yet — watch only')) + row('ATR (14)', fmt(r.atr));
+  renderBuy(r, P, L);
+  $('mGate').textContent = `Gate ${L.gateOpen && L.regimeOK ? 'open' : 'closed'} · breadth ${DATA.meta.breadth}% · regime ${DATA.meta.regime}${r._why ? ' · ' + r._why : ''}`;
+  $('modal').classList.add('open'); document.body.style.overflow = 'hidden';
+}
+const closeModal = () => { $('modal').classList.remove('open'); document.body.style.overflow = ''; };
+$('mClose').onclick = closeModal;
+$('modal').addEventListener('click', e => { if (e.target === $('modal')) closeModal(); });
+addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); openSheet(false); } });
+
+// ---------------- load ----------------
+async function load() {
+  try {
+    const r = await fetch(`${API}/results`, { cache: 'no-cache' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    DATA = await r.json();
+    try { CFG = await fetch(`${API}/config`, { cache: 'no-cache' }).then(x => x.json()); } catch (e) {}
+    const liq = DATA.rows.filter(x => x.tov >= 10);
+    COV.C = liq.filter(x => x.cq != null).length / Math.max(1, liq.length);
+    COV.A = liq.filter(x => x.ca != null).length / Math.max(1, liq.length);
+    EARN.C = COV.C >= 0.5; EARN.A = COV.A >= 0.5; earnOK = EARN.C || EARN.A;
+    presetOptions(); buildFilters(); render();
+  } catch (e) {
+    $('sub').textContent = 'Could not load results (' + e.message + '). Tap to retry.';
+    $('sub').onclick = load;
+  }
+}
+let hidden = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) hidden = Date.now(); else if (hidden && Date.now() - hidden > 15 * 60e3) load();
+});
+load();
+})();
+</script>
+</body>
+</html>

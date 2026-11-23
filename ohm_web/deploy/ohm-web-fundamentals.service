@@ -1,0 +1,11 @@
+[Unit]
+Description=OHM /ohm/ fundamentals feed (screener.in Coffee-can fields -> ohm_fundamentals)
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ohm_web
+ExecStart=/root/trade-execution-webhook/venv/bin/python /root/ohm_web/fundamentals.py
+StandardOutput=append:/root/ohm_web/fundamentals.log
+StandardError=append:/root/ohm_web/fundamentals.log
+TimeoutStartSec=4h

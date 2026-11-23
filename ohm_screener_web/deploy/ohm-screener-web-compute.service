@@ -1,0 +1,8 @@
+[Unit]
+Description=OHM Screener web nightly compute (writes /root/ohm_screener_web/data/latest.json)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ohm_screener_web
+ExecStart=/root/trade-execution-webhook/venv/bin/python compute.py

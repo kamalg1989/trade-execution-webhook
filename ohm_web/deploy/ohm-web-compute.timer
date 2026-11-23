@@ -1,0 +1,11 @@
+[Unit]
+Description=OHM /ohm/ compute after the screener compute and after the fundamentals feed
+
+[Timer]
+OnCalendar=Mon..Fri 18:50
+OnCalendar=Mon..Sat 06:35
+OnCalendar=*-*-* 22:45
+Persistent=true
+
+[Install]
+WantedBy=timers.target

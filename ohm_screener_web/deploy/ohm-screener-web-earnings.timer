@@ -1,0 +1,9 @@
+[Unit]
+Description=OHM Screener web earnings top-up, before the 18:35 compute
+
+[Timer]
+OnCalendar=Mon..Sat 17:05
+Persistent=true
+
+[Install]
+WantedBy=timers.target

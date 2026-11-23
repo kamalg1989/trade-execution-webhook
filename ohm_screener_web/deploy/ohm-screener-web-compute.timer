@@ -1,0 +1,10 @@
+[Unit]
+Description=OHM Screener web compute — after evening EOD load, plus a morning re-run
+
+[Timer]
+OnCalendar=Mon..Fri 18:35
+OnCalendar=Mon..Sat 06:20
+Persistent=true
+
+[Install]
+WantedBy=timers.target

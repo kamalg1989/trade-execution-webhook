@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OHM</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600;700&display=swap">
+<style>
+:root{--bg:#EEF1F4;--panel:#FFFFFF;--soft:#F6F8FA;--line:#D9DFE6;--line2:#EDF0F3;--ink:#15202B;--ink2:#2B3644;--mut:#556170;--brand:#1D4E89;--brandD:#123764;--brandBg:#E3EBF6;
+--up:#1E7A4F;--upBg:#E2F1E8;--upTx:#14583A;--dn:#B3261E;--dnBg:#FBE3E1;--dnTx:#8E1D17;--amb:#C27400;--ambBg:#FCEFD9;--ambTx:#7A4500;--vio:#6B4FA0;--vioBg:#EDE6F6;--vioTx:#4A2F78}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:'Instrument Sans',system-ui,sans-serif;font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}
+a{color:var(--brand)}a:hover{color:var(--brandD)}
+button{font:inherit;cursor:pointer}
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.h{font-family:'Bricolage Grotesque','Instrument Sans',system-ui,sans-serif}
+.app{display:flex;min-height:100vh}
+.side{flex:0 0 232px;padding:28px 16px;display:flex;flex-direction:column;gap:4px;background:#F7F9FB;border-right:1px solid var(--line);position:sticky;top:0;height:100vh}
+.logo{font-size:26px;font-weight:700;letter-spacing:-.02em;padding:0 14px 24px}
+.nav a{display:flex;align-items:center;gap:12px;min-height:44px;padding:0 14px;border-radius:10px;color:#3E4A58;text-decoration:none;font-weight:500;font-size:15px}
+.nav a:hover{background:#E3E8EE;color:var(--ink)}
+.nav a.on{background:var(--ink);color:#fff}
+.nav .cnt{margin-left:auto;font-size:12px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--dnBg);color:var(--dnTx)}
+.side .foot{margin-top:auto;padding:16px 14px 0;font-size:13px;color:var(--mut);line-height:1.6}
+.main{flex:1;min-width:0;padding:36px 44px 72px;display:flex;flex-direction:column;gap:24px;max-width:1500px}
+.hd{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:16px}
+.hd h1{margin:0;font-size:40px;font-weight:700;letter-spacing:-.025em}
+.hd p{margin:6px 0 0;color:var(--mut);font-size:15px;max-width:76ch}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:26px 28px}
+.card h2{margin:0;font-size:20px;font-weight:700}
+.sub{font-size:14px;color:var(--mut)}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));gap:24px;align-items:start}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:24px;align-items:start}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(200px,100%),1fr));gap:12px}
+.tile{background:var(--soft);border-radius:14px;padding:16px 18px}
+.tile .k{font-size:14px;color:var(--mut)}.tile .v{font-size:28px;font-weight:700;margin-top:4px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:48px;padding:0 20px;border-radius:12px;border:0;background:var(--brand);color:#fff;font-weight:600;text-decoration:none}
+.btn:hover{background:var(--brandD);color:#fff}
+.btn.ghost{background:#fff;color:var(--ink);border:1px solid #C4CDD8}.btn.ghost:hover{background:var(--soft)}
+.btn.dark{background:var(--ink)}.btn.dark:hover{background:#000}
+.btn.warn{background:var(--ambTx)}
+.btn[disabled]{background:#C4CDD8;color:#fff;cursor:not-allowed}
+.btn.sm{min-height:40px;padding:0 14px;border-radius:10px;font-size:14px}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:999px;font-weight:600;font-size:14px}
+.chip{display:inline-block;padding:4px 10px;border-radius:999px;font-size:13px;font-weight:600;white-space:nowrap}
+.c-brand{background:var(--brandBg);color:var(--brandD)}.c-up{background:var(--upBg);color:var(--upTx)}.c-dn{background:var(--dnBg);color:var(--dnTx)}.c-amb{background:var(--ambBg);color:var(--ambTx)}.c-vio{background:var(--vioBg);color:var(--vioTx)}.c-mut{background:#EEF1F4;color:var(--ink2)}
+.upc{color:var(--up)}.dnc{color:var(--dn)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.fchip{min-height:40px;padding:0 16px;border-radius:999px;border:1px solid #C4CDD8;background:#fff;color:var(--ink);font-weight:500;font-size:14px}
+.fchip[aria-pressed=true]{background:var(--ink);border-color:var(--ink);color:#fff;font-weight:600}
+.rows>div,.rowl{display:flex;justify-content:space-between;align-items:center;gap:12px;min-height:44px;border-bottom:1px solid var(--line2);font-size:15px}
+.rows>div:last-child{border-bottom:0}
+.tbl{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:15px}
+th{color:var(--mut);font-size:13px;font-weight:600;padding:12px;text-align:right;white-space:nowrap}
+td{padding:14px 12px;text-align:right;border-top:1px solid var(--line2);vertical-align:middle}
+th.l,td.l{text-align:left}
+tr.click{cursor:pointer}tr.click:hover td{background:#FAFBFC}
+.sym{font-size:16px;font-weight:600}.nm{font-size:13px;color:var(--mut);font-weight:400}
+.fgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr));gap:20px}
+.fcard{background:#fff;border:1px solid var(--line);border-radius:18px;padding:20px 22px;display:flex;flex-direction:column;gap:14px;text-align:left;color:var(--ink)}
+.fcard:hover{border-color:#9FB0C4}
+.fcard img{width:100%;height:150px;object-fit:cover;object-position:left;border-radius:10px;background:#FAFBFC;display:block}
+.dl3{margin:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;font-size:13px}
+.dl3 dt{color:var(--mut)}.dl3 dd{margin:2px 0 0;font-weight:600;font-size:15px}
+.funnel li{display:grid;grid-template-columns:minmax(0,260px) minmax(0,1fr);gap:20px;align-items:center}
+.fbar{height:46px;border-radius:10px;display:flex;align-items:center;justify-content:space-between;padding:0 18px;text-decoration:none;color:var(--ink);min-width:110px}
+.empty{border:1px dashed #C4CDD8;border-radius:14px;padding:26px 22px;display:flex;flex-direction:column;gap:6px}
+.step{display:flex;gap:16px;align-items:center;padding:14px 4px;border-bottom:1px solid var(--line2);text-decoration:none;color:var(--ink)}
+.step:last-child{border-bottom:0}
+.dot{flex:none;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;border:2px solid #B9C3CF;color:var(--mut)}
+.dot.done{background:var(--up);border-color:var(--up);color:#fff}.dot.now{border-color:var(--brand);color:var(--brand)}
+.bar{height:10px;border-radius:5px;background:var(--line2)}.bar i{display:block;height:10px;border-radius:5px;background:var(--brand)}
+.msg{font-size:14px;line-height:1.5;border-radius:12px;padding:12px 14px}
+.msg.ok{background:var(--upBg);color:var(--upTx)}.msg.err{background:var(--dnBg);color:var(--dnTx)}.msg.info{background:var(--soft);color:var(--ink2)}
+input[type=text],input[type=password],input[type=search],textarea{font:inherit;border:1px solid #C4CDD8;border-radius:10px;padding:12px 14px;background:#fff;color:var(--ink);width:100%}
+/* modal */
+.modal{position:fixed;inset:0;background:rgba(21,32,43,.45);display:none;align-items:flex-start;justify-content:center;padding:32px 16px;overflow:auto;z-index:50}
+.modal.open{display:flex}
+.sheet{background:var(--bg);border-radius:22px;width:min(1240px,100%);padding:28px;display:flex;flex-direction:column;gap:20px;position:relative}
+.xbtn{position:absolute;top:18px;right:18px;width:44px;height:44px;border-radius:12px;border:1px solid var(--line);background:#fff;display:flex;align-items:center;justify-content:center}
+.chartimg{width:100%;height:auto;display:block;border-radius:10px;background:#fff;min-height:200px}
+.plan{border:2px solid var(--ink)}
+.plan .lv{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.plan .lv>div{border-radius:14px;padding:16px 18px}
+.szopt{display:flex;flex-direction:column;gap:4px;padding:14px 16px;border-radius:14px;border:1px solid #C4CDD8;cursor:pointer;background:#fff}
+.szopt:has(input:checked){border:2px solid var(--ink);background:var(--soft)}
+.ck{display:flex;gap:12px;align-items:center;min-height:44px;border-bottom:1px solid var(--line2)}
+.ck:last-child{border-bottom:0}
+.ck span{flex:1}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:14px 18px;border-radius:12px;font-weight:600;z-index:60;max-width:90vw;display:none}
+.mob{display:none}
+.skel{color:var(--mut);padding:40px;text-align:center}
+@media (max-width:900px){
+ .side{display:none}
+ .main{padding:20px 16px 110px;gap:18px}
+ .hd h1{font-size:30px}
+ .card{padding:18px}
+ .mob{display:flex;position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);padding:4px 6px calc(10px + env(safe-area-inset-bottom));z-index:40}
+ .mob a{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-height:56px;text-decoration:none;font-size:12px;font-weight:600;color:#6B7684;position:relative}
+ .mob a.on{color:var(--ink);background:none}
+ .mob .cnt{position:absolute;top:4px;left:56%;font-size:11px;padding:1px 6px;border-radius:999px;background:var(--dnBg);color:var(--dnTx)}
+ .funnel li{grid-template-columns:1fr;gap:6px}
+ .modal{padding:0}
+ .sheet{border-radius:0;padding:18px 14px 40px;min-height:100vh}
+ .tile .v{font-size:24px}
+}
+@media (prefers-reduced-motion:no-preference){.modal.open .sheet{animation:up .18s ease-out}@keyframes up{from{transform:translateY(12px);opacity:.6}to{transform:none;opacity:1}}}
+</style>
+</head>
+<body>
+<div class="app">
+<nav class="side nav" aria-label="Main">
+<div class="logo h">ohm</div>
+<a href="#today" data-v="today"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Today</a>
+<a href="#watchlist" data-v="watchlist"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>Watchlist</a>
+<a href="#focus" data-v="focus"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg>Focus list</a>
+<a href="#positions" data-v="positions"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg>Positions<span class="cnt" id="navAlerts" hidden></span></a>
+<a href="#risk" data-v="risk"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg>Risk</a>
+<a href="#review" data-v="review"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 4h18l-7 8v7l-4 2v-9z"/></svg>Weekend review</a>
+<div class="foot" id="sideFoot"></div>
+</nav>
+<main class="main" id="view"><div class="skel">Loading…</div></main>
+</div>
+<nav class="mob nav" aria-label="Main">
+<a href="#today" data-v="today"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Today</a>
+<a href="#watchlist" data-v="watchlist"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>Watch</a>
+<a href="#focus" data-v="focus"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg>Focus</a>
+<a href="#positions" data-v="positions"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg>Positions<span class="cnt" id="mobAlerts" hidden></span></a>
+<a href="#risk" data-v="risk"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg>Risk</a>
+</nav>
+
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+<div class="sheet" id="sheet"></div>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const inr = (x, d = 2) => x == null ? '—' : Number(x).toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d });
+const rs = (x, d = 2) => x == null ? '—' : '₹' + inr(x, d);
+const pct = (x, d = 1) => x == null ? '—' : (x > 0 ? '+' : x < 0 ? '−' : '') + Math.abs(x).toFixed(d) + '%';
+const sgn = (x, d = 0) => x == null ? '—' : (x > 0 ? '+' : x < 0 ? '−' : '') + '₹' + inr(Math.abs(x), d);
+const KEY = () => localStorage.getItem('trading_api_key') || '';
+const LS = { get: (k, d) => { try { return JSON.parse(localStorage.getItem('ohm.' + k)) ?? d } catch { return d } }, set: (k, v) => { try { localStorage.setItem('ohm.' + k, JSON.stringify(v)) } catch {} } };
+let D = null, POS = null, RISK = null, ST = { wRoute: LS.get('wRoute', null), wFocusOnly: false, wQ: '', fEnt: 'all', fStop: false, wShow: 60 };
+const BY = {};
+const PH = {
+  ACCUMULATION: { x: 80, y: 116, tag: 'Start small', tc: 'c-brand', text: 'Institutions are buying low after a fall. Start with small positions and add as trades follow through. New leaders move first.' },
+  ADVANCE: { x: 200, y: 62, tag: 'Full size', tc: 'c-up', text: 'Most stocks are rising on volume. Take setups at full size. Do not sell early when stocks come out of long bases.' },
+  DISTRIBUTION: { x: 372, y: 31, tag: 'Go light', tc: 'c-amb', text: 'Course rule for this phase: raise cash, book profits faster, and buy only the cleanest setups. New buys at half size.' },
+  DECLINE: { x: 520, y: 118, tag: 'Stay in cash', tc: 'c-dn', text: 'Lower highs and lower lows across many stocks. Let stops take you out. No new buys until accumulation shows up.' },
+};
+const ROUTES = [['Fundamentals', 'Passed the Coffee-can screen', 'c-brand', '#1D4E89'], ['Movers', 'Up 20%+ in a week, above 200-day', 'c-amb', '#C27400'], ['New listing', 'Listed in the last 2 years', 'c-vio', '#6B4FA0'], ['Sector', 'Sector with footprints in most stocks', 'c-up', '#1E7A4F']];
+const RC = Object.fromEntries(ROUTES.map(r => [r[0], r[2]]));
+
+function toast(t) { const e = $('toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => e.style.display = 'none', 4200); }
+function chartDaily(r, w, h, stats = 1, days = 130) {
+  const p = new URLSearchParams({ symbol: r.s, days, theme: 'light', w, h, stats, v: D.meta.asof });
+  if (r.plan) { p.set('pivot', r.plan.entry); p.set('stop', r.plan.stop); }
+  return '/ohm-screener/api/chart?' + p;
+}
+function chartWeekly(s, w, h) {
+  const to = D.meta.asof, from = new Date(new Date(to).getTime() - 730 * 864e5).toISOString().slice(0, 10);
+  return `/api/v1/charts/weekly?symbol=${encodeURIComponent(s)}&from_date=${from}&to_date=${to}&theme=light&width=${w}&height=${h}`;
+}
+async function api(path, opt = {}) {
+  const res = await fetch('/ohm/api/' + path, { ...opt, headers: { 'Content-Type': 'application/json', 'X-API-Key': KEY(), ...(opt.headers || {}) } });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || ('Error ' + res.status));
+  return body;
+}
+async function loadPrivate() {
+  if (!KEY()) return;
+  try { [POS, RISK] = await Promise.all([api('positions'), api('risk')]); } catch (e) { POS = { error: e.message }; RISK = null; }
+  const n = POS && POS.summary ? POS.summary.alerts : 0;
+  for (const id of ['navAlerts', 'mobAlerts']) { const e = $(id); e.hidden = !n; e.textContent = n; }
+}
+function lockState() {
+  if (!D.meta.buysAllowed) return { off: true, why: 'Market in decline: no new buys (course: stay in cash).' };
+  if (RISK && RISK.lock === 'stop') return { off: true, why: `Account down ${Math.abs(RISK.drawdown)}% from peak. Trading stopped at −15%.` };
+  if (RISK && RISK.lock === 'paper') return { off: true, why: `Account down ${Math.abs(RISK.drawdown)}%. Paper trade only until it recovers above −10%.` };
+  if (RISK && RISK.lock === 'review') return { off: true, why: `Account down ${Math.abs(RISK.drawdown)}%. Write a short review on the Risk page to unlock buying.`, link: '#risk' };
+  return { off: false };
+}
+function keyBox(where) {
+  return `<section class="card" style="display:flex;flex-direction:column;gap:14px;max-width:640px">
+  <h2 class="h">Add your dashboard key</h2>
+  <p class="sub" style="margin:0;line-height:1.5">${esc(where)} come live from Dhan, so they need the same key as the main dashboard. It stays in this browser only.</p>
+  <label style="display:flex;flex-direction:column;gap:6px;font-weight:600;font-size:14px">Dashboard API key<input type="password" id="keyIn" autocomplete="off"></label>
+  <div><button class="btn" id="keySave" type="button">Save key</button></div></section>`;
+}
+function bindKey() { const b = $('keySave'); if (b) b.onclick = async () => { const v = $('keyIn').value.trim(); if (!v) return; localStorage.setItem('trading_api_key', v); await loadPrivate(); render(); }; }
+
+// ---------------- views ----------------
+function vToday() {
+  const m = D.meta, ph = PH[m.phase] || PH.DISTRIBUTION, f = D.funnel;
+  const now = new Date(), day = now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
+  const asof = new Date(m.asof).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short' });
+  const hs = D.hotSectors.slice(0, 6), mx = Math.max(1, ...hs.map(x => x[1]));
+  const alerts = POS && POS.summary ? POS.summary.alerts : null;
+  const seg = (on, d) => `<path d="${d}" fill="none" stroke="${on ? '#C27400' : '#B9C3CF'}" stroke-width="${on ? 5 : 3}" stroke-linecap="round"/>`;
+  return `<header class="hd"><div><h1 class="h">${esc(day)}</h1><p>Prices from ${esc(asof)} close. Refreshed every evening at 6:50 pm.</p></div>
+  <a class="btn" href="#focus">Start today's review</a></header>
+  <section class="card" aria-labelledby="mk" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(420px,100%),1fr));gap:32px;align-items:center">
+   <div style="display:flex;flex-direction:column;gap:14px">
+    <h2 id="mk" style="font-size:15px;font-weight:600;color:var(--mut)">Where the market is</h2>
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap"><span class="h" style="font-size:52px;font-weight:700;letter-spacing:-.03em;line-height:1">${esc(m.phase[0] + m.phase.slice(1).toLowerCase())}</span><span class="pill ${ph.tc}">${ph.tag}</span></div>
+    <p style="margin:0;font-size:16px;line-height:1.55;max-width:58ch;color:var(--ink2)">${ph.text}</p>
+    <svg role="img" aria-label="Market cycle, now in ${esc(m.phase.toLowerCase())}" viewBox="0 0 640 150" style="width:100%;height:auto">
+     ${seg(m.phase === 'ACCUMULATION', 'M0 118 C60 118 80 118 120 112')}${seg(m.phase === 'ADVANCE', 'M120 112 S200 40 250 32')}${seg(m.phase === 'DISTRIBUTION', 'M250 32 C300 26 360 26 400 42')}${seg(m.phase === 'DECLINE', 'M400 42 C450 64 500 120 560 124 S620 124 640 124')}
+     <circle cx="${ph.x}" cy="${ph.y}" r="9" fill="#fff" stroke="#C27400" stroke-width="4"/>
+     <g font-family="Instrument Sans, sans-serif" font-size="14" fill="#556170"><text x="20" y="146">Accumulation</text><text x="170" y="146">Advance</text><text x="320" y="146">Distribution</text><text x="520" y="146">Decline</text></g>
+    </svg>
+   </div>
+   <div class="tiles" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+    <div class="tile"><div class="k">Nifty 50 vs 200-day line</div><div class="v h ${m.niftyAbove200 ? 'upc' : 'dnc'}">${m.niftyAbove200 == null ? '—' : m.niftyAbove200 ? 'Above' : 'Below'}</div></div>
+    <div class="tile"><div class="k">Stocks above 50-day line</div><div class="v h ${m.above50 >= 50 ? 'upc' : 'dnc'}">${m.above50 ?? '—'}%</div></div>
+    <div class="tile"><div class="k">Stocks above 200-day line</div><div class="v h ${m.above200 >= 50 ? 'upc' : 'dnc'}">${m.above200 ?? '—'}%</div></div>
+    <div class="tile"><div class="k">New buy size</div><div class="v h">${!m.buysAllowed ? 'None' : m.sizeMult < 1 ? 'Half' : 'Full'}</div></div>
+   </div>
+  </section>
+  <div class="grid2">
+   <section class="card" aria-labelledby="rt"><h2 id="rt" class="h" style="font-size:22px;margin-bottom:8px">Today's routine</h2>
+    <a class="step" href="#today"><span class="dot done"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg></span><span style="flex:1"><b style="display:block;font-weight:600">Check the market</b><span class="sub">${esc(m.phase.toLowerCase())}: ${ph.tag.toLowerCase()}</span></span></a>
+    <a class="step" href="#focus"><span class="dot now">2</span><span style="flex:1"><b style="display:block;font-weight:600">Go through the focus list</b><span class="sub">${f.focus} stocks in a base with an entry bar</span></span><b style="color:var(--brand)">Open</b></a>
+    <a class="step" href="#focus"><span class="dot">3</span><span style="flex:1"><b style="display:block;font-weight:600">Plan and place buys</b><span class="sub">Tap a stock to see its plan</span></span></a>
+    <a class="step" href="#positions"><span class="dot">4</span><span style="flex:1"><b style="display:block;font-weight:600">Manage open positions</b><span class="sub">${alerts == null ? (KEY() ? 'Could not load' : 'Add your key to see them') : `${alerts} of ${POS.summary.n} need action`}</span></span>${alerts ? `<span class="chip c-dn">${alerts} alerts</span>` : ''}</a>
+   </section>
+   <section class="card" aria-labelledby="sc" style="display:flex;flex-direction:column;gap:14px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap"><h2 id="sc" class="h" style="font-size:22px">Where institutions are buying</h2><span class="sub">Stocks with footprint / in sector</span></div>
+    ${hs.length ? `<div style="display:grid;grid-template-columns:minmax(0,210px) minmax(0,1fr) 64px;gap:12px 14px;align-items:center;font-size:15px">
+     ${hs.map((x, i) => `<span>${esc(x[0])}</span><span class="bar"><i style="width:${x[1] / mx * 100}%;background:${i < 2 ? '#1D4E89' : '#6F8FB8'}"></i></span><span style="text-align:right;font-weight:600">${x[1]}<span class="sub" style="font-weight:400"> / ${x[2]}</span></span>`).join('')}</div>`
+      : `<div class="empty"><b>No sector shows footprints across most of its stocks</b><span class="sub">Normal when the market is weak.</span></div>`}
+    <p class="sub" style="margin:0;line-height:1.5">When many stocks in one sector show footprints together, conviction is higher.</p>
+   </section>
+  </div>`;
+}
+
+function vReview() {
+  const f = D.funnel, m = D.meta, w = Math.max(1, f.tradeable);
+  const bar = (n, bg, col, href) => `<${href ? `a href="${href}"` : 'div'} class="fbar" style="width:${Math.max(8, n / w * 100)}%;background:${bg};color:${col}"><span class="h" style="font-size:22px;font-weight:700">${n.toLocaleString('en-IN')}</span>${href ? '<span style="font-size:14px;font-weight:600">See list</span>' : ''}</${href ? 'a' : 'div'}>`;
+  const movers = D.stocks.filter(x => x.routes.includes('Movers')).sort((a, b) => b.wk - a.wk);
+  const ipos = D.stocks.filter(x => x.routes.includes('New listing') && x.watch).sort((a, b) => b.rs - a.rs);
+  return `<header class="hd"><div><h1 class="h">Weekend review</h1><p>How the watchlist is built. Run the week's review here; the focus list then refreshes from it every evening.</p></div><a class="btn" href="#watchlist">Open watchlist</a></header>
+  <section class="card" style="display:flex;flex-direction:column;gap:22px"><h2 class="h" style="font-size:22px">From every liquid stock to today's focus</h2>
+   <ol class="funnel" style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:12px">
+    <li><div><b>Tradeable</b><div class="sub">NSE, turnover ₹1 Cr+ a day</div></div>${bar(f.tradeable, '#D6E0EC', 'var(--ink)')}</li>
+    <li><div><b>Institutional footprint</b><div class="sub">Up days on high volume, money flowing in</div></div>${bar(f.ifp, '#B9CBE0', 'var(--ink)')}</li>
+    <li><div><b>Watchlist</b><div class="sub">Footprint plus at least one route</div></div>${bar(f.watch, '#6F8FB8', '#fff', '#watchlist')}</li>
+    <li><div><b>Focus</b><div class="sub">Tight base, above 50-day, entry bar</div></div>${bar(f.focus, '#1D4E89', '#fff', '#focus')}</li>
+   </ol></section>
+  <div class="grid3">
+   <section class="card" style="display:flex;flex-direction:column;gap:12px"><h2 class="h">Fundamentals route</h2>
+    <p class="sub" style="margin:0;line-height:1.5">Coffee-can screen from the course. ${m.fundPass} of ${m.fundCoverage} stocks with data pass all rules.${m.fundAsOf ? ' Updated ' + esc(m.fundAsOf.replace('T', ' ')) + '.' : ''}</p>
+    <div class="rows">${m.coffee.map(c => `<div><span>${esc(c.label.replace(/ > .*/, ''))}</span><b>&gt; ${c.k === 'mcap' ? '₹' + c.min + ' Cr' : c.min + '%'}</b></div>`).join('')}</div>
+   </section>
+   <section class="card" style="display:flex;flex-direction:column;gap:12px"><h2 class="h">Movers route</h2>
+    <p class="sub" style="margin:0">Up 20% or more in 5 sessions, above the 200-day line.</p>
+    ${movers.length ? `<div class="rows">${movers.slice(0, 8).map(x => `<div><button type="button" data-s="${esc(x.s)}" style="border:0;background:none;padding:0;font-weight:600;color:var(--brand)">${esc(x.s)}</button><span class="upc" style="font-weight:600">${pct(x.wk)}</span></div>`).join('')}</div>`
+      : `<div class="empty"><b>No stock rose 20% this week</b><span class="sub" style="line-height:1.5">Expected when the market is weak. Check new listings and sectors.</span></div>`}
+    <h2 class="h" style="margin-top:10px">New listings route</h2>
+    <p class="sub" style="margin:0">Listed in the last 2 years, with footprint: ${ipos.length}.</p>
+    <div class="chips">${ipos.slice(0, 10).map(x => `<button type="button" class="fchip" data-s="${esc(x.s)}">${esc(x.s)}</button>`).join('')}</div>
+   </section>
+   <section class="card" style="display:flex;flex-direction:column;gap:12px"><h2 class="h">Sector route</h2>
+    <p class="sub" style="margin:0;line-height:1.5">Sectors where most stocks (60%+, at least 8) show footprints together.</p>
+    ${D.hotSectors.length ? `<div class="rows">${D.hotSectors.slice(0, 10).map(x => `<div><span>${esc(x[0])}</span><span><b>${x[1]}</b> <span class="sub">of ${x[2]}</span></span></div>`).join('')}</div>` : `<div class="empty"><b>No sector qualifies this week</b></div>`}
+   </section>
+  </div>`;
+}
+
+function rowsWatch() {
+  let L = D.stocks.filter(x => x.watch);
+  if (ST.wRoute) L = L.filter(x => x.routes.includes(ST.wRoute));
+  if (ST.wFocusOnly) L = L.filter(x => x.focus);
+  if (ST.wQ) { const q = ST.wQ.toUpperCase(); L = L.filter(x => x.s.includes(q) || (x.nm || '').toUpperCase().includes(q) || (x.sec || '').toUpperCase().includes(q)); }
+  return L.sort((a, b) => (b.rs || 0) - (a.rs || 0));
+}
+function vWatch() {
+  const f = D.funnel, L = rowsWatch();
+  return `<header class="hd"><div><h1 class="h">Watchlist</h1><p>${f.watch} stocks. Each one came in through at least one route below and passed the institutional footprint check.</p></div><a class="btn ghost" href="#review">How it is built</a></header>
+  <section style="display:flex;flex-direction:column;gap:14px" aria-labelledby="rts"><h2 id="rts" class="h" style="margin:0;font-size:20px">How stocks get in</h2>
+   <div class="tiles" style="grid-template-columns:repeat(auto-fit,minmax(min(210px,100%),1fr))">
+   ${ROUTES.map(([k, d, , col]) => `<button type="button" class="card" data-route="${k}" aria-pressed="${ST.wRoute === k}" style="text-align:left;color:var(--ink);padding:18px 20px;display:flex;flex-direction:column;gap:6px;${ST.wRoute === k ? 'border:2px solid var(--ink)' : ''}">
+    <span style="display:flex;justify-content:space-between;align-items:center;width:100%"><b>${k}</b><span style="width:12px;height:12px;border-radius:50%;background:${col}"></span></span>
+    <span class="h" style="font-size:30px;font-weight:700">${f.routes[k] ?? 0}</span><span class="sub" style="line-height:1.45">${d}</span></button>`).join('')}
+   </div>
+   <p class="sub" style="margin:0">A stock can come in through more than one route. ${f.noRoute} more show a footprint but no route yet; they stay out.${ST.wRoute ? ` <button type="button" id="wClear" style="border:0;background:none;color:var(--brand);font-weight:600;padding:0">Show all routes</button>` : ''}</p>
+  </section>
+  <section class="card" style="padding:8px 12px 12px">
+   <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px;padding:12px">
+    <h2 class="h">${L.length} ${ST.wRoute ? esc(ST.wRoute.toLowerCase()) + ' ' : ''}stocks, strongest first</h2>
+    <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+     <label style="display:flex;align-items:center;gap:10px;font-size:14px"><input type="checkbox" id="wFocus" ${ST.wFocusOnly ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--brand)">Only stocks in focus today</label>
+     <input type="search" id="wQ" placeholder="Search stock or sector" value="${esc(ST.wQ)}" aria-label="Search watchlist" style="width:220px;min-height:44px">
+    </div></div>
+   <div class="tbl"><table style="min-width:900px"><thead><tr><th class="l">Stock</th><th class="l">Came in through</th><th>Footprint</th><th>Strength rank</th><th>Quarter profit</th><th>Of 52-week high</th><th class="l">Today</th></tr></thead><tbody>
+   ${L.slice(0, ST.wShow).map(x => `<tr class="click" data-s="${esc(x.s)}" tabindex="0"><td class="l"><div class="sym">${esc(x.s)}</div><div class="nm">${esc(x.nm)}${x.sec ? ', ' + esc(x.sec) : ''}</div></td>
+    <td class="l"><div class="chips" style="gap:6px">${x.routes.map(r => `<span class="chip ${RC[r]}" style="font-size:12px">${r}</span>`).join('')}</div></td>
+    <td style="font-weight:600">${x.ifp?.toFixed(2) ?? '—'}</td><td>${x.rs ?? '—'}</td><td>${pct(x.cq, 0)}</td><td>${x.hi != null ? x.hi + '%' : '—'}</td>
+    <td class="l">${x.focus ? '<span class="chip" style="background:var(--ink);color:#fff">In focus</span>' : x.ent ? `<span class="sub">${esc(x.plan?.name || x.ent)}</span>` : '<span class="sub">Waiting for base</span>'}</td></tr>`).join('')}
+   </tbody></table></div>
+   ${L.length > ST.wShow ? `<div style="display:flex;justify-content:center;padding:14px"><button type="button" class="btn ghost sm" id="wMore">Show ${Math.min(100, L.length - ST.wShow)} more</button></div>` : ''}
+  </section>`;
+}
+
+function vFocus() {
+  const all = D.stocks.filter(x => x.focus).sort((a, b) => (b.rs || 0) - (a.rs || 0));
+  const ents = ['HH-HL', 'Inside bar', 'Pin bar', 'Trend bar'];
+  let L = ST.fEnt === 'all' ? all : all.filter(x => x.ent === ST.fEnt);
+  if (ST.fStop) L = L.filter(x => x.plan.stopPct <= 6);
+  const lk = lockState(), m = D.meta;
+  const banner = !m.buysAllowed ? ['c-dn', 'Market in decline: no new buys'] : m.sizeMult < 1 ? ['c-amb', 'Market in distribution: buys sized at half'] : null;
+  return `<header class="hd"><div><h1 class="h">Focus list</h1><p>${all.length} stocks in a tight base above the 50-day line, near the 21 EMA, with an entry bar today. Strongest first. Tap one for charts and the trade plan.</p></div>
+  ${banner ? `<span class="pill ${banner[0]}"><svg width="10" height="10" aria-hidden="true"><circle cx="5" cy="5" r="5" fill="currentColor"/></svg>${banner[1]}</span>` : ''}</header>
+  ${lk.off && m.buysAllowed ? `<div class="msg err">${esc(lk.why)} ${lk.link ? `<a href="${lk.link}">Open Risk</a>` : ''}</div>` : ''}
+  <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:14px">
+   <div class="chips" role="group" aria-label="Entry bar">
+    <button type="button" class="fchip" data-ent="all" aria-pressed="${ST.fEnt === 'all'}">All ${all.length}</button>
+    ${ents.map(e => `<button type="button" class="fchip" data-ent="${e}" aria-pressed="${ST.fEnt === e}">${e === 'HH-HL' ? 'Higher high, higher low' : e} ${all.filter(x => x.ent === e).length}</button>`).join('')}
+    <button type="button" class="fchip" id="fStop" aria-pressed="${ST.fStop}">Stop 6% or less ${all.filter(x => x.plan.stopPct <= 6).length}</button>
+   </div>
+  </div>
+  ${L.length ? `<div class="fgrid">${L.map(cardFocus).join('')}</div>` : `<div class="empty"><b>No stock matches these filters</b><span class="sub">Clear a filter to see more.</span></div>`}`;
+}
+function cardFocus(x) {
+  const p = x.plan, ok = p.stopPct <= 6;
+  return `<button type="button" class="fcard" data-s="${esc(x.s)}">
+   <span style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;width:100%"><span><span class="h" style="display:block;font-size:20px;font-weight:700">${esc(x.s)}</span><span class="sub">${esc(x.nm)}${x.sec ? ', ' + esc(x.sec) : ''}</span></span>
+   <span style="text-align:right"><span style="display:block;font-weight:600;font-size:17px">${rs(x.c)}</span><span class="${x.chg < 0 ? 'dnc' : 'upc'}" style="font-size:14px;font-weight:600">${pct(x.chg, 2)}</span></span></span>
+   <img loading="lazy" alt="Daily chart of ${esc(x.s)}" src="${chartDaily(x, 640, 300, 0, 70)}">
+   <span class="chips"><span class="chip c-brand">${esc(p.name)}</span><span class="chip ${ok ? 'c-up' : 'c-amb'}">Stop ${p.stopPct.toFixed(1)}%${ok ? '' : ', wide'}</span>${x.routes.map(r => `<span class="chip ${RC[r]}">${r}</span>`).join('')}</span>
+   <dl class="dl3"><div><dt>Footprint</dt><dd>${x.ifp?.toFixed(2)}</dd></div><div><dt>Strength rank</dt><dd>${x.rs ?? '—'}</dd></div><div><dt>Quarter profit</dt><dd>${pct(x.cq, 0)}</dd></div></dl>
+   <span style="display:flex;justify-content:space-between;align-items:center;gap:12px;border-top:1px solid var(--line2);padding-top:12px;width:100%"><span style="font-size:14px;color:var(--ink2)">Buy above <b>${rs(p.entry)}</b></span><span class="btn dark sm">Plan trade</span></span>
+  </button>`;
+}
+
+function vPositions() {
+  if (!KEY()) return `<header class="hd"><div><h1 class="h">Positions</h1><p>Live from Dhan. A5 shares are left out.</p></div></header>` + keyBox('Positions');
+  if (!POS) return '<div class="skel">Loading positions…</div>';
+  if (POS.error) return `<header class="hd"><div><h1 class="h">Positions</h1></div></header><div class="msg err">${esc(POS.error)}</div>` + (/key/i.test(POS.error) ? keyBox('Positions') : '');
+  const S = POS.summary, mo = POS.marketOpen;
+  const stc = { alert: 'c-dn', watch: 'c-amb', ok: 'c-up' };
+  return `<header class="hd"><div><h1 class="h">Positions</h1><p>Live from Dhan; A5 shares are left out. Checked against the course sell rules on the last close. Sells ${mo ? 'go at market now' : 'queue for the next open'}.</p></div><button class="btn ghost" id="posRefresh" type="button">Refresh</button></header>
+  <div class="tiles">
+   <div class="card" style="padding:18px 20px"><div class="sub">Need action</div><div class="h ${S.alerts ? 'dnc' : ''}" style="font-size:32px;font-weight:700;margin-top:4px">${S.alerts}</div></div>
+   <div class="card" style="padding:18px 20px"><div class="sub">Open positions</div><div class="h" style="font-size:32px;font-weight:700;margin-top:4px">${S.n}</div></div>
+   <div class="card" style="padding:18px 20px"><div class="sub">Unrealised profit</div><div class="h ${S.pnl < 0 ? 'dnc' : 'upc'}" style="font-size:32px;font-weight:700;margin-top:4px">${sgn(S.pnl)}</div></div>
+   <div class="card" style="padding:18px 20px"><div class="sub">Risk to stop, all positions</div><div class="h" style="font-size:32px;font-weight:700;margin-top:4px">${rs(S.riskAtEntry, 0)}</div><div class="sub">${(S.riskAtEntry / D.meta.capital * 100).toFixed(2)}% of capital</div></div>
+  </div>
+  <section class="card" style="padding:8px 12px 12px"><div class="tbl"><table style="min-width:1040px"><thead><tr><th class="l">Stock</th><th>Qty</th><th>Bought</th><th>Last close</th><th>Gain</th><th>In R</th><th>SL order</th><th>ATR above 10 EMA</th><th class="l">Sell rule</th><th><span class="sr" style="position:absolute;left:-9999px">Action</span></th></tr></thead><tbody>
+  ${POS.positions.map(p => {
+    const act = p.action === 'exit' ? ['Sell all', p.avail || p.qty] : p.action === 'half' ? ['Sell half', Math.floor((p.avail || p.qty) / 2)] : null;
+    return `<tr><td class="l"><button type="button" data-s="${esc(p.symbol)}" style="border:0;background:none;padding:0;text-align:left;color:var(--ink)"><div class="sym">${esc(p.symbol)}</div><div class="nm">${p.entryType ? esc(p.entryType) : 'Not in journal'}${p.filled ? ', ' + esc(p.filled) : ''}</div></button></td>
+    <td>${p.qty}</td><td>${rs(p.entry)}</td><td>${rs(p.close)}</td><td class="${p.gainPct < 0 ? 'dnc' : 'upc'}" style="font-weight:600">${pct(p.gainPct)}</td><td style="font-weight:600" class="${p.r < 0 ? 'dnc' : 'upc'}">${p.r == null ? '—' : (p.r > 0 ? '+' : '') + p.r + 'R'}</td>
+    <td>${p.stop ? rs(p.stop) + (p.slBasis ? `<div class="nm">${esc(p.slBasis)}</div>` : '') : '<span class="chip c-amb">No SL order</span>'}</td><td>${p.atrAbove10 ?? '—'}</td><td class="l"><span class="chip ${stc[p.state]}">${esc(p.msg)}</span></td>
+    <td><div style="display:flex;gap:8px;justify-content:flex-end">${act && act[1] > 0 ? `<button type="button" class="btn ${p.state === 'alert' ? 'dark' : 'ghost'} sm" data-sell="${esc(p.securityId)}" data-qty="${act[1]}" data-sym="${esc(p.symbol)}">${act[0]} (${act[1]})</button>` : ''}
+    ${!p.slOrder ? `<button type="button" class="btn ghost sm" data-safe="${esc(p.securityId)}" data-entry="${p.entry}" data-sym="${esc(p.symbol)}" title="Forever sell order ${D.meta.safetyPct}% below entry">Safety order</button>` : ''}</div></td></tr>`;
+  }).join('')}
+  </tbody></table></div></section>
+  <section class="tiles" aria-labelledby="rl" style="grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr))"><h2 id="rl" class="h" style="grid-column:1/-1;margin:8px 0 0;font-size:20px">Sell rules being watched</h2>
+   <div class="card" style="padding:18px 20px"><b>Stop on close</b><p class="sub" style="margin:6px 0 0;line-height:1.5">A close below the stop means sell at the next open. Safety order sits ${D.meta.safetyPct}% below entry.</p></div>
+   <div class="card" style="padding:18px 20px"><b>Book half at 2R</b><p class="sub" style="margin:6px 0 0;line-height:1.5">Lock in part of the move and let the rest run.</p></div>
+   <div class="card" style="padding:18px 20px"><b>Stretched above 10 EMA</b><p class="sub" style="margin:6px 0 0;line-height:1.5">About 3 ATR above it: sell into strength.</p></div>
+   <div class="card" style="padding:18px 20px"><b>Close below 21 EMA</b><p class="sub" style="margin:6px 0 0;line-height:1.5">Sell what is left of a winner.</p></div>
+  </section>`;
+}
+
+function vRisk() {
+  if (!KEY()) return `<header class="hd"><div><h1 class="h">Risk</h1></div></header>` + keyBox('Risk numbers');
+  if (!RISK) return POS && POS.error ? `<div class="msg err">${esc(POS.error)}</div>` : '<div class="skel">Loading…</div>';
+  const R = RISK, x = Math.min(1000, Math.max(0, -R.drawdown / 15 * 1000)), J = R.journal;
+  const lockTxt = { review: 'Buying is paused. Write a short review below to unlock it.', paper: 'Paper trade only until the account recovers above −10%.', stop: 'Trading stopped. Do a full review before the next trade.' };
+  return `<header class="hd"><div><h1 class="h">Risk</h1><p>Stay in the game: small risk per trade, and hard stops on the whole account. Based on ₹${inr(R.capital, 0)} capital and the trade journal.</p></div></header>
+  <section class="card" style="display:flex;flex-direction:column;gap:22px">
+   <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:12px"><h2 class="h" style="font-size:22px">Account drawdown from peak</h2><span class="h ${R.drawdown <= -5 ? 'dnc' : ''}" style="font-size:40px;font-weight:700">${R.drawdown > 0 ? '+' : R.drawdown < 0 ? '−' : ''}${Math.abs(R.drawdown).toFixed(1)}%</span></div>
+   <svg role="img" aria-label="Drawdown ${R.drawdown}%. Review at −5%, paper trade at −10%, stop at −15%." viewBox="0 0 1000 96" style="width:100%;height:auto">
+    <rect x="0" y="30" width="333" height="16" rx="8" fill="#DCEFE3"/><rect x="333" y="30" width="334" height="16" fill="#FCEFD9"/><rect x="667" y="30" width="333" height="16" rx="8" fill="#FBE3E1"/>
+    <rect x="0" y="30" width="${Math.max(16, x)}" height="16" rx="8" fill="${R.drawdown <= -5 ? '#B3261E' : '#1E7A4F'}"/><line x1="${x}" x2="${x}" y1="18" y2="58" stroke="#15202B" stroke-width="3"/>
+    <g font-family="Instrument Sans, sans-serif" font-size="15" fill="#2B3644"><text x="0" y="84">0%</text><text x="333" y="84" text-anchor="middle">−5% review</text><text x="667" y="84" text-anchor="middle">−10% paper trade only</text><text x="1000" y="84" text-anchor="end">−15% stop</text></g>
+   </svg>
+   <p style="margin:0;font-size:15px;color:var(--ink2);line-height:1.55">Equity ${rs(R.equity, 0)}, peak ${rs(R.peak, 0)}. ${R.lock ? '<b>' + lockTxt[R.lock] + '</b>' : 'At −5% the Buy button pauses until you write a review. At −10% it locks to paper trades.'}</p>
+   ${R.lock === 'review' ? `<label style="display:flex;flex-direction:column;gap:8px;font-weight:600">What went wrong, and what will you change?<textarea id="rvText" rows="4" style="font-weight:400"></textarea></label><div><button class="btn" id="rvSave" type="button">Save review and unlock</button></div>` : ''}
+  </section>
+  <div class="grid2">
+   <section class="card" style="display:flex;flex-direction:column;gap:16px"><h2 class="h">Open risk</h2>
+    <div style="display:flex;gap:6px" aria-label="${R.open.n} of 20 position slots used">${Array.from({ length: 20 }, (_, i) => `<span style="flex:1;height:28px;border-radius:6px;background:${i < R.open.n ? (i >= 20 ? '#B3261E' : '#1D4E89') : '#E3E8EE'}"></span>`).join('')}</div>
+    <div class="rows"><div><span class="sub">Positions open</span><b>${R.open.n ?? '—'} of 20</b></div><div><span class="sub">Risk per trade</span><b>${D.meta.riskPct}%, ${rs(R.capital * D.meta.riskPct / 100, 0)}</b></div><div><span class="sub">Risk at entry, trades with a stop</span><b>${R.open.riskPct ?? '—'}%, ${rs(R.open.riskAtEntry, 0)}</b></div></div>
+    ${R.open.n > 20 ? `<p class="msg err" style="margin:0">More than 20 positions open. At 0.25% risk the course caps it at 20.</p>` : ''}
+   </section>
+   <section class="card" style="display:flex;flex-direction:column;gap:16px"><h2 class="h">Last ${J.n} closed trades</h2>
+    ${J.n ? `<div class="tiles" style="grid-template-columns:repeat(2,minmax(0,1fr))"><div class="tile"><div class="k">Win rate</div><div class="v h">${J.winRate}%</div></div><div class="tile"><div class="k">Edge per trade</div><div class="v h ${J.edge < 0 ? 'dnc' : 'upc'}">${J.edge > 0 ? '+' : ''}${J.edge}R</div></div><div class="tile"><div class="k">Average win</div><div class="v h">${J.avgWin != null ? '+' + J.avgWin + 'R' : '—'}</div></div><div class="tile"><div class="k">Average loss</div><div class="v h">${J.avgLoss != null ? '−' + Math.abs(J.avgLoss) + 'R' : '—'}</div></div></div>
+    <p class="sub" style="margin:0;line-height:1.5">Judge the system on many trades, not one. ${J.bigLosses ? `<b class="dnc">${J.bigLosses} losses were bigger than −1.2R</b>: check for skipped stops or gaps.` : 'No loss was bigger than −1.2R.'}</p>` : '<div class="empty"><b>No closed trades with a recorded stop yet</b></div>'}
+   </section>
+  </div>`;
+}
+
+// ---------------- stock modal ----------------
+function openStock(sym) {
+  let x = BY[sym];
+  if (!x) x = { s: sym, nm: '', routes: [], c: null };
+  const mobile = innerWidth < 900, p = x.plan, m = D.meta, lk = lockState();
+  const ck = (ok, label, val) => `<div class="ck">${ok === true ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1E7A4F" stroke-width="3" aria-label="Pass"><path d="M5 12l5 5 9-10"/></svg>' : ok === false ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#B3261E" stroke-width="3" aria-label="Fail"><path d="M6 6l12 12M18 6L6 18"/></svg>' : '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C27400" stroke-width="3" aria-label="Caution"><path d="M12 7v6M12 17h.01"/><circle cx="12" cy="12" r="10"/></svg>'}<span>${label}</span><b>${val}</b></div>`;
+  const fund = x.fund ? m.coffee.map(c => { const v = x.fund[c.k]; return ck(v != null && v > c.min, esc(c.label), v == null ? '—' : c.k === 'mcap' ? '₹' + inr(v, 0) + ' Cr' : v + '%'); }).join('') : '<p class="sub" style="margin:0">No fundamentals data for this stock yet.</p>';
+  const half = p && m.sizeMult < 1;
+  const known = !!BY[sym], pp = POS && POS.positions ? POS.positions.find(q => q.symbol === sym) : null;
+  const NOCH = pp && (pp.exchange || '').startsWith('BSE') ? 'No chart: this stock trades on BSE only, and price data here is NSE.' : 'No price data for this stock.';
+  $('sheet').innerHTML = `<button type="button" class="xbtn" id="mClose" aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  <header class="hd" style="padding-right:56px"><div><h1 class="h" id="mTitle" style="font-size:36px">${esc(x.s)}</h1><p>${esc(x.nm || '')}${x.sec ? ', ' + esc(x.sec.toLowerCase()) : ''}${p ? '. ' + esc(p.name) + ' on ' + esc(m.asof) : ''}</p>
+   <div class="chips" style="margin-top:10px">${(x.routes || []).map(r => `<span class="chip ${RC[r]}">${r}</span>`).join('')}${x.focus ? '<span class="chip" style="background:var(--ink);color:#fff">In focus</span>' : x.watch ? '<span class="chip c-mut">On watchlist</span>' : ''}</div></div>
+   ${x.c != null ? `<div style="text-align:right"><div class="h" style="font-size:30px;font-weight:700">${rs(x.c)}</div><div class="${x.chg < 0 ? 'dnc' : 'upc'}" style="font-weight:600">${pct(x.chg, 2)} on the day</div></div>` : ''}</header>
+  <div class="grid2" style="grid-template-columns:repeat(auto-fit,minmax(min(520px,100%),1fr))">
+   <div style="display:flex;flex-direction:column;gap:20px;min-width:0">
+    <section class="card" style="padding:16px"><h2 class="h" style="font-size:17px;margin:0 0 10px">Daily${p ? ', with buy line and stop' : ''}</h2><img class="chartimg" alt="Daily chart of ${esc(x.s)}" onerror="this.outerHTML='<p class=&quot;sub&quot;>${NOCH}</p>'" src="${chartDaily(x, mobile ? 400 : 1100, mobile ? 520 : 600)}"></section>
+    <section class="card" style="padding:16px"><h2 class="h" style="font-size:17px;margin:0 0 10px">Weekly, 2 years</h2><img class="chartimg" alt="Weekly chart of ${esc(x.s)}" onerror="this.outerHTML='<p class=&quot;sub&quot;>${NOCH}</p>'" src="${chartWeekly(x.s, mobile ? 400 : 1100, mobile ? 420 : 460)}"></section>
+   </div>
+   <div style="display:flex;flex-direction:column;gap:20px;min-width:0">
+    ${p ? `<section class="card plan" style="display:flex;flex-direction:column;gap:18px"><h2 class="h" style="font-size:22px">Trade plan</h2>
+     <div class="lv"><div style="background:var(--brandBg)"><div style="font-size:14px;color:var(--ink2)">Buy above</div><div class="h" style="font-size:26px;font-weight:700;color:var(--brandD)">${rs(p.entry)}</div><div style="font-size:13px;color:var(--ink2)">1 tick over ${x.ent === 'HH-HL' ? 'the higher of the 2 bars' : 'the bar high'}</div></div>
+      <div style="background:var(--dnBg)"><div style="font-size:14px;color:#5C1410">Stop on closing basis</div><div class="h" style="font-size:26px;font-weight:700;color:var(--dnTx)">${rs(p.stop)}</div><div style="font-size:13px;color:#5C1410">${x.ent === 'HH-HL' ? 'Lower of the 2 bars' : 'Bar low'}, ${p.stopPct.toFixed(1)}% away</div></div></div>
+     ${p.stopPct > 6 ? `<div class="msg err">Stop is ${p.stopPct.toFixed(1)}% away. The course prefers 6% or less; consider skipping or waiting for a tighter bar.</div>` : ''}
+     <fieldset style="border:0;margin:0;padding:0;display:flex;flex-direction:column;gap:10px"><legend style="font-weight:600;margin-bottom:10px">Position size</legend>
+      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px">
+       <label class="szopt"><span style="display:flex;justify-content:space-between;align-items:center"><b>Full</b><input type="radio" name="sz" value="${p.full}" ${half ? '' : 'checked'} style="width:20px;height:20px;accent-color:var(--ink)"></span><span class="sub">${p.full} shares, ${rs(p.full * p.entry, 0)}</span></label>
+       <label class="szopt"><span style="display:flex;justify-content:space-between;align-items:center"><b>Half${half ? ', suggested' : ''}</b><input type="radio" name="sz" value="${p.half}" ${half ? 'checked' : ''} style="width:20px;height:20px;accent-color:var(--ink)"></span><span class="sub">${p.half} shares, ${rs(p.half * p.entry, 0)}</span></label>
+      </div>
+      <p class="sub" style="margin:0;line-height:1.5">${p.limitBy === 'capital cap' ? `Full size is capped by the ${m.capPct}% per-stock limit (risk alone would allow ${p.qRisk}).` : `Full size risks ${m.riskPct}% of capital.`}</p></fieldset>
+     <div class="rows" id="pRows"></div>
+     <button type="button" class="btn" id="buyBtn" style="min-height:56px;font-size:17px;font-weight:700" ${lk.off ? 'disabled' : ''}></button>
+     <p class="sub" id="buyNote" style="margin:-8px 0 0;text-align:center">${lk.off ? esc(lk.why) : KEY() ? 'Tap again to confirm. Sent to Dhan as a buy-above order with your dashboard key.' : 'Add your dashboard key on the Positions page to enable buying.'}</p>
+     <div id="buyMsg"></div>
+     <div style="background:var(--soft);border-radius:14px;padding:16px 18px"><b style="font-size:15px">After the buy, Positions watches for</b><ul style="margin:8px 0 0;padding-left:18px;font-size:14px;line-height:1.7;color:var(--ink2)"><li>A close below ${rs(p.stop)}: sell at the next open</li><li>2R at ${rs(p.t2r)}: book half</li><li>About 3 ATR above the 10 EMA: sell into strength</li><li>A close below the 21 EMA: sell the rest</li></ul></div>
+    </section>` : `<section class="card"><h2 class="h">No entry bar today</h2><p class="sub" style="margin:8px 0 0;line-height:1.5">Keep it on the watchlist. A plan appears when a trend bar, pin bar, higher high and higher low, or inside bar forms in its base.</p></section>`}
+    ${!known ? `<section class="card"><h2 class="h">Outside the screener</h2><p class="sub" style="margin:8px 0 0;line-height:1.5">This holding is not in the liquid NSE universe, so there is no checklist or plan for it.${pp ? ` You hold ${pp.qty} at ${rs(pp.entry)}.` : ''}</p></section>` : ''}
+    ${known ? `<section class="card" style="display:flex;flex-direction:column;gap:4px"><h2 class="h" style="margin-bottom:8px">Course checklist</h2>
+     ${ck(x.above50, 'Above the 50-day line', x.above50 == null ? '—' : x.above50 ? 'Yes' : 'No')}
+     ${ck(x.ud >= 1.2 && x.mf > 0, 'Footprint: up-day vs down-day volume', x.ud != null ? x.ud + '×' : '—')}
+     ${ck(x.mf > 0, 'Money flow, last 60 days', x.mf != null ? (x.mf > 0 ? '+' : '−') + '₹' + inr(Math.abs(x.mf), 0) + ' Cr' : '—')}
+     ${ck(x.e21d != null && Math.abs(x.e21d) <= 8, 'Near the 21 EMA', x.e21d != null ? pct(x.e21d) : '—')}
+     ${ck((x.hi || 0) >= 75, 'Price vs 52-week high', x.hi != null ? x.hi + '%' : '—')}
+     ${ck((x.r1 || 99) <= 15, 'Tight 10-day range', x.r1 != null ? x.r1 + '%' : '—')}
+     ${ck(m.phase === 'ADVANCE' ? true : m.phase === 'DECLINE' ? false : null, 'Market phase', esc(m.phase[0] + m.phase.slice(1).toLowerCase()))}
+    </section>` : ''}
+    ${known ? `<section class="card" style="display:flex;flex-direction:column;gap:4px"><h2 class="h" style="margin-bottom:8px">Fundamentals</h2>${fund}
+     ${x.cq != null || x.ca != null ? `<div class="ck"><span class="sub">Latest quarter profit (NSE filing)</span><b>${pct(x.cq, 0)}</b></div>` : ''}</section>` : ''}
+   </div>
+  </div>`;
+  $('modal').classList.add('open'); document.body.style.overflow = 'hidden';
+  $('mClose').onclick = closeModal; $('mClose').focus();
+  if (p) bindBuy(x);
+}
+function closeModal() { $('modal').classList.remove('open'); document.body.style.overflow = ''; }
+$('modal').addEventListener('click', e => { if (e.target === $('modal')) closeModal(); });
+addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+function bindBuy(x) {
+  const p = x.plan, btn = $('buyBtn'), lk = lockState();
+  let armed = false, t;
+  const qty = () => +document.querySelector('input[name=sz]:checked').value;
+  const upd = () => {
+    const q = qty();
+    $('pRows').innerHTML = `<div><span class="sub">Amount</span><b>${rs(q * p.entry, 0)}</b></div><div><span class="sub">Money at risk</span><b>${rs(q * p.rps, 0)} (${(q * p.rps / D.meta.capital * 100).toFixed(2)}% of capital)</b></div><div><span class="sub">Book half at 2R</span><b>${rs(p.t2r)}</b></div><div><span class="sub">Safety order, ${D.meta.safetyPct}% below</span><b>${rs(p.safety)}</b></div>`;
+    armed = false; btn.className = 'btn'; btn.textContent = `Buy ${q} shares above ${rs(p.entry)}`;
+    if (!lk.off) btn.disabled = !KEY() || q <= 0;
+  };
+  document.querySelectorAll('input[name=sz]').forEach(r => r.onchange = upd); upd();
+  btn.onclick = async () => {
+    const q = qty(); if (q <= 0 || lk.off) return;
+    if (!armed) { armed = true; btn.className = 'btn warn'; btn.textContent = `Tap again to buy ${q} ${x.s}`; clearTimeout(t); t = setTimeout(upd, 5000); return; }
+    clearTimeout(t); btn.disabled = true; btn.textContent = 'Placing order…';
+    const msg = $('buyMsg');
+    try {
+      const res = await fetch('/api/buy', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': KEY() },
+        body: JSON.stringify({ symbol: x.s, quantity: q, price: p.entry, stopLoss: p.stop,
+          recommendation: { source: 'ohm-web', symbol: x.s, entry: p.entry, stopLoss: p.stop, target: p.t2r, riskPerShare: p.rps, rrRatio: 2,
+            targetStrategy: 'BOOK_HALF_2R', entryType: x.ent, signalBarDate: D.meta.asof, regime: D.meta.phase, ifp: x.ifp, liquidityCr: x.tov,
+            baseRangePct: x.r1, routes: x.routes, size: q === p.full ? 'FULL' : 'HALF', safety: p.safety, dataAsOf: D.meta.asof } }) });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok && body.success) { msg.className = 'msg ok'; msg.textContent = body.message || 'Order placed.'; btn.textContent = 'Order placed'; toast('Buy order placed for ' + x.s); }
+      else { msg.className = 'msg err'; msg.textContent = body.detail || 'Order failed.'; upd(); }
+    } catch (e) { msg.className = 'msg err'; msg.textContent = 'Network error: ' + e.message; upd(); }
+  };
+}
+
+// ---------------- router ----------------
+const VIEWS = { today: vToday, review: vReview, watchlist: vWatch, focus: vFocus, positions: vPositions, risk: vRisk };
+function cur() { const v = location.hash.slice(1); return VIEWS[v] ? v : 'today'; }
+function render() {
+  const v = cur();
+  document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('on', a.dataset.v === v));
+  document.querySelectorAll('.nav a').forEach(a => a.dataset.v === v ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'));
+  $('view').innerHTML = VIEWS[v]();
+  bindKey();
+  const on = (id, ev, fn) => { const e = $(id); if (e) e[ev] = fn; };
+  on('wFocus', 'onchange', e => { ST.wFocusOnly = e.target.checked; render(); });
+  on('wQ', 'oninput', e => { ST.wQ = e.target.value; clearTimeout(render.t); render.t = setTimeout(() => { render(); const q = $('wQ'); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }, 250); });
+  on('wMore', 'onclick', () => { ST.wShow += 100; render(); });
+  on('wClear', 'onclick', () => { ST.wRoute = null; LS.set('wRoute', null); render(); });
+  on('fStop', 'onclick', () => { ST.fStop = !ST.fStop; render(); });
+  on('posRefresh', 'onclick', async () => { POS = null; render(); await loadPrivate(); render(); });
+  on('rvSave', 'onclick', async () => { try { await api('review', { method: 'POST', body: JSON.stringify({ text: $('rvText').value }) }); await loadPrivate(); render(); toast('Review saved. Buying unlocked.'); } catch (e) { toast(e.message); } });
+  window.scrollTo(0, 0);
+}
+document.addEventListener('click', async e => {
+  const s = e.target.closest('[data-s]'); if (s && !e.target.closest('#sheet')) { openStock(s.dataset.s); return; }
+  const r = e.target.closest('[data-route]'); if (r) { ST.wRoute = ST.wRoute === r.dataset.route ? null : r.dataset.route; LS.set('wRoute', ST.wRoute); render(); return; }
+  const en = e.target.closest('[data-ent]'); if (en) { ST.fEnt = en.dataset.ent; render(); return; }
+  const sb = e.target.closest('[data-sell],[data-safe]');
+  if (sb) {
+    if (sb.dataset.armed !== '1') { sb.dataset.armed = '1'; sb.dataset.lbl = sb.textContent; sb.textContent = 'Tap again to confirm'; sb.classList.add('warn'); setTimeout(() => { if (sb.isConnected) { sb.dataset.armed = ''; sb.textContent = sb.dataset.lbl; sb.classList.remove('warn'); } }, 5000); return; }
+    sb.disabled = true; sb.textContent = 'Sending…';
+    try {
+      const body = sb.dataset.sell ? await api('sell', { method: 'POST', body: JSON.stringify({ securityId: sb.dataset.sell, qty: +sb.dataset.qty }) })
+        : await api('safety', { method: 'POST', body: JSON.stringify({ securityId: sb.dataset.safe, entry: +sb.dataset.entry }) });
+      toast(body.message || 'Done'); POS = null; await loadPrivate(); render();
+    } catch (err) { toast(err.message); sb.disabled = false; sb.textContent = sb.dataset.lbl; sb.dataset.armed = ''; }
+  }
+});
+document.addEventListener('keydown', e => { if (e.key === 'Enter') { const tr = e.target.closest && e.target.closest('tr[data-s]'); if (tr) openStock(tr.dataset.s); } });
+addEventListener('hashchange', render);
+
+(async () => {
+  try {
+    D = await (await fetch('/ohm/api/data', { cache: 'no-cache' })).json();
+    for (const x of D.stocks) BY[x.s] = x;
+    $('sideFoot').innerHTML = `Capital ₹${inr(D.meta.capital, 0)}<br>Risk per trade ${D.meta.riskPct}%<br>Data ${esc(D.meta.asof)}`;
+    render();
+    await loadPrivate(); render();
+  } catch (e) { $('view').innerHTML = `<div class="msg err">Could not load data: ${esc(e.message)}</div>`; }
+})();
+</script>
+</body>
+</html>

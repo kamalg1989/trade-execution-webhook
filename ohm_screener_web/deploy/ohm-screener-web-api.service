@@ -1,0 +1,13 @@
+[Unit]
+Description=OHM Screener web API (CAN SLIM + OHM, /ohm-screener/, port 8008)
+After=network.target postgresql.service
+
+[Service]
+WorkingDirectory=/root/ohm_screener_web
+ExecStart=/root/trade-execution-webhook/venv/bin/uvicorn api:app --host 127.0.0.1 --port 8008 --workers 1
+Restart=always
+RestartSec=5
+MemoryMax=300M
+
+[Install]
+WantedBy=multi-user.target
