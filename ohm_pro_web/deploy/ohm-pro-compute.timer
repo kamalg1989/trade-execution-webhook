@@ -1,0 +1,12 @@
+[Unit]
+Description=OHM Pro compute after the close; repeats until the day's prices are complete (each day is processed once)
+
+[Timer]
+OnCalendar=Mon..Fri 19:30
+OnCalendar=Mon..Fri 22:30
+OnCalendar=Tue..Sat 06:50
+OnCalendar=Tue..Sat 08:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

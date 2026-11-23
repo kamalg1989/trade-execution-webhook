@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OHM Pro</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600;700&display=swap">
+<style>
+:root{--bg:#EEF1F4;--panel:#FFFFFF;--soft:#F6F8FA;--line:#D9DFE6;--line2:#EDF0F3;--ink:#15202B;--ink2:#2B3644;--mut:#556170;--brand:#1D4E89;--brandD:#123764;--brandBg:#E3EBF6;
+--up:#1E7A4F;--upBg:#E2F1E8;--upTx:#14583A;--dn:#B3261E;--dnBg:#FBE3E1;--dnTx:#8E1D17;--amb:#C27400;--ambBg:#FCEFD9;--ambTx:#7A4500}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:'Instrument Sans',system-ui,sans-serif;font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}
+a{color:var(--brand)}button{font:inherit;cursor:pointer}
+a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.h{font-family:'Bricolage Grotesque','Instrument Sans',system-ui,sans-serif}
+.app{display:flex;min-height:100vh}
+.side{flex:0 0 232px;padding:28px 16px;display:flex;flex-direction:column;gap:4px;background:#F7F9FB;border-right:1px solid var(--line);position:sticky;top:0;height:100vh}
+.logo{font-size:26px;font-weight:700;letter-spacing:-.02em;padding:0 14px 4px}
+.logo small{display:block;font-size:12px;font-weight:600;color:var(--mut);letter-spacing:0;font-family:'Instrument Sans',sans-serif;margin-top:4px}
+.nav a{display:flex;align-items:center;gap:12px;min-height:44px;padding:0 14px;border-radius:10px;color:#3E4A58;text-decoration:none;font-weight:500;font-size:15px}
+.nav a:hover{background:#E3E8EE;color:var(--ink)}.nav a.on{background:var(--ink);color:#fff}
+.nav .cnt{margin-left:auto;font-size:12px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--ambBg);color:var(--ambTx)}
+.side .foot{margin-top:auto;padding:16px 14px 0;font-size:13px;color:var(--mut);line-height:1.6}
+.main{flex:1;min-width:0;padding:36px 44px 72px;display:flex;flex-direction:column;gap:24px;max-width:1400px}
+.hd h1{margin:0;font-size:38px;font-weight:700;letter-spacing:-.025em}
+.hd p{margin:6px 0 0;color:var(--mut);font-size:15px;max-width:80ch}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:24px 26px}
+.card h2{margin:0 0 12px;font-size:20px;font-weight:700}
+.sub{font-size:14px;color:var(--mut)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(190px,100%),1fr));gap:12px}
+.tile{background:var(--soft);border-radius:14px;padding:16px 18px}
+.tile .k{font-size:14px;color:var(--mut)}.tile .v{font-size:26px;font-weight:700;margin-top:4px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:46px;padding:0 18px;border-radius:12px;border:0;background:var(--brand);color:#fff;font-weight:600;text-decoration:none}
+.btn:hover{background:var(--brandD)}.btn.ghost{background:#fff;color:var(--ink);border:1px solid #C4CDD8}
+.btn.red{background:var(--dn)}.btn[disabled]{background:#C4CDD8;cursor:not-allowed}
+.btn.sm{min-height:38px;padding:0 12px;border-radius:10px;font-size:14px}
+.chip{display:inline-block;padding:4px 10px;border-radius:999px;font-size:13px;font-weight:600;white-space:nowrap}
+.c-up{background:var(--upBg);color:var(--upTx)}.c-dn{background:var(--dnBg);color:var(--dnTx)}.c-amb{background:var(--ambBg);color:var(--ambTx)}.c-brand{background:var(--brandBg);color:var(--brandD)}.c-mut{background:#EEF1F4;color:var(--ink2)}
+.upc{color:var(--up)}.dnc{color:var(--dn)}
+.big{display:flex;flex-wrap:wrap;align-items:center;gap:18px}
+.gate{font-size:30px;font-weight:700;padding:10px 22px;border-radius:14px}
+.tbl{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:15px}
+th{color:var(--mut);font-size:13px;font-weight:600;padding:10px 12px;text-align:right;white-space:nowrap}
+td{padding:12px;text-align:right;border-top:1px solid var(--line2);vertical-align:middle}
+th.l,td.l{text-align:left}
+tr.click{cursor:pointer}tr.click:hover td{background:#FAFBFC}
+.sym{font-size:16px;font-weight:600}.nm{font-size:13px;color:var(--mut)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(330px,100%),1fr));gap:18px}
+.cc{background:#fff;border:1px solid var(--line);border-radius:18px;padding:18px 20px;display:flex;flex-direction:column;gap:12px;text-align:left;color:var(--ink);width:100%}
+.cc:hover{border-color:#9FB0C4}.cc.take{border:2px solid var(--ink)}
+.cc img{width:100%;height:140px;object-fit:cover;object-position:left;border-radius:10px;background:#FAFBFC}
+.dl{margin:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;font-size:13px}
+.dl dt{color:var(--mut)}.dl dd{margin:2px 0 0;font-weight:600;font-size:15px}
+.rowl{display:flex;justify-content:space-between;align-items:center;gap:12px;min-height:46px;border-bottom:1px solid var(--line2);font-size:15px}
+.rowl:last-child{border-bottom:0}
+.msg{font-size:14px;line-height:1.5;border-radius:12px;padding:12px 14px}
+.msg.ok{background:var(--upBg);color:var(--upTx)}.msg.err{background:var(--dnBg);color:var(--dnTx)}.msg.info{background:var(--soft);color:var(--ink2)}
+input[type=text],input[type=password],input[type=date]{font:inherit;border:1px solid #C4CDD8;border-radius:10px;padding:10px 12px;background:#fff;color:var(--ink)}
+.modal{position:fixed;inset:0;background:rgba(21,32,43,.45);display:none;align-items:flex-start;justify-content:center;padding:32px 16px;overflow:auto;z-index:50}
+.modal.open{display:flex}
+.sheet{background:var(--bg);border-radius:22px;width:min(1200px,100%);padding:26px;display:flex;flex-direction:column;gap:18px;position:relative}
+.xbtn{position:absolute;top:16px;right:16px;width:44px;height:44px;border-radius:12px;border:1px solid var(--line);background:#fff}
+.chartimg{width:100%;height:auto;display:block;border-radius:10px;background:#fff;min-height:180px}
+.rules li{margin:6px 0;line-height:1.5}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:14px 18px;border-radius:12px;font-weight:600;z-index:60;max-width:90vw;display:none}
+.mob{display:none}.skel{color:var(--mut);padding:40px;text-align:center}
+details summary{cursor:pointer;font-weight:600;min-height:40px;display:flex;align-items:center}
+@media (max-width:900px){
+ .side{display:none}.main{padding:20px 14px 110px;gap:16px}.hd h1{font-size:28px}.card{padding:16px}
+ .mob{display:flex;position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);padding:4px 6px calc(10px + env(safe-area-inset-bottom));z-index:40}
+ .mob a{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-height:56px;text-decoration:none;font-size:12px;font-weight:600;color:#6B7684;position:relative}
+ .mob a.on{color:var(--ink)}
+ .modal{padding:0}.sheet{border-radius:0;padding:16px 12px 40px;min-height:100vh}
+ .gate{font-size:24px}.tile .v{font-size:22px}
+}
+</style>
+</head>
+<body>
+<div class="app">
+<nav class="side nav" aria-label="Main">
+<div class="logo h">ohm pro<small>Backtest-passed rules only</small></div>
+<div style="height:16px"></div>
+<a href="#today" data-v="today">Today</a>
+<a href="#candidates" data-v="candidates">Candidates<span class="cnt" id="nC" hidden></span></a>
+<a href="#paper" data-v="paper">Paper book</a>
+<a href="#live" data-v="live">Live trades</a>
+<a href="#rules" data-v="rules">Rules</a>
+<div class="foot" id="foot"></div>
+</nav>
+<main class="main" id="view"><div class="skel">Loading…</div></main>
+</div>
+<nav class="mob nav" aria-label="Main">
+<a href="#today" data-v="today">Today</a><a href="#candidates" data-v="candidates">Buys</a><a href="#paper" data-v="paper">Paper</a><a href="#live" data-v="live">Live</a><a href="#rules" data-v="rules">Rules</a>
+</nav>
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle"><div class="sheet" id="sheet"></div></div>
+<div class="toast" id="toast" role="status"></div>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const inr = (x, d = 2) => x == null ? '—' : Number(x).toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d });
+const rs = (x, d = 2) => x == null ? '—' : '₹' + inr(x, d);
+const pct = (x, d = 1) => x == null ? '—' : (x > 0 ? '+' : x < 0 ? '−' : '') + Math.abs(x).toFixed(d) + '%';
+const rr = x => x == null ? '—' : (x > 0 ? '+' : x < 0 ? '−' : '') + Math.abs(x).toFixed(2) + 'R';
+const KEY = () => localStorage.getItem('trading_api_key') || '';
+const ACT = { sell_all: ['Sell all at the open', 'c-dn'], sell_half: ['Sell half at the open', 'c-amb'], buy_half: ['Buy the half back at the open', 'c-brand'] };
+let D = null, LIVE = null;
+function toast(t) { const e = $('toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => e.style.display = 'none', 4500); }
+async function call(url, opt = {}) {
+  const res = await fetch(url, { ...opt, headers: { 'Content-Type': 'application/json', 'X-API-Key': KEY(), ...(opt.headers || {}) } });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || ('Error ' + res.status));
+  return body;
+}
+function chartDaily(x, w, h) {
+  const p = new URLSearchParams({ symbol: x.s, days: 130, theme: 'light', w, h, stats: 0, v: D.meta.asof });
+  if (x.entry) { p.set('pivot', x.entry); p.set('stop', x.stop); }
+  return '/ohm-screener/api/chart?' + p;
+}
+function chartWeekly(s, w, h) {
+  const to = D.meta.asof, from = new Date(new Date(to).getTime() - 730 * 864e5).toISOString().slice(0, 10);
+  return `/api/v1/charts/weekly?symbol=${encodeURIComponent(s)}&from_date=${from}&to_date=${to}&theme=light&width=${w}&height=${h}`;
+}
+const nextDay = d => { const t = new Date(d); do { t.setDate(t.getDate() + 1) } while ([0, 6].includes(t.getDay())); return t.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' }); };
+const nice = d => d ? new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
+
+function marketCard() {
+  const m = D.meta, on = m.buysOn;
+  return `<section class="card"><div class="big"><span class="gate ${on ? 'c-up' : 'c-dn'}">${on ? 'Buys ON' : 'Buys OFF'}</span>
+   <div class="sub" style="font-size:15px">Close of ${nice(m.asof)}. ${on ? 'New buy-stops can be placed for ' + nextDay(m.asof) + '.' : 'No new buys tomorrow. Open trades are still managed.'}</div></div>
+   <div class="tiles" style="margin-top:18px">
+    <div class="tile"><div class="k">Market phase</div><div class="v">${esc(m.phase)}</div><div class="sub">${m.breadth}% of liquid stocks above 200-day · needs ADVANCE or ACCUMULATION</div></div>
+    <div class="tile"><div class="k">Nifty Next 50 (JUNIORBEES)</div><div class="v ${m.jrOn ? 'upc' : 'dnc'}">${m.jrOn ? 'Above' : 'Below'} 50-day</div><div class="sub">Close ${rs(m.jrClose)} vs 50-day ${rs(m.jrSma50)}</div></div>
+    <div class="tile"><div class="k">Candidates passing all rules</div><div class="v">${m.passing}</div><div class="sub">of ${m.candidates} entry bars today</div></div>
+   </div></section>`;
+}
+
+function vToday() {
+  const m = D.meta, p = m.paper, acts = D.positions.filter(x => x.next.length), take = D.candidates.filter(x => x.take);
+  return `<header class="hd"><h1 class="h">Today</h1><p>Only the rules that passed the 2011–2026 backtest (26.9% a year, 18.3% worst drawdown, survivorship-flattered). Paper book runs on its own every evening.</p></header>
+  ${marketCard()}
+  <section class="card"><h2>Paper book</h2><div class="tiles">
+   <div class="tile"><div class="k">Equity</div><div class="v">${rs(p.equity, 0)}</div><div class="sub">started ${rs(p.startEq, 0)} on ${nice(p.start)}</div></div>
+   <div class="tile"><div class="k">Return</div><div class="v ${p.ret >= 0 ? 'upc' : 'dnc'}">${pct(p.ret, 2)}</div><div class="sub">worst drawdown ${p.maxDD ?? 0}%</div></div>
+   <div class="tile"><div class="k">Open positions</div><div class="v">${p.open} / ${m.maxPos}</div><div class="sub">${p.pending} buy-stops for ${nextDay(m.asof)}</div></div>
+   <div class="tile"><div class="k">Closed trades</div><div class="v">${p.trades}</div><div class="sub">${p.trades ? `win ${p.win}% · avg ${rr(p.avgR)}` : 'none yet'}</div></div>
+  </div></section>
+  <section class="card"><h2>For the open on ${nextDay(m.asof)}</h2>
+   ${acts.length || take.length ? '' : '<p class="sub">Nothing to do.</p>'}
+   ${acts.map(x => x.next.map(a => `<div class="rowl"><span><b>${esc(x.s)}</b> <span class="nm">${esc(a.why)}</span></span><span class="chip ${ACT[a.act][1]}">${ACT[a.act][0]}</span></div>`).join('')).join('')}
+   ${take.map(x => `<div class="rowl"><span><b>${esc(x.s)}</b> <span class="nm">#${x.rank} · ${esc(x.ent)} · stop ${rs(x.stop)}${x.top5 ? ' · 0.5% risk' : ''}</span></span><span class="chip c-up">Buy-stop above ${rs(x.entry)}</span></div>`).join('')}
+  </section>`;
+}
+
+function candCard(x) {
+  return `<button class="cc ${x.take ? 'take' : ''}" data-open="${esc(x.s)}">
+   <div style="display:flex;justify-content:space-between;gap:10px;width:100%"><div><div class="sym">${esc(x.s)}</div><div class="nm">${esc(x.nm)}</div></div>
+    <div style="text-align:right">${x.rank ? `<span class="chip ${x.take ? 'c-up' : 'c-mut'}">#${x.rank}${x.take ? ' · take' : ' · no slot'}</span>` : ''}${x.top5 ? ' <span class="chip c-brand">0.5% risk</span>' : ''}</div></div>
+   <img loading="lazy" alt="Daily chart of ${esc(x.s)}" src="${chartDaily(x, 640, 280)}">
+   <dl class="dl"><div><dt>Buy above</dt><dd>${rs(x.entry)}</dd></div><div><dt>Stop</dt><dd>${rs(x.stop)} <span class="nm">${x.stopPct}%</span></dd></div><div><dt>1-yr return</dt><dd>${pct(x.r1y, 0)} <span class="nm">top ${x.lpct == null ? '—' : (100 - x.lpct).toFixed(0) + '%'}</span></dd></div>
+   <div><dt>Entry bar</dt><dd>${esc(x.ent)}</dd></div><div><dt>Profit growth</dt><dd>${x.C == null ? '—' : pct(x.C, 0)} / ${x.A == null ? '—' : pct(x.A, 0)}</dd></div><div><dt>Live size</dt><dd>${x.qty} sh · ${rs(x.amount, 0)}</dd></div></dl>
+   ${x.block ? `<div class="msg err">Blocked: ${esc(x.block)}</div>` : x.held ? '<div class="msg info">Already held in the paper book</div>' : ''}
+  </button>`;
+}
+function vCands() {
+  const ok = D.candidates.filter(x => !x.block && !x.held), bl = D.candidates.filter(x => x.block || x.held);
+  return `<header class="hd"><h1 class="h">Candidates</h1><p>Entry bars at the close of ${nice(D.meta.asof)} that pass every backtested rule, highest 1-year return first. The top ${D.meta.freePaper} fill the paper book's free slots. Buy-stops are good for ${nextDay(D.meta.asof)} only.</p></header>
+  ${D.meta.buysOn ? '' : '<div class="msg err">Buys are OFF (market rule). Candidates are shown for reference only.</div>'}
+  <section class="grid">${ok.map(candCard).join('') || '<div class="card sub">No stock passes all rules today.</div>'}</section>
+  ${bl.length ? `<details class="card"><summary>${bl.length} entry bars blocked by a rule</summary><div class="tbl"><table><tr><th class="l">Stock</th><th class="l">Reason</th><th>1-yr</th><th>Stop %</th></tr>
+   ${bl.map(x => `<tr class="click" data-open="${esc(x.s)}"><td class="l"><span class="sym">${esc(x.s)}</span></td><td class="l">${esc(x.held ? 'already held' : x.block)}</td><td>${pct(x.r1y, 0)}</td><td>${x.stopPct}%</td></tr>`).join('')}</table></div></details>` : ''}`;
+}
+
+function curveSvg(c) {
+  if (!c || c.length < 2) return '<p class="sub">The equity line appears after a few trading days.</p>';
+  const v = c.map(x => x[1]), lo = Math.min(...v), hi = Math.max(...v), W = 760, H = 180, n = v.length;
+  const X = i => 10 + i / (n - 1) * (W - 20), Y = y => 16 + (hi - y) / ((hi - lo) || 1) * (H - 32);
+  const d = v.map((y, i) => (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(y).toFixed(1)).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Paper equity" style="width:100%;height:auto"><path d="${d}" fill="none" stroke="#1D4E89" stroke-width="2"/>
+   <text x="10" y="12" font-size="12" fill="#556170">${rs(hi, 0)}</text><text x="10" y="${H - 2}" font-size="12" fill="#556170">${rs(lo, 0)}</text></svg>`;
+}
+function state(x) {
+  if (x.kept) return '<span class="chip c-up">Closed ≥ 2R on the 2R day: holding full</span>';
+  if (x.added) return '<span class="chip c-brand">Half sold, bought back</span>';
+  if (x.halfSold) return '<span class="chip c-amb">Half sold</span>';
+  return '<span class="chip c-mut">Riding the 21 EMA</span>';
+}
+function vPaper() {
+  const P = D.positions, C = D.closed;
+  return `<header class="hd"><h1 class="h">Paper book</h1><p>A simulated account that follows every rule exactly, from ${nice(D.meta.paper.start)}, with whole shares, 0.1% cost per side and 4% a year on idle cash. Compare it with the backtest before trading real money.</p></header>
+  <section class="card"><h2>Equity</h2>${curveSvg(D.curve)}</section>
+  <section class="card"><h2>Open positions (${P.length})</h2>${P.length ? `<div class="tbl"><table><tr><th class="l">Stock</th><th>Filled</th><th>Fill</th><th>Stop</th><th>2R</th><th>Last</th><th>21 EMA</th><th>Now</th><th>Qty</th><th class="l">State</th><th class="l">Next open</th></tr>
+   ${P.map(x => `<tr class="click" data-open="${esc(x.s)}"><td class="l"><span class="sym">${esc(x.s)}</span><div class="nm">${esc(x.nm)}</div></td><td>${nice(x.fillDate)}</td><td>${rs(x.fill)}</td><td>${rs(x.stop)}</td><td>${rs(x.t2r)}</td><td>${rs(x.last)}${x.stale ? `<div class="nm dnc">no price since ${nice(x.lastDate)}</div>` : ''}</td><td>${rs(x.e21)}</td>
+    <td class="${x.rNow >= 0 ? 'upc' : 'dnc'}">${rr(x.rNow)}</td><td>${x.qty}</td><td class="l">${state(x)}</td><td class="l">${x.next.map(a => `<span class="chip ${ACT[a.act][1]}">${ACT[a.act][0]}</span>`).join(' ') || '<span class="nm">hold</span>'}</td></tr>`).join('')}</table></div>` : '<p class="sub">No open positions.</p>'}</section>
+  <section class="card"><h2>Closed trades (${C.length})</h2>${C.length ? `<div class="tbl"><table><tr><th class="l">Stock</th><th>Filled</th><th>Exited</th><th>Fill</th><th>Exit</th><th>Result</th><th>P&amp;L</th><th class="l">Why</th></tr>
+   ${C.map(x => `<tr><td class="l"><span class="sym">${esc(x.sym)}</span></td><td>${nice(x.fill_date)}</td><td>${nice(x.exit_date)}</td><td>${rs(x.fill)}</td><td>${rs(x.exit)}</td><td class="${x.R >= 0 ? 'upc' : 'dnc'}">${rr(x.R)}</td><td class="${x.pnl >= 0 ? 'upc' : 'dnc'}">${rs(x.pnl, 0)}</td><td class="l">${esc(x.why)}</td></tr>`).join('')}</table></div>` : '<p class="sub">None yet.</p>'}</section>
+  <section class="card"><h2>Recent paper orders</h2>${D.log.length ? D.log.slice(0, 40).map(x => `<div class="rowl"><span>${nice(x.date)} · <b>${esc(x.sym)}</b> <span class="nm">${esc(x.why)}</span></span><span>${esc(x.act)} ${x.qty} @ ${rs(x.px)}</span></div>`).join('') : '<p class="sub">None yet.</p>'}</section>`;
+}
+
+function vLive() {
+  if (!KEY()) return `<header class="hd"><h1 class="h">Live trades</h1></header><section class="card"><p>Enter the dashboard API key (same key as the main dashboard and /ohm/). It stays in this browser.</p>
+   <div style="display:flex;gap:10px;flex-wrap:wrap"><input type="password" id="k" placeholder="API key" style="flex:1;min-width:220px"><button class="btn" id="kSave">Save</button></div></section>`;
+  if (!LIVE) { loadLive(); return '<div class="skel">Loading live trades…</div>'; }
+  if (LIVE.error) return `<header class="hd"><h1 class="h">Live trades</h1></header><div class="msg err">${esc(LIVE.error)}</div>`;
+  const L = LIVE.positions;
+  return `<header class="hd"><h1 class="h">Live trades</h1><p>Real trades bought from this page. Actions use the same rules on the real fill price. Sells go out as market orders (at the next open outside market hours).</p></header>
+  <section class="card">${L.length ? L.map(liveRow).join('') : '<p class="sub">No live trades yet. Buy from a candidate to start.</p>'}</section>`;
+}
+function liveRow(x) {
+  const a = x.next, half = Math.floor((x.heldQty || 0) / 2);
+  let act = '';
+  if (x.exit) act = `<div class="msg err">Exit was due at the open of ${nice(x.exit[0])} (${esc(x.exit[2])}).${x.held ? ' Still held — sell now.' : ''}</div>`;
+  else if (a) act = `<div class="msg ${a.act === 'sell_all' ? 'err' : 'info'}"><b>${ACT[a.act][0]}</b> — ${esc(a.why)}.</div>`;
+  const sellQ = x.exit || (a && a.act === 'sell_all') ? x.avail : a && a.act === 'sell_half' ? half : 0;
+  return `<div style="border-bottom:1px solid var(--line2);padding:14px 0;display:flex;flex-direction:column;gap:10px">
+   <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px"><div><span class="sym">${esc(x.s)}</span> ${x.held ? `<span class="chip c-up">${x.heldQty} held</span>` : '<span class="chip c-mut">not in holdings yet</span>'}</div>
+    <div class="nm">planned ${x.qty} above ${rs(x.entry)}, stop ${rs(x.stop)} · signal ${nice(x.sigDate)}</div></div>
+   ${x.fill ? `<div class="nm">Fill ${rs(x.fill)} on ${nice(x.fillDate)}${x.fillDateAuto ? ' (found from prices)' : ''} · 2R ${rs(x.t2r)} · last ${rs(x.last)} (${rr(x.rNow)}) · 21 EMA ${rs(x.e21)}${x.state && x.state.kept ? ' · 2R day closed above 2R: hold full' : ''}</div>` : ''}
+   ${act || (x.fill ? '<div class="msg ok">Hold.</div>' : '')}
+   <div style="display:flex;gap:8px;flex-wrap:wrap">
+    ${sellQ > 0 && x.secId ? `<button class="btn sm red" data-sell="${esc(x.secId)}" data-qty="${sellQ}" data-lbl="Sell ${sellQ}">Sell ${sellQ}</button>` : ''}
+    ${a && a.act === 'buy_half' ? `<span class="nm">Buy back ${Math.floor(x.qty / 2)} shares at the open from the main dashboard or Dhan.</span>` : ''}
+    <button class="btn sm ghost" data-rm="${esc(x.s)}">Remove from list</button></div></div>`;
+}
+async function loadLive() {
+  try { LIVE = await call('/ohm-pro/api/live'); } catch (e) { LIVE = { error: e.message }; }
+  if (location.hash === '#live') render();
+}
+
+function vRules() {
+  return `<header class="hd"><h1 class="h">Rules</h1><p>Exactly what was backtested (April 2011 – November 2026). Full write-up: <a href="https://claude.ai/artifact/8CWrB3mJrFEZ5Yde2aH9FW" target="_blank" rel="noopener">OHM Swing Setup — Final Rules</a>.</p></header>
+  <section class="card rules"><ol>
+   <li><b>Market:</b> new buys only in ADVANCE or ACCUMULATION, and only while JUNIORBEES closes at or above its 50-day average.</li>
+   <li><b>Setup:</b> 20-day turnover ≥ ₹1 Cr, close above the 50-day average, ≥ 75% of the 52-week high, 10-day range ≤ 15%, within 8% of the 21 EMA, up/down volume ≥ 1.2 over 50 days, 60-day money flow > 0.</li>
+   <li><b>Leader and earnings:</b> 1-year return in the top 20% of liquid stocks; quarter and trailing-year profit growth ≥ 25% (missing data allowed).</li>
+   <li><b>Entry bar:</b> inside bar, higher high–higher low, pin bar or trend bar. Buy above its high the next day; stop at its low (higher high–higher low: lower of the 2 lows). Skip if the stop is more than 8% below the fill.</li>
+   <li><b>Rank and size:</b> highest 1-year return first; risk 0.25% of equity, 0.5% for the top 5%; max 10% per stock, 20 positions.</li>
+   <li><b>Manage on closes, act at the next open:</b> close below the stop → sell all. Close below the 21 EMA (from the day after the fill) → sell all. First day the high touches 2R: close ≥ 2R → hold everything; close < 2R → sell half, then buy it back after a later close ≥ 2R.</li>
+   <li><b>Cash:</b> idle cash in LIQUIDCASE (about 4% a year).</li></ol>
+   <p class="sub">Backtest: 26.9% CAGR, 18.3% worst drawdown, no losing calendar year. The price data has almost no delisted stocks, so live results will be lower.</p></section>`;
+}
+
+function openStock(s) {
+  const x = D.candidates.find(c => c.s === s) || D.positions.find(c => c.s === s) || { s };
+  const mob = innerWidth < 900, can = x.entry && !x.block && !x.held && D.meta.buysOn;
+  $('sheet').innerHTML = `<button class="xbtn" id="mClose" aria-label="Close">✕</button>
+   <header class="hd"><h1 class="h" id="mTitle">${esc(s)}</h1><p>${esc(x.nm || '')}</p></header>
+   ${x.entry ? `<section class="card"><h2>Trade plan for ${nextDay(D.meta.asof)}</h2>
+    <div class="tiles"><div class="tile"><div class="k">Buy-stop above</div><div class="v">${rs(x.entry)}</div><div class="sub">bar high ${rs(x.buy)} + 1 tick</div></div>
+    <div class="tile"><div class="k">Stop (on close)</div><div class="v">${rs(x.stop)}</div><div class="sub">${x.stopPct}% below</div></div>
+    <div class="tile"><div class="k">2R level</div><div class="v">${rs(x.t2r)}</div><div class="sub">decide at the close on the first touch</div></div>
+    <div class="tile"><div class="k">Size (₹${inr(D.meta.capital, 0)})</div><div class="v">${x.qty} sh</div><div class="sub">${rs(x.amount, 0)} · risk ${rs(x.riskAmt, 0)} (${x.riskPct}%)</div></div></div>
+    ${x.block ? `<div class="msg err" style="margin-top:14px">Blocked: ${esc(x.block)}</div>` : x.held ? '<div class="msg info" style="margin-top:14px">Already in the paper book.</div>' : !D.meta.buysOn ? '<div class="msg err" style="margin-top:14px">Buys are OFF (market rule).</div>' : ''}
+    <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="btn" id="buyBtn" ${can && x.qty > 0 ? '' : 'disabled'}>Place live buy-stop: ${x.qty} above ${rs(x.entry)}</button><span class="sub" id="buyMsg">Tap twice to confirm. Uses the main dashboard's buy order (forever buy-above).</span></div></section>` : ''}
+   <section class="card"><h2>Daily</h2><img class="chartimg" alt="Daily chart of ${esc(s)}" src="${chartDaily(x, mob ? 400 : 1100, mob ? 500 : 560)}"></section>
+   <section class="card"><h2>Weekly, 2 years</h2><img class="chartimg" alt="Weekly chart of ${esc(s)}" src="${chartWeekly(s, mob ? 400 : 1100, mob ? 420 : 460)}"></section>`;
+  $('modal').classList.add('open'); $('mClose').focus();
+  const b = $('buyBtn');
+  if (b) b.onclick = async () => {
+    if (!KEY()) { $('buyMsg').textContent = 'Save the API key on the Live trades tab first.'; return; }
+    if (!b.dataset.armed) { b.dataset.armed = 1; b.textContent = 'Tap again to place the order'; return; }
+    b.disabled = true; b.textContent = 'Placing…';
+    try {
+      const r = await call('/api/buy', { method: 'POST', body: JSON.stringify({ symbol: x.s, quantity: x.qty, price: x.entry, stopLoss: x.stop,
+        recommendation: { source: 'ohm-pro', symbol: x.s, entry: x.entry, stopLoss: x.stop, target: x.t2r, riskPerShare: +(x.entry - x.stop).toFixed(2), rrRatio: 2,
+          targetStrategy: 'OHM_PRO_CLEAN_2R', entryType: x.ent, signalBarDate: D.meta.asof, regime: D.meta.phase, riskPct: x.riskPct, dataAsOf: D.meta.asof } }) });
+      if (!r.success) throw new Error(r.detail || r.message || 'Order failed');
+      await call('/ohm-pro/api/live/record', { method: 'POST', body: JSON.stringify({ s: x.s, entry: x.entry, stop: x.stop, qty: x.qty, riskPct: x.riskPct, sigDate: D.meta.asof }) });
+      b.textContent = 'Order placed'; $('buyMsg').textContent = r.message || 'Buy order placed. Tracked under Live trades.'; LIVE = null; toast('Buy order placed for ' + x.s);
+    } catch (e) { b.disabled = false; b.dataset.armed = ''; b.textContent = 'Place live buy-stop'; $('buyMsg').textContent = e.message; }
+  };
+}
+function closeModal() { $('modal').classList.remove('open'); }
+
+const VIEWS = { today: vToday, candidates: vCands, paper: vPaper, live: vLive, rules: vRules };
+function render() {
+  const v = (location.hash || '#today').slice(1);
+  const fn = VIEWS[v] || vToday;
+  document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('on', a.dataset.v === (VIEWS[v] ? v : 'today')));
+  $('view').innerHTML = fn();
+  const n = D.candidates.filter(x => x.take).length; $('nC').hidden = !n; $('nC').textContent = n;
+  $('foot').innerHTML = `Data: close of ${nice(D.meta.asof)}<br>Updated ${new Date(D.meta.generated).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}`;
+  window.scrollTo(0, 0);
+}
+document.addEventListener('click', async e => {
+  const o = e.target.closest('[data-open]'); if (o) { openStock(o.dataset.open); return; }
+  if (e.target.id === 'mClose' || e.target.id === 'modal') { closeModal(); return; }
+  if (e.target.id === 'kSave') { localStorage.setItem('trading_api_key', $('k').value.trim()); LIVE = null; render(); return; }
+  const sb = e.target.closest('[data-sell]');
+  if (sb) {
+    if (!sb.dataset.armed) { sb.dataset.armed = 1; sb.textContent = 'Tap again to sell'; return; }
+    sb.disabled = true; sb.textContent = 'Sending…';
+    try { const r = await call('/ohm/api/sell', { method: 'POST', body: JSON.stringify({ securityId: sb.dataset.sell, qty: +sb.dataset.qty }) }); toast(r.message || 'Sell placed'); LIVE = null; render(); }
+    catch (err) { toast(err.message); sb.disabled = false; sb.dataset.armed = ''; sb.textContent = sb.dataset.lbl; }
+    return;
+  }
+  const rm = e.target.closest('[data-rm]');
+  if (rm) {
+    if (!rm.dataset.armed) { rm.dataset.armed = 1; rm.textContent = 'Tap again to remove'; return; }
+    try { await call('/ohm-pro/api/live/remove', { method: 'POST', body: JSON.stringify({ s: rm.dataset.rm }) }); LIVE = null; render(); } catch (err) { toast(err.message); }
+  }
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+addEventListener('hashchange', render);
+(async () => {
+  try { const r = await fetch('/ohm-pro/api/data', { cache: 'no-store' }); if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'No data yet'); D = await r.json(); render(); }
+  catch (e) { $('view').innerHTML = `<div class="card"><h2>Not ready</h2><p class="sub">${esc(e.message)}</p></div>`; }
+})();
+</script>
+</body>
+</html>

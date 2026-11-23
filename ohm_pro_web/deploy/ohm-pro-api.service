@@ -1,0 +1,13 @@
+[Unit]
+Description=OHM Pro web API (/ohm-pro/, port 8011) - backtest-passed setup only
+After=network.target postgresql.service
+
+[Service]
+WorkingDirectory=/root/ohm_pro_web
+ExecStart=/root/trade-execution-webhook/venv/bin/uvicorn api:app --host 127.0.0.1 --port 8011 --workers 1
+Restart=always
+RestartSec=5
+MemoryMax=300M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=OHM Pro daily compute: scan + paper book (writes /root/ohm_pro_web/data/pro.json, paper.json)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ohm_pro_web
+ExecStart=/root/trade-execution-webhook/venv/bin/python /root/ohm_pro_web/compute.py
+StandardOutput=append:/root/ohm_pro_web/compute.log
+StandardError=append:/root/ohm_pro_web/compute.log
+MemoryMax=900M
