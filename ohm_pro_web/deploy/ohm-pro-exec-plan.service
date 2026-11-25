@@ -1,0 +1,9 @@
+[Unit]
+Description=OHM Pro executor: plan (mode in data/live_book.json; SHADOW never places orders)
+After=network-online.target
+[Service]
+Type=oneshot
+WorkingDirectory=/root/ohm_pro_web/exec
+ExecStart=/root/trade-execution-webhook/venv/bin/python /root/ohm_pro_web/exec/ohmx.py --plan
+StandardOutput=append:/root/ohm_pro_web/exec/ohmx.log
+StandardError=append:/root/ohm_pro_web/exec/ohmx.log

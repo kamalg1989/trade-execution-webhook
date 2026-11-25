@@ -20,7 +20,11 @@ import numpy as np, pandas as pd, psycopg2
 DB = dict(host='localhost', dbname='market_data', user='postgres', password='postgres')
 BAD = ['BEES', 'ETF', 'LIQUID', 'GOLD', 'SILVER', 'NIFTY', 'SENSEX', 'CASE', 'BETA']
 RISK, RISK_TOP, TOP_PCT, LEAD_PCT, EARN_MIN = 0.0025, 0.005, 0.95, 0.80, 0.25
-MAXPOS, MAXW, COST, CASH_YIELD, MAXSTOP = 20, 0.10, 0.001, 0.04, 0.08
+MAXPOS, MAXW, COST, CASH_YIELD, MAXSTOP = 20, 0.10, 0.0025, 0.04, 0.08
+import os as _os0
+RESEARCH = _os0.environ.get('OHMPRO_RESEARCH') == '1'   # validation only: research fill model + 0.1% cost
+LIVE_LIM = 1.002                                          # live forever buy: limit = trigger x 1.002 (dhan_client.place_forever_buy)
+if RESEARCH: COST = 0.001
 PH = {0: 'ADVANCE', 1: 'DISTRIBUTION', 2: 'DECLINE', 3: 'ACCUMULATION'}
 TYP = {1: 'Inside bar', 2: 'Higher high, higher low', 3: 'Pin bar', 4: 'Trend bar'}
 T0 = time.time()
@@ -300,7 +304,13 @@ def step(book, i, date, bars, cands_today, mkt, prev_date=None, whole=True):
         if b is None:
             still.append(c); continue
         if b['h'] >= c['buy']:
-            fills.append((c, max(b['o'], c['buy'])))
+            if RESEARCH:
+                fills.append((c, max(b['o'], c['buy'])))
+            else:                                        # 2026-11-24 audit: match the live limit order
+                lim = c['buy'] * LIVE_LIM
+                if b['o'] <= lim: fills.append((c, max(b['o'], c['buy'])))
+                elif b['l'] <= lim: fills.append((c, lim))
+                # else: opened above the limit and never came back -> no fill, order lapses
     book['pending'] = still
     fills.sort(key=lambda x: -(x[0]['r252'] if np.isfinite(x[0]['r252']) else -9))
     for c, px in fills:

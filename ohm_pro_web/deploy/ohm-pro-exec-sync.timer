@@ -1,0 +1,10 @@
+[Unit]
+Description=OHM Pro executor sync timer
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09:20..59/10:00
+OnCalendar=Mon..Fri *-*-* 10..14:00/10:00
+OnCalendar=Mon..Fri *-*-* 15:00..20/10:00
+OnCalendar=Mon..Fri *-*-* 15:50:00
+Persistent=false
+[Install]
+WantedBy=timers.target

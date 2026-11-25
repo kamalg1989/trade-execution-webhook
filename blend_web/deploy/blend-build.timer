@@ -1,0 +1,7 @@
+[Unit]
+Description=/blend/ data builder every 10 min, 07:00-23:59
+[Timer]
+OnCalendar=*-*-* 07..23:00/10:00
+Persistent=false
+[Install]
+WantedBy=timers.target

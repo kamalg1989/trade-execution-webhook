@@ -1,0 +1,7 @@
+[Unit]
+Description=OHM Pro executor fire timer
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:50:00
+Persistent=false
+[Install]
+WantedBy=timers.target

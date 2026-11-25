@@ -1,0 +1,8 @@
+[Unit]
+Description=/blend/ data builder (read-only)
+[Service]
+Type=oneshot
+WorkingDirectory=/root/blend_web
+ExecStart=/root/trade-execution-webhook/venv/bin/python /root/blend_web/build.py
+StandardOutput=append:/root/blend_web/build.log
+StandardError=append:/root/blend_web/build.log

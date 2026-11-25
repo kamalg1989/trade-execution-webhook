@@ -235,11 +235,11 @@ function vRules() {
    <li><b>Market:</b> new buys only in ADVANCE or ACCUMULATION, and only while JUNIORBEES closes at or above its 50-day average.</li>
    <li><b>Setup:</b> 20-day turnover ≥ ₹1 Cr, close above the 50-day average, ≥ 75% of the 52-week high, 10-day range ≤ 15%, within 8% of the 21 EMA, up/down volume ≥ 1.2 over 50 days, 60-day money flow > 0.</li>
    <li><b>Leader and earnings:</b> 1-year return in the top 20% of liquid stocks; quarter and trailing-year profit growth ≥ 25% (missing data allowed).</li>
-   <li><b>Entry bar:</b> inside bar, higher high–higher low, pin bar or trend bar. Buy above its high the next day; stop at its low (higher high–higher low: lower of the 2 lows). Skip if the stop is more than 8% below the fill.</li>
+   <li><b>Entry bar:</b> inside bar, higher high–higher low, pin bar or trend bar. Buy above its high the next day; stop at its low (higher high–higher low: lower of the 2 lows). Skip if the stop is more than 8% below the fill. The live order is a limit at the trigger + 0.2%: if the stock opens above that and never trades back down to it, there is no fill.</li>
    <li><b>Rank and size:</b> highest 1-year return first; risk 0.25% of equity, 0.5% for the top 5%; max 10% per stock, 20 positions.</li>
    <li><b>Manage on closes, act at the next open:</b> close below the stop → sell all. Close below the 21 EMA (from the day after the fill) → sell all. First day the high touches 2R: close ≥ 2R → hold everything; close < 2R → sell half, then buy it back after a later close ≥ 2R.</li>
    <li><b>Cash:</b> idle cash in LIQUIDCASE (about 4% a year).</li></ol>
-   <p class="sub">Backtest: 26.9% CAGR, 18.3% worst drawdown, no losing calendar year. The price data has almost no delisted stocks, so live results will be lower.</p></section>`;
+   <p class="sub">Backtest: 26.9% CAGR, 18.3% worst drawdown, 3 small losing years (2013, 2018, 2022, worst −9.8%). The price data has almost no delisted stocks, so live results will be lower.</p></section>`;
 }
 
 function openStock(s) {
